@@ -40,7 +40,7 @@ public struct PlayerSceneView<Surface: View>: View {
                 }
                 OSDView(model: model)
                     .padding(.leading, OSDView.edgeInset)
-                    .padding(.top, OSDView.edgeInset + (model.chrome.isVisible ? PlayerSceneView.titleBarHeight : 0))
+                    .padding(.top, OSDView.edgeInset + (model.chrome.isVisible ? 28 : 0))
                     .animation(.easeOut(duration: 0.12), value: model.chrome.isVisible)
             }
             .frame(width: size.width, height: size.height)
@@ -95,23 +95,34 @@ public struct PlayerSceneView<Surface: View>: View {
     }
 }
 
-/// The title, centred in the title bar area over a thin material band, fading with the chrome.
+/// The title, centred in the title bar area over a soft scrim that fades into the picture. The
+/// text is white in both appearances: it always sits on video.
 struct TitleBar: View {
+    static let height: CGFloat = 28
     let title: String
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ZStack {
-            Rectangle().fill(.regularMaterial)
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.5), location: 0),
+                    .init(color: .black.opacity(0.3), location: 0.3),
+                    .init(color: .black.opacity(0.12), location: 0.65),
+                    .init(color: .black.opacity(0), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: TitleBar.height + 40)
+            .frame(height: TitleBar.height, alignment: .top)
             Text(title)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.primary.opacity(0.85))
+                .foregroundStyle(Color.white.opacity(0.88))
+                .shadow(color: .black.opacity(0.45), radius: 2, y: 0.5)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .padding(.horizontal, 80)
         }
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(ChromeStyle.stroke(colorScheme)).frame(height: 0.5)
-        }
+        .allowsHitTesting(false)
     }
 }

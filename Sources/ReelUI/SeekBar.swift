@@ -75,8 +75,13 @@ struct SeekBar: View {
                 if let hover = model.seekHoverFraction {
                     HoverPill(text: TimeFormat.hover(model.time(atFraction: hover), duration: model.duration))
                         .fixedSize()
-                        .alignmentGuide(.leading) { dimensions in dimensions.width / 2 - width * hover }
-                        .offset(y: -34)
+                        .alignmentGuide(.leading) { dimensions in
+                            // Centred on the pointer, kept inside the bar's ends.
+                            let half = dimensions.width / 2
+                            let centre = min(max(width * hover, half), max(half, width - half))
+                            return half - centre
+                        }
+                        .offset(y: -36)
                         .transition(.opacity.animation(.easeOut(duration: 0.1)))
                         .allowsHitTesting(false)
                 }
@@ -115,12 +120,12 @@ struct SeekBar: View {
     private func track(width: CGFloat) -> some View {
         let height = isActive ? SeekBar.hoverTrackHeight : SeekBar.trackHeight
         return ZStack(alignment: .leading) {
-            Capsule().fill(Color.primary.opacity(0.2))
+            Capsule().fill(Color.primary.opacity(0.18))
             if let range = model.storedRange {
                 let start = model.fraction(of: range.lowerBound)
                 let end = model.fraction(of: range.upperBound)
                 Capsule()
-                    .fill(Color.primary.opacity(0.35))
+                    .fill(Color.primary.opacity(0.4))
                     .frame(width: max(0, width * (end - start)))
                     .offset(x: width * start)
             }
@@ -149,9 +154,10 @@ struct HoverPill: View {
         Text(text)
             .font(.system(size: 12, weight: .semibold).monospacedDigit())
             .foregroundStyle(Color.primary.opacity(0.9))
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 9)
             .padding(.vertical, 4)
             .background(.regularMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(ChromeStyle.stroke(colorScheme), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.2), radius: 8, y: 3)
     }
 }

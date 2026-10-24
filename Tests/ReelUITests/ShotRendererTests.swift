@@ -71,7 +71,7 @@ import Testing
         #expect(ControllerLayout.width(windowWidth: 3000) == 560)
         #expect(ControllerLayout.width(windowWidth: 400) == 280, "never more than 70% of the window")
         let frame = ControllerLayout.frame(in: size, centerX: 0.49, bottomY: 0.11)
-        #expect(frame.height == 76)
+        #expect(frame.height == 80)
         #expect(abs(frame.midX - 627.2) < 0.01)
         #expect(abs((size.height - frame.maxY) - 79.2) < 0.01)
         let clamped = ControllerLayout.frame(in: size, centerX: 0, bottomY: 0)

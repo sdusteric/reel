@@ -92,6 +92,32 @@ import Testing
         await engine.close()
     }
 
+    /// The old audio feeder shares the generation, so a packet it submits after the restart's
+    /// reset would reach the decoder out of order. The restart has to wait for it.
+    @Test func aSuggestedAudioFlushWaitsForTheOldFeederBeforeRestarting() async throws {
+        let engine = TestEngines.make()
+        let flushed = Atomic<Bool>(false)
+        let after = Mutex<[MediaTime]>([])
+        await engine.setAudioObserver { buffer, _ in
+            if flushed.load(ordering: .acquiring) { after.withLock { $0.append(buffer.pts) } }
+        }
+        _ = try await engine.open(Fixture.syncH264.url())
+        await engine.play()
+        try await Task.sleep(for: .milliseconds(1_200))
+        // The feeder is paced about 1 s ahead; its next packet is held just before the submit.
+        await engine.holdNextAudioSubmitForTesting(milliseconds: 400)
+        try await Task.sleep(for: .milliseconds(150))
+        await engine.deliverAudioEventForTesting(.flushSuggested(.outputConfigurationChanged))
+        let clock = engine.currentTime
+        flushed.store(true, ordering: .releasing)
+        try await Task.sleep(for: .milliseconds(900))
+        let pts = after.withLock { $0 }
+        let first = try #require(pts.first, "audio restarted after the flush")
+        #expect(first <= clock + .milliseconds(100), "restarted at \(first) for the clock at \(clock)")
+        #expect(zip(pts, pts.dropFirst()).allSatisfy { $0 < $1 }, "no packet of the old feeder arrived after the reset: \(pts.map(\.seconds))")
+        await engine.close()
+    }
+
     @Test func playAdvancesTheClockAndPauseHoldsIt() async throws {
         let engine = TestEngines.make()
         _ = try await engine.open(Fixture.syncH264.url())

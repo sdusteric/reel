@@ -430,4 +430,47 @@ enum TestEngines {
         #expect(preview < (report.targetMilliseconds ?? 0))
         await engine.close()
     }
+
+    @Test func aSeekSupersededWhileWaitingForTheFeederStillReportsAsCancelled() async throws {
+        let url = try Fixture.hevc10.url()
+        let table = try FrameTable(url)
+        let engine = TestEngines.make()
+        let log = EventLog()
+        log.start(engine.events)
+        _ = try await engine.open(url)
+        for round in 0..<6 {
+            let before = await engine.currentGeneration
+            let first = MediaTime.seconds(8 + Double(round))
+            let second = MediaTime.seconds(20 + Double(round))
+            // Both calls enter the actor while the first waits for the old feeder to stop.
+            async let one: Void = engine.seek(.exact(first))
+            async let two: Void = engine.seek(.exact(second))
+            _ = await (one, two)
+            let after = await engine.currentGeneration
+            #expect(after == before + 2, "round \(round)")
+            let last = try #require(await engine.seekAndWait(.exact(second), timeout: .seconds(5)))
+            #expect(last.landedPTS == table.expected(at: second), "round \(round)")
+            let reported = await log.wait(timeout: .seconds(5)) { log in
+                (before + 1...after).allSatisfy { generation in log.reports.contains { $0.generation == generation } }
+            }
+            #expect(reported, "round \(round): every generation of the two seeks reports")
+            let superseded = try #require(log.reports.first { $0.generation == after - 1 })
+            #expect(superseded.cancelled, "round \(round)")
+        }
+        await engine.close()
+    }
+
+    @Test func aKeyframePreviewThatIsAlsoTheTargetFrameLandsOnIt() async throws {
+        let url = try Fixture.hevc10.url()
+        let table = try FrameTable(url)
+        let engine = TestEngines.make()
+        _ = try await engine.open(url)
+        await engine.setForceKeyframePreviewForTesting(true)
+        for key in [table.keyframes[2], table.keyframes[4]] {
+            let report = try #require(await engine.seekAndWait(.exact(key)))
+            #expect(report.landedPTS == key, "landed on \(String(describing: report.landedPTS)), not the keyframe \(key)")
+            #expect(report.start == .keyframe)
+        }
+        await engine.close()
+    }
 }

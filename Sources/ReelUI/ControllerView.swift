@@ -17,10 +17,10 @@ enum ChromeStyle {
 
 /// Controller geometry (design 9.3). Positions are SwiftUI coordinates (origin top-left).
 nonisolated public enum ControllerLayout {
-    public static let height: CGFloat = 76
-    public static let cornerRadius: CGFloat = 22
+    public static let height: CGFloat = 80
+    public static let cornerRadius: CGFloat = 24
     public static let horizontalPadding: CGFloat = 14
-    public static let verticalPadding: CGFloat = 10
+    public static let verticalPadding: CGFloat = 12
     public static let edgeMargin: CGFloat = 16
     public static let minimumWidth: CGFloat = 360
     public static let maximumWidth: CGFloat = 560
@@ -71,8 +71,8 @@ struct ControllerView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 10) {
+        VStack(spacing: 6) {
+            HStack(spacing: 12) {
                 Text(model.elapsedLabel)
                     .font(ChromeStyle.timeFont)
                     .foregroundStyle(Color.primary.opacity(0.85))
@@ -98,7 +98,7 @@ struct ControllerView: View {
                         actions.toggleFullscreen()
                     }
                 }
-                HStack(spacing: 18) {
+                HStack(spacing: 22) {
                     ChromeButton(symbol: "gobackward.10", help: "Back 10 Seconds", enabled: model.hasMedia) {
                         model.seek(by: -PlayerModel.buttonSeekStep, source: .pointer)
                     }
@@ -126,8 +126,20 @@ struct ControllerView: View {
             RoundedRectangle(cornerRadius: ControllerLayout.cornerRadius, style: .continuous)
                 .strokeBorder(ChromeStyle.stroke(colorScheme), lineWidth: 0.5)
         )
-        .shadow(color: .black.opacity(0.25), radius: 24, y: 8)
+        .shadow(color: .black.opacity(0.22), radius: 1.5, y: 1)
+        .shadow(color: .black.opacity(0.28), radius: 28, y: 10)
         .onHover { model.chrome.setPointerOverController($0) }
+    }
+}
+
+/// Press feedback on the pointer-down: a 0.94 scale in 0.1 s, released with the same curve.
+struct PressScaleStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
     }
 }
 
@@ -151,13 +163,13 @@ struct ChromeButton: View {
                 .frame(width: hitSize, height: hitSize)
                 .background(
                     Circle()
-                        .fill(Color.primary.opacity(0.08))
+                        .fill(Color.primary.opacity(0.1))
                         .opacity(hovering && enabled ? 1 : 0)
                         .animation(.easeInOut(duration: 0.12), value: hovering)
                 )
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressScaleStyle())
         .disabled(!enabled)
         .onHover { hovering = $0 }
         .help(help)

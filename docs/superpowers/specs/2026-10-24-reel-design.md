@@ -216,7 +216,7 @@ All sizes in points.
 - Content view: a layer-backed `PlayerContentView` (black) containing the `AVSampleBufferDisplayLayer` (`videoGravity = .resizeAspect`) and, above it, an `NSHostingView` with the SwiftUI chrome (controller, OSD, title).
 - One window. Opening a new file replaces the current one (IINA `alwaysOpenInNewWindow = 0`).
 - First open: size to the video's display size (after pixel aspect and rotation), scaled down to fit 80% of the screen's visible frame, centred. On the user's 3440x1440 display a 1080p video opens at 1920x1080. Later opens keep the window's centre and width, set the height from the new aspect, and clamp to the screen. `contentAspectRatio` = the video aspect, so resizing keeps it. The frame is saved in `state.json`.
-- Empty state (no file): 720x450, black, centred text "Open a video" (15 pt semibold, secondary) and "Drop a file here or press ⌘O" (12 pt, tertiary). The whole window is a drop target.
+- Empty state (no file): 720x450, black, a 60 pt rounded tile (white 10% fill, 0.5 pt white 14% stroke) with a play glyph (22 pt, white 62%), then "Open a video" (15 pt semibold, white 78%) and "Drop a file here or press ⌘O" (12 pt, white 50%, the key in a small keycap chip), centred. The colours are fixed because the area is always black. The whole window is a drop target.
 - Fullscreen: native `toggleFullScreen(_:)` with `.fullScreenPrimary`. M1 supports it without polish; the controller keeps its fractional position.
 - Display sleep: `IOPMAssertionCreateWithName(PreventUserIdleDisplaySleep, "Reel is playing video")` while playing, released on pause, close and quit.
 
@@ -231,24 +231,24 @@ All sizes in points.
 ### 9.3 Controller
 
 - A SwiftUI view inside the hosting view (not a separate window).
-- Shape: rounded rectangle, corner radius 22, height 76, width 480 (min 360, max 560, never more than 70% of the window width), padding 14 horizontal, 10 vertical.
-- Material: `.regularMaterial` in both appearances, 0.5 pt inner stroke (white 12% in dark, black 8% in light), shadow radius 24, y 8, opacity 0.25. Not Liquid Glass **(my call)**: a headless `ImageRenderer` test on this Mac rendered `.regularMaterial` correctly in light and dark but rendered nothing at all for `.glassEffect`, so glass would break the background screenshots that are our UI check. Revisit in M2 if a capture path for glass exists.
+- Shape: rounded rectangle (continuous corners), corner radius 24, height 80, width 480 (min 360, max 560, never more than 70% of the window width), padding 14 horizontal, 12 vertical, 6 pt between the two rows.
+- Material: `.regularMaterial` in both appearances, 0.5 pt inner stroke (white 12% in dark, black 8% in light), two shadows: a contact shadow (radius 1.5, y 1, opacity 0.22) and an ambient one (radius 28, y 10, opacity 0.28). Not Liquid Glass **(my call)**: a headless `ImageRenderer` test on this Mac rendered `.regularMaterial` correctly in light and dark but rendered nothing at all for `.glassEffect`, so glass would break the background screenshots that are our UI check. Revisit in M2 if a capture path for glass exists.
 - Position: stored as fractions of the window (x of the centre, y of the bottom edge from the window bottom), default x 0.49, y 0.11 (the user's saved IINA position). Draggable by any area that is not a control; follows the pointer with no animation; clamped to keep 16 pt from every edge. Double-click on an empty area resets it.
 - Top row: elapsed time (left), seek bar (fills), remaining time (right, `-12:34`, default because the user has `showRemainingTime` on). Clicking the right label toggles remaining and total; persisted.
 - Bottom row: left, volume icon (click toggles mute) plus a 72 pt slider that widens to 120 on hover; centre, back 10 s, play/pause (32 pt hit circle, 22 pt glyph), forward 10 s; right, fullscreen. M2 adds previous/next, subtitle, audio, speed and PiP buttons.
 - Times: `.system(size: 12, weight: .medium).monospacedDigit()`, primary at 85%. Hours shown only when duration is 1 h or more.
-- Icons: SF Symbols, medium weight, 17 pt (play 22 pt), `.primary` at 90%, 55% disabled. Hit targets at least 28 pt; hover background `Color.primary.opacity(0.08)` circle fading in over 0.12 s. Play/pause swaps with `.contentTransition(.symbolEffect(.replace))`.
+- Icons: SF Symbols, medium weight, 17 pt (play 22 pt), `.primary` at 90%, 55% disabled. Hit targets at least 28 pt; hover background `Color.primary.opacity(0.1)` circle fading in over 0.12 s; press feedback is a 0.94 scale over 0.1 s on pointer-down (none with Reduce Motion). Transport buttons are 22 pt apart. Play/pause swaps with `.contentTransition(.symbolEffect(.replace))`.
 
 ### 9.4 Seek bar
 
-- Track 4 pt tall, grows to 8 pt on hover (spring, 0.18 s). Unplayed: primary 20%. Stored-in-memory range (the PacketStore window): primary 35%. Played: accent colour. Thumb: 12 pt circle, visible on hover and drag only.
-- Hover pill above the track: time under the pointer in 12 pt semibold monospaced digits, on the same material. It follows x with no animation and fades in over 0.1 s. M2 adds a thumbnail above the time.
+- Track 4 pt tall, grows to 8 pt on hover (spring, 0.18 s). Unplayed: primary 18%. Stored-in-memory range (the PacketStore window): primary 40%. Played: accent colour. Thumb: 12 pt circle, visible on hover and drag only.
+- Hover pill above the track: time under the pointer in 12 pt semibold monospaced digits, on the same material with a soft shadow (radius 8, y 3), centred on the pointer and kept inside the ends of the bar. It sits 36 pt above the track. It follows x with no animation and fades in over 0.1 s. M2 adds a thumbnail above the time.
 - Drag sends `.scrub(t)` on every move (coalesced in the engine); release sends `.exact(t)`. Click without drag sends `.exact(t)`.
 - A resume tick (2 pt wide, primary 50%) marks the saved position when the file was resumed.
 
 ### 9.5 OSD
 
-- Top-left, 20 pt from the edges, 20 pt semibold rounded text on the controller material, corner radius 10.
+- Top-left, 20 pt from the edges (below the title scrim while the chrome shows), a 17 pt symbol (speaker level, mute, resume) at 70% beside 20 pt semibold rounded text, on the controller material, corner radius 14, padding 16 x 10, soft shadow (radius 12, y 4). Seeks show text only.
 - Shown for volume ("Volume 52"), mute, seeks from the keyboard ("12:04 / 1:02:33"), frame steps, and resume ("Resumed at 23:10", with a "Start Over" button that stays for 5 s).
 - Appears with a 0.12 s fade and scale 0.96 to 1, stays 0.9 s after the last update, fades out over 0.25 s. Repeated updates change the text in place without re-animating.
 - If an exact seek has not landed after 400 ms, a small progress ring appears next to the time in the OSD.
@@ -436,9 +436,10 @@ Rules for every test, bench and script:
 ## 15. Visual design
 
 - The video area is always black in both appearances. The chrome follows the system appearance through standard materials and semantic colours (`.primary`, `.secondary`, accent for the played track only). Nothing is forced dark.
-- Typography: SF Pro throughout. Times 12 pt medium monospaced digits; hover pill 12 pt semibold; OSD 20 pt semibold rounded; title 13 pt semibold, centred in the title bar area, fading with the chrome; empty state 15 pt semibold.
-- Spacing: controller padding 14 x 10, 18 pt between transport buttons, 16 pt minimum margin from window edges.
-- Motion: chrome fade 0.22 s in, 0.35 s out; track grow spring 0.18 s; hover backgrounds 0.12 s; OSD 0.12 s in, 0.25 s out; controller drag follows directly with no animation; window resize for a new video animates 0.2 s keeping its centre. Reduce Motion: opacity only, 0.1 s.
+- Title bar: no material band. A black gradient scrim (50% at the top, easing to clear over 68 pt) sits behind the white title so the picture runs to the top edge and the title stays legible on bright frames.
+- Typography: SF Pro throughout. Times 12 pt medium monospaced digits; hover pill 12 pt semibold; OSD 20 pt semibold rounded; title 13 pt semibold, centred in the title bar area, white at 88% with a faint shadow, fading with the chrome; empty state 15 pt semibold.
+- Spacing: controller padding 14 x 12, 22 pt between transport buttons, 12 pt between the time labels and the seek bar, 16 pt minimum margin from window edges.
+- Motion: chrome fade 0.22 s in, 0.35 s out; track grow spring 0.18 s; hover backgrounds 0.12 s; button press 0.1 s; OSD 0.12 s in, 0.25 s out; controller drag follows directly with no animation; window resize for a new video animates 0.2 s keeping its centre. Reduce Motion: opacity only, 0.1 s.
 - App icon: a simple generated icon (`scripts/make-icon.swift`) until a drawn one exists: a rounded square with a dark gradient and a white play glyph, nothing borrowed from IINA.
 - Check the controller over pure white and pure black frames (the fixtures include both in the sync flashes).
 

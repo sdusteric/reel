@@ -174,6 +174,8 @@ final class PipelineShared: Sendable {
     let audioPrimedGeneration = Atomic<UInt64>(0)
     let videoEnded = Atomic<Bool>(false)
     let audioEnded = Atomic<Bool>(false)
+    /// Tests: milliseconds the audio feeder holds the next packet before submitting it (one shot).
+    let audioSubmitHoldForTesting = Atomic<Int>(0)
 
     var currentGeneration: UInt64 { generation.load(ordering: .acquiring) }
 
@@ -332,7 +334,10 @@ struct VideoFeeder: Sendable {
                 await store.waitForChange(since: change)
                 continue
             }
-            let quick = firstPacket && (spec.preview || spec.scrubOnly)
+            // A preview keyframe that is also the frame shown at the target goes through decide(),
+            // which marks the target submitted; the quick path would show it as a mere preview.
+            let isTargetFrame = spec.target != nil && head.pts != nil && head.pts == decision.best
+            let quick = firstPacket && (spec.preview || spec.scrubOnly) && !isTargetFrame
             if !decision.targetSubmitted, !quick, state.lookahead.count < window, !endOfStream {
                 store.requestMoreData()
                 await store.waitForChange(since: change)
@@ -353,6 +358,8 @@ struct VideoFeeder: Sendable {
                         return state
                     }
                 }
+                // Before the decode: the presenter tells a preview from the target by this pts.
+                if decision.justSubmittedTarget { shared.updateRun(generation: generation) { $0.targetPTS = head.pts } }
                 do {
                     try decoder.decode(head, generation: generation, output: output)
                 } catch {
@@ -537,6 +544,8 @@ struct AudioFeeder: Sendable {
                         if stale() { return }
                     }
                 }
+                let hold = shared.audioSubmitHoldForTesting.exchange(0, ordering: .relaxed)
+                if hold > 0 { await Task.detached { try? await Task.sleep(for: .milliseconds(hold)) }.value }
                 thread.submit(packet, generation: generation)
             case .needMore:
                 await store.waitForChange(since: change)

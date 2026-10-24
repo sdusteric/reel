@@ -122,6 +122,7 @@ public actor PlaybackEngine: PlayerEngine {
     private var state: PlaybackState = .idle
     private var generation: UInt64 = 0
     private var planner: SeekPlanner
+    private var forceKeyframePreviewForTesting = false
     private var coalescer = ScrubCoalescer()
     private var resumeAfterSeek = false
     private var displayedKeyframe: MediaTime?
@@ -644,6 +645,9 @@ public actor PlaybackEngine: PlayerEngine {
             bytesAtStart: demuxer.bytesRead
         )
         var demuxerMiss = false
+        // Installed before the first await: a seek that supersedes this one while it waits for the
+        // feeder must find a run to report as cancelled.
+        shared.run.withLock { $0 = run }
         if let video = current.video {
             let previous = await stopFeeder()
             guard generation == self.generation else {
@@ -681,7 +685,7 @@ public actor PlaybackEngine: PlayerEngine {
                     generation: generation,
                     target: target,
                     keyframe: keyframe,
-                    preview: plan.showsKeyframePreview,
+                    preview: plan.showsKeyframePreview || forceKeyframePreviewForTesting,
                     scrubOnly: false,
                     awaitDemuxerSeek: !hit
                 )
@@ -795,6 +799,8 @@ public actor PlaybackEngine: PlayerEngine {
         }
         synchronizer.setRate(0, time: keyframe.cmTime)
         setRealTime(false)
+        run.startKeyframe = keyframe
+        shared.run.withLock { $0 = run }
         _ = await stopFeeder()
         guard generation == self.generation else { return generation }
         video.decoder.reset(generation: generation)
@@ -839,6 +845,17 @@ public actor PlaybackEngine: PlayerEngine {
     /// no renderer (they stay silent), so this is the only way to reach the device-change path.
     func deliverAudioEventForTesting(_ event: AudioOutput.Event) async {
         await handleAudioEvent(event)
+    }
+
+    /// Tests: asks for a keyframe preview on every restarting exact seek, whatever the plan says.
+    func setForceKeyframePreviewForTesting(_ enabled: Bool) {
+        forceKeyframePreviewForTesting = enabled
+    }
+
+    /// Tests: the next audio packet the audio feeder submits is held back for `milliseconds`
+    /// (not cancellable), like a feeder preempted between its last check and its submit.
+    func holdNextAudioSubmitForTesting(milliseconds: Int) {
+        shared.audioSubmitHoldForTesting.store(milliseconds, ordering: .relaxed)
     }
 
     /// Tests: makes every demuxer seek that needs I/O of the open file take `milliseconds` longer.
@@ -1041,10 +1058,17 @@ public actor PlaybackEngine: PlayerEngine {
         trace("audio renderer event \(event)")
         guard case .flushSuggested = event, let current = session, let audio = current.audio,
               state == .playing || state == .paused else { return }
+        // The old feeder must be gone before the reset: it shares this generation, so a packet it
+        // submits afterwards would reach the decoder out of order.
+        let previous = audioFeedTask
+        let flushGeneration = generation
+        previous?.cancel()
+        await previous?.value
+        guard flushGeneration == generation, audioFeedTask == previous else { return }
         let now = currentTime
         audio.thread.seek(dropBefore: now, generation: generation)
-        audioFeedTask?.cancel()
         if let output = shared.audioOutput.withLock({ $0 }) { await output.flush() }
+        guard flushGeneration == generation, audioFeedTask == previous else { return }
         startAudioFeed(generation: generation, target: now, awaitDemuxerSeek: false)
     }
 
