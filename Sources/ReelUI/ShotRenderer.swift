@@ -1,0 +1,316 @@
+import AppKit
+import CoreGraphics
+import Foundation
+import ImageIO
+import ReelCore
+import SwiftUI
+import UniformTypeIdentifiers
+
+/// The four background screenshot scenarios (design 14).
+nonisolated public enum ShotScenario: String, CaseIterable, Sendable {
+    case empty
+    /// Controller and title visible while playing.
+    case playing
+    /// Paused with the volume OSD.
+    case pausedOSD = "paused-osd"
+    /// Dragging the seek bar: hover pill and grown track.
+    case scrubbing
+}
+
+nonisolated public enum ShotAppearance: String, CaseIterable, Sendable {
+    case light, dark
+
+    var colorScheme: ColorScheme { self == .dark ? .dark : .light }
+    var appearanceName: NSAppearance.Name { self == .dark ? .darkAqua : .aqua }
+}
+
+nonisolated public struct ShotOptionsError: Error, Equatable, Sendable {
+    public var message: String
+}
+
+/// `--shot <scenario> --appearance light|dark --size WxH --out path [--fixture file --at seconds]
+/// [--duration seconds]`. Sizes are points; the PNG is twice as large.
+nonisolated public struct ShotOptions: Equatable, Sendable {
+    public var scenario: ShotScenario
+    public var appearance: ShotAppearance
+    public var size: CGSize
+    public var output: URL
+    public var fixture: URL?
+    public var at: Double
+    public var duration: Double
+
+    public static let defaultSize = CGSize(width: 1280, height: 720)
+    public static let defaultAt: Double = 12
+    public static let defaultDuration: Double = 60
+
+    public init(
+        scenario: ShotScenario,
+        appearance: ShotAppearance,
+        size: CGSize = ShotOptions.defaultSize,
+        output: URL,
+        fixture: URL? = nil,
+        at: Double = ShotOptions.defaultAt,
+        duration: Double = ShotOptions.defaultDuration
+    ) {
+        self.scenario = scenario
+        self.appearance = appearance
+        self.size = size
+        self.output = output
+        self.fixture = fixture
+        self.at = at
+        self.duration = duration
+    }
+
+    public static func parse(_ arguments: [String], currentDirectory: URL) -> Result<ShotOptions, ShotOptionsError> {
+        var values: [String: String] = [:]
+        var index = 0
+        while index < arguments.count {
+            let flag = arguments[index]
+            guard flag.hasPrefix("--") else {
+                return .failure(ShotOptionsError(message: "unexpected argument \(flag)"))
+            }
+            guard index + 1 < arguments.count else {
+                return .failure(ShotOptionsError(message: "\(flag) needs a value"))
+            }
+            values[String(flag.dropFirst(2))] = arguments[index + 1]
+            index += 2
+        }
+        let known: Set<String> = ["shot", "appearance", "size", "out", "fixture", "at", "duration"]
+        if let unknown = values.keys.sorted().first(where: { !known.contains($0) }) {
+            return .failure(ShotOptionsError(message: "unknown option --\(unknown)"))
+        }
+        guard let scenarioName = values["shot"], let scenario = ShotScenario(rawValue: scenarioName) else {
+            let names = ShotScenario.allCases.map(\.rawValue).joined(separator: "|")
+            return .failure(ShotOptionsError(message: "--shot must be one of \(names)"))
+        }
+        guard let appearance = ShotAppearance(rawValue: values["appearance"] ?? "light") else {
+            return .failure(ShotOptionsError(message: "--appearance must be light or dark"))
+        }
+        var size = defaultSize
+        if let text = values["size"] {
+            let parts = text.lowercased().split(separator: "x")
+            guard parts.count == 2, let width = Double(parts[0]), let height = Double(parts[1]),
+                  width >= 64, height >= 64, width <= 8192, height <= 8192 else {
+                return .failure(ShotOptionsError(message: "--size must look like 1280x720"))
+            }
+            size = CGSize(width: width, height: height)
+        }
+        guard let out = values["out"], !out.isEmpty else {
+            return .failure(ShotOptionsError(message: "--out <png> is required"))
+        }
+        var at = defaultAt
+        if let text = values["at"] {
+            guard let value = Double(text), value.isFinite, value >= 0 else {
+                return .failure(ShotOptionsError(message: "--at must be seconds"))
+            }
+            at = value
+        }
+        var duration = max(defaultDuration, at)
+        if let text = values["duration"] {
+            guard let value = Double(text), value.isFinite, value > 0 else {
+                return .failure(ShotOptionsError(message: "--duration must be seconds"))
+            }
+            duration = value
+        }
+        return .success(ShotOptions(
+            scenario: scenario,
+            appearance: appearance,
+            size: size,
+            output: URL(filePath: out, relativeTo: currentDirectory).absoluteURL,
+            fixture: values["fixture"].map { URL(filePath: $0, relativeTo: currentDirectory).absoluteURL },
+            at: at,
+            duration: duration
+        ))
+    }
+}
+
+/// Renders `PlayerSceneView` to an image with `ImageRenderer`: no window, no run loop
+/// (design 14, D15, D16). The video surface is a SwiftUI `Image` of a decoded frame.
+public enum ShotRenderer {
+    public static let scale: CGFloat = 2
+    public static let demoTitle = "Reel Demo.mkv"
+
+    /// A model in the state the scenario shows. It has no engine and never opens a file.
+    public static func makeModel(
+        scenario: ShotScenario,
+        title: String,
+        position: MediaTime,
+        duration: MediaTime
+    ) -> PlayerModel {
+        let model = PlayerModel(dependencies: PlayerModel.Dependencies(makeEngine: { _ in StillEngine() }))
+        guard scenario != .empty else { return model }
+        model.media = MediaInfo(url: URL(filePath: "/\(title)"), formatName: "matroska,webm", duration: duration)
+        model.title = title
+        model.position = min(position, duration)
+        model.storedRange = max(.zero, model.position - .seconds(8))...min(duration, model.position + .seconds(20))
+        model.volume = 52
+        switch scenario {
+        case .empty:
+            break
+        case .playing:
+            model.playbackState = .playing
+            model.isPlaying = true
+        case .pausedOSD:
+            model.playbackState = .paused
+            model.osd = OSDMessage(kind: .volume, text: "Volume 52")
+        case .scrubbing:
+            model.playbackState = .seeking
+            model.isPlaying = true
+            model.isScrubbing = true
+            model.seekHoverFraction = model.fraction(of: model.position)
+        }
+        return model
+    }
+
+    public static func render(
+        scenario: ShotScenario,
+        appearance: ShotAppearance,
+        size: CGSize,
+        frame: CGImage?,
+        title: String = demoTitle,
+        position: MediaTime = .seconds(ShotOptions.defaultAt),
+        duration: MediaTime = .seconds(ShotOptions.defaultDuration)
+    ) -> CGImage? {
+        let model = makeModel(scenario: scenario, title: title, position: position, duration: duration)
+        let scene = PlayerSceneView(model: model) {
+            if scenario != .empty, let frame {
+                Image(decorative: frame, scale: 1)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Color.black
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .environment(\.colorScheme, appearance.colorScheme)
+
+        let renderer = ImageRenderer(content: scene)
+        renderer.scale = scale
+        renderer.proposedSize = ProposedViewSize(size)
+        var image: CGImage?
+        // Materials resolve against the drawing appearance as well as the SwiftUI colour scheme.
+        NSAppearance(named: appearance.appearanceName)?.performAsCurrentDrawingAppearance {
+            image = renderer.cgImage
+        }
+        return image
+    }
+
+    /// A stand-in frame when no decoder is available: a diagonal colour gradient.
+    public static func placeholderFrame(width: Int = 1920, height: Int = 1080) -> CGImage? {
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        let colors = [
+            CGColor(srgbRed: 0.10, green: 0.18, blue: 0.36, alpha: 1),
+            CGColor(srgbRed: 0.42, green: 0.30, blue: 0.52, alpha: 1),
+            CGColor(srgbRed: 0.93, green: 0.55, blue: 0.32, alpha: 1),
+        ] as CFArray
+        guard let gradient = CGGradient(colorsSpace: context.colorSpace, colors: colors, locations: [0, 0.55, 1]) else {
+            return nil
+        }
+        context.drawLinearGradient(
+            gradient,
+            start: CGPoint(x: 0, y: CGFloat(height)),
+            end: CGPoint(x: CGFloat(width), y: 0),
+            options: []
+        )
+        return context.makeImage()
+    }
+
+    public static func writePNG(_ image: CGImage, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+            throw ShotOptionsError(message: "cannot write \(url.path(percentEncoded: false))")
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw ShotOptionsError(message: "PNG encoding failed for \(url.path(percentEncoded: false))")
+        }
+    }
+
+    /// The controller's frame in image pixels (origin top-left) for a shot of `size` points.
+    public static func controllerPixelRect(
+        size: CGSize,
+        centerX: Double = RememberedState.defaultControllerCenterX,
+        bottomY: Double = RememberedState.defaultControllerBottomY
+    ) -> CGRect {
+        let frame = ControllerLayout.frame(in: size, centerX: centerX, bottomY: bottomY)
+        return CGRect(x: frame.minX * scale, y: frame.minY * scale, width: frame.width * scale, height: frame.height * scale)
+    }
+
+    public struct LuminanceStats: Sendable, Equatable {
+        public var mean: Double
+        public var standardDeviation: Double
+        public var minimum: Double
+        public var maximum: Double
+
+        /// A blank image is one flat colour: every pixel within a few levels of the others.
+        public var isBlank: Bool { maximum - minimum < 16 }
+    }
+
+    /// Luminance statistics (Rec. 709 weights, 0 to 255) over `rect` in pixels, origin top-left.
+    public static func luminance(of image: CGImage, in rect: CGRect? = nil) -> LuminanceStats? {
+        let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        let region = (rect ?? bounds).integral.intersection(bounds)
+        guard !region.isEmpty, let cropped = image.cropping(to: region) else { return nil }
+        let width = cropped.width
+        let height = cropped.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(cropped, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+        var sum = 0.0
+        var squares = 0.0
+        var minimum = 255.0
+        var maximum = 0.0
+        let count = Double(width * height)
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            let luma = 0.2126 * Double(pixels[offset]) + 0.7152 * Double(pixels[offset + 1]) + 0.0722 * Double(pixels[offset + 2])
+            sum += luma
+            squares += luma * luma
+            minimum = min(minimum, luma)
+            maximum = max(maximum, luma)
+        }
+        let mean = sum / count
+        return LuminanceStats(
+            mean: mean,
+            standardDeviation: max(0, squares / count - mean * mean).squareRoot(),
+            minimum: minimum,
+            maximum: maximum
+        )
+    }
+}
+
+/// The engine behind a screenshot model: it never opens anything.
+private final class StillEngine: PlayerEngine {
+    let events: AsyncStream<EngineEvent> = AsyncStream { $0.finish() }
+
+    func open(_ url: URL) async throws -> MediaInfo {
+        throw EngineError.notOpen
+    }
+
+    func play() async {}
+    func pause() async {}
+    func seek(_ request: SeekRequest) async {}
+    func setVolume(_ volume: Double) async {}
+    func setMuted(_ muted: Bool) async {}
+    func close() async {}
+}

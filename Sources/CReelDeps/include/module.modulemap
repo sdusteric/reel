@@ -1,0 +1,4 @@
+module CReelDeps {
+    header "CReelDeps.h"
+    export *
+}

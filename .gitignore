@@ -2,5 +2,19 @@
 /build/
 /vendor/build/
 /vendor/src/
+/vendor/prefix/
 .DS_Store
 *.xcuserstate
+.swiftpm/
+
+# Headers synced from vendor/prefix by scripts/deps.sh
+/Sources/CReelDeps/include/libavcodec/
+/Sources/CReelDeps/include/libavformat/
+/Sources/CReelDeps/include/libavutil/
+/Sources/CReelDeps/include/libswscale/
+/Sources/CReelDeps/include/libswresample/
+/Sources/CReelDeps/include/ass/
+/Sources/CReelDeps/include/freetype2/
+/Sources/CReelDeps/include/harfbuzz/
+/Sources/CReelDeps/include/fribidi/
+/Sources/CReelDeps/include/dav1d/

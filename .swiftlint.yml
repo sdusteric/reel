@@ -1,0 +1,43 @@
+included:
+  - Sources
+  - Tests
+  - Package.swift
+excluded:
+  - .build
+  - vendor
+  - build
+  - Sources/CReelDeps/include
+
+only_rules:
+  - custom_rules
+
+custom_rules:
+  no_force_try:
+    name: "No try!"
+    included: 'Sources/.*\.swift$'
+    regex: '\btry!'
+    excluded_match_kinds: [comment, comment.mark, comment.url, doccomment, doccomment.field, string]
+    message: "Handle the error instead of try! in Sources."
+    severity: error
+
+  no_optional_try_in_stores:
+    name: "No try? in stores"
+    included: 'Sources/ReelCore/[^/]*Store[^/]*\.swift$'
+    regex: '\btry\?'
+    excluded_match_kinds: [comment, comment.mark, comment.url, doccomment, doccomment.field, string]
+    message: "Stores must surface or log errors; try? would hide a lost resume position."
+    severity: error
+
+  no_network:
+    name: "No network code"
+    included: 'Sources/.*\.swift$'
+    regex: '\bURLSession\b|\bNWConnection\b|\bimport\s+Network\b'
+    excluded_match_kinds: [comment, comment.mark, comment.url, doccomment, doccomment.field, string]
+    message: "Reel has no network features (design section 4)."
+    severity: error
+
+  no_long_dashes:
+    name: "No em or en dashes"
+    regex: '[\x{2013}\x{2014}]'
+    message: "Use commas, colons, parentheses or separate sentences instead of em or en dashes."
+    severity: error
