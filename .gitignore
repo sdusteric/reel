@@ -1,0 +1,6 @@
+.build/
+/build/
+/vendor/build/
+/vendor/src/
+.DS_Store
+*.xcuserstate
