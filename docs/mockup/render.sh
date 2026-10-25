@@ -33,6 +33,15 @@ FRAMES=(
   "16-pip light,dark 1280 720 2"
   "17-menus light,dark 1280 720 2"
   "18-edge-states light,dark 1280 720 2"
+  "19-hdr-badge light,dark 1280 720 2"
+  "20-video-info light,dark 1280 720 2"
+  "21-hdr-sdr-display light,dark 1280 720 2"
+  "22-dolby-vision-p5 light,dark 1280 720 2"
+  "23-open-failed light,dark 1280 720 2"
+  "24-truncated light,dark 1280 720 2"
+  "25-damaged-osd light,dark 1280 720 2"
+  "26-drive-gone light,dark 1280 720 2"
+  "27-settings light,dark 1280 720 2"
 )
 
 front() { lsappinfo info -only name "$(lsappinfo front 2>/dev/null)" 2>/dev/null | head -1 | tr -d '\n'; echo " $(lsappinfo front 2>/dev/null)"; }

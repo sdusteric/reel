@@ -1,7 +1,7 @@
 # Reel design
 
 Date: 2026-10-24
-Status: M1 shipped. M2 built (tasks M2-1 to M2-7 landed on 2026-10-24); `scripts/accept.sh offline` passes all six M2 criteria and all of M1 (see "M2 status" in section 16). Earlier status: approved for M1 by the planner (the user is away and opted out of questions; every decision below is the planner's and is listed for review in "Decisions to review"). M2 design pass done on 2026-10-24 (sections 8, 9.3 to 9.12, 10, 15.2 and 16; mockups in `docs/mockup/`); its calls are D26 to D49.
+Status: M1 shipped. M2 built (tasks M2-1 to M2-7 landed on 2026-10-24); `scripts/accept.sh offline` passes all six M2 criteria and all of M1 (see "M2 status" in section 16). Earlier status: approved for M1 by the planner (the user is away and opted out of questions; every decision below is the planner's and is listed for review in "Decisions to review"). M2 design pass done on 2026-10-24 (sections 8, 9.3 to 9.12, 10, 15.2 and 16; mockups in `docs/mockup/`); its calls are D26 to D49. M3 design pass done on 2026-10-25 from a user-research pass (7.7 to 7.11, 9.13, 9.14, 11.1, 15.3, 16; mockups 19 to 27 in `docs/mockup/`); its calls are D50 to D68. M3 is not built yet.
 
 Reel is a macOS video player for one person, written to replace IINA on their Mac. It should look as calm and finished as IINA and jump to a new time much faster.
 
@@ -75,7 +75,7 @@ Audio: everything goes through libavcodec and swresample to interleaved 32-bit f
 
 Subtitles (M2): SRT, ASS/SSA, WebVTT, mov_text, PGS, DVD/VobSub, external files next to the video.
 
-Known gaps: Dolby Vision profile 5 (single-layer IPT) will show wrong colours; profile 8 plays as its HDR10 base layer. DTS-HD MA and TrueHD Atmos play as their core or bed channels. 4:2:2 and 4:4:4 content goes to the software path and is untested.
+Known gaps: Dolby Vision profile 5 (single-layer IPT) shows wrong colours; from M3 Reel says so with a note instead of silently (7.8). Profile 8 plays as its HDR10 or HLG base layer. DTS-HD MA and TrueHD Atmos play as their core or bed channels. 4:2:2 and 4:4:4 content goes to the software path and is untested.
 
 ## 6. Architecture overview
 
@@ -194,6 +194,120 @@ Measured on generated fixtures, warm page cache, M5 Pro, inside a resident engin
 | VP9 4K60 webm, 5 s GOP | report only | report only | report only (expect about 1.2 s) | 792 to 2306 ms |
 
 "Worst case" means the target is the last frame before the next keyframe, so a whole GOP is decoded. Real BluRay HEVC and real YouTube AV1 carry more detail per frame than the noise fixtures, so these are lower bounds on real files; the keyframe preview covers the gap.
+
+### 7.7 HDR10 and HLG presentation (M3)
+
+User research (section 16, M3) found that no Mac player is trusted with HDR: VLC 3 does not render it, IINA dims the whole screen on Apple Silicon, Infuse has Dolby Vision bugs. M3 makes HDR10 and HLG correct and quiet by handing presentation to the system and testing everything Reel controls with numbers.
+
+**Who does what.**
+
+- Reel decodes to 10-bit `x420` (VideoToolbox) or P010 (software, dav1d, VP9 hybrid) and makes sure every decoded `CVPixelBuffer` carries complete colour attachments: `kCVImageBufferColorPrimariesKey` (ITU_R_2020), `kCVImageBufferTransferFunctionKey` (SMPTE_ST_2084_PQ or ITU_R_2100_HLG), `kCVImageBufferYCbCrMatrixKey` (ITU_R_2020), and for PQ `kCVImageBufferMasteringDisplayColorVolumeKey` and `kCVImageBufferContentLightLevelInfoKey` when the stream has them. The hardware path gets these from the format description (7.3); the software path sets them on every pooled buffer with `.shouldPropagate`; AV1 and VP9 take colour from the first decoded frame when codecpar is unspecified (7.3). Per-frame HDR metadata is left to VideoToolbox (`PropagatePerFrameHDRDisplayMetadata`, default on).
+- The `AVSampleBufferDisplayLayer` and the window server do the rest: EDR on the built-in XDR display and on external HDR displays, tone mapping to the current headroom (which changes with brightness and when the window moves to another display), and tone mapping to SDR on SDR displays. This is the path QuickTime and AVPlayer use, so Reel inherits their behaviour, including how macOS raises the backlight for EDR on the built-in display, rather than inventing its own **(my call)**. Reel does not render video with Metal and has no on-screen tone mapper.
+- Reel sets one property: the display layer's `preferredDynamicRange` (`CALayer.DynamicRange`, macOS 26 and later; `wantsExtendedDynamicRangeContent` is deprecated in the macOS 27 SDK). The value comes from the pure `DynamicRangePlan` in ReelCore:
+
+| Content | Setting "High dynamic range" | Display layer | Tag (9.13) |
+|---|---|---|---|
+| SDR (BT.709, BT.601, sRGB, unknown) | any | `.standard` | none |
+| HDR10, HLG, Dolby Vision with an HDR base | Full (default) | `.high` | "HDR10", "HLG", "Dolby Vision" |
+| same | Limited | `.constrainedHigh` | same |
+| same | Off | `.standard` (the system tone-maps to SDR) | same, detail "SDR" |
+| any HDR on a display whose potential headroom is 1.0 | any | as above (the system tone-maps) | detail "SDR" |
+
+  The plan depends on the content and the setting only; the display changes only the tag detail and Video Info. So moving the window between displays never reconfigures the layer, and a headroom change (brightness, ambient light) never touches Reel at all.
+- **No whole-screen dimming.** Reel never asks for more than the layer property above: no `NSScreen` brightness tricks, no EDR on SDR content, no EDR on the chrome. If the user still sees the desktop dim on some display, Limited (`.constrainedHigh`, "brightness is modulated to optimize for co-existence with other composited content") or Off is the fix, one popup away in Settings (11.1). The hands-on check below asks for exactly this comparison.
+- **Chrome and subtitles stay at SDR white.** The subtitle `CALayer`, the hosting view of the SwiftUI chrome and every panel keep `preferredDynamicRange = .standard` (set explicitly, so a future default change cannot raise them), and their contents are untagged sRGB `CGImage`s with no headroom. White text is therefore SDR reference white whatever the video does. A test reads these properties back.
+- **Picture in Picture.** PiP shows only the display layer, so subtitles are composited into the frames (8.6). For HDR frames the compositor (Core Image, extended linear working space) draws subtitle white at 1.0, which is reference white: 203 nits in PQ (10-bit limited code 573) and 75% signal in HLG (code 721), never the signal peak. A test decodes the composited frame and checks those codes.
+
+**Display state.** `DisplayRangeMonitor` (app target) reads `maximumPotentialExtendedDynamicRangeColorComponentValue`, `maximumExtendedDynamicRangeColorComponentValue` and `maximumReferenceExtendedDynamicRangeColorComponentValue` of the window's screen on `NSWindow.didChangeScreenNotification` and `NSApplication.didChangeScreenParametersNotification`, and polls the current value at 2 Hz only while Video Info is open **(my call; nothing else needs it, and polling costs wakeups)**. It feeds the tag and Video Info. The macOS "High Dynamic Range" switch for an external display shows up here as a potential headroom of 1.0 or more.
+
+**Images Reel makes from HDR frames.** Screenshots (Cmd+S), thumbnails, the next-episode card image, Now Playing artwork and shot mode all go through one `HDRToneMapper` in ReelEngine: `CIImage(cvPixelBuffer:)` (linear, unclamped, 1.0 = reference white), `CIToneMapHeadroom` with source headroom = MaxCLL / 203 (else mastering peak / 203, else `kCGDefaultHDRImageContentHeadroom`, 4.93; HLG uses 1000 / 203) and target headroom 1.0, rendered to 8-bit sRGB. Subtitles are drawn on the screenshot after tone mapping, at full white. Reel writes no HDR PNG or gain-map image **(my call: an SDR PNG looks the same everywhere it is pasted)**. The thumbnail session decodes HDR keyframes to `x420` at 384 x 216 and tone-maps them; SDR keyframes keep the BGRA path of M2.
+
+**Offline tests** (all headless, on generated fixtures, section 14):
+
+- Fixtures `hdr/pq_ramp_hevc.mkv` and `.mp4`, `hdr/hlg_ramp_hevc.mkv` and `.mp4` (lossless x265 Main10), `hdr/pq_ramp_av1.mkv` (container colour tags removed, so the frame probe must find them) and `hdr/pq_ramp_vp9.webm` (profile 2), plus `hdr/sdr_ramp_h264.mp4`. Each frame is a row of flat neutral patches at known levels (PQ: 0, 0.1, 1, 10, 100, 203, 400, 1000, 4000, 10000 nits; HLG: signal 0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0) and three BT.2020 primaries at reference white, written as raw 10-bit YUV by `scripts/make-ramp.py` and encoded by Homebrew ffmpeg. PQ files carry mastering metadata (P3 D65, 1000 nits) and MaxCLL 1000, MaxFALL 400.
+- `reelctl hdr <file> [--decoder hw|sw] [--display sdr|xdr|external|headroom=X] [--setting full|limited|off] [--screenshot png] --json` reports: the content classification, the Dolby Vision record, the attachments on a decoded buffer, the decoded 10-bit Y code at each patch centre against the generated code, the `DynamicRangePlan` for the simulated display and setting, and the tone-mapped 8-bit sRGB value of each patch through `HDRToneMapper`.
+- Pass rules: decoded patch codes within 2 of the generated codes on HEVC (4 on AV1 and VP9), on both decoders; all colour attachments present and correct, including MDCV and CLL bytes for PQ; tone-mapped neutral patches strictly increasing up to the clip point with at least 7 distinct values, 0 nits at most 3, the 203-nit patch (and HLG 0.75) between 190 and 250, R, G and B of each neutral patch within 3 of each other. (A PQ frame shown without tone mapping would put the 203-nit patch at 148, so the rule catches the most common bug.)
+- Layer configuration: `DynamicRangeLayerTests` builds `PlayerContentView` without a window, applies plans and reads back `preferredDynamicRange` on the display, subtitle and chrome layers.
+- Shot mode: the `hdr-badge`, `video-info` and `hdr-sdr` scenarios use the PQ ramp, so the background screenshot is checked numerically too (`shot-stats --patch`).
+
+**Hands-on check for the user** (cannot be automated without a visible window):
+
+1. Built-in XDR display, brightness at about 50%: open `build/fixtures/hdr/pq_ramp_hevc.mp4` in Reel and in QuickTime Player side by side. The 1000-nit patch should be visibly brighter than the white menu bar in both; the desktop, menu bar and Reel's controller must not dim in Reel more than in QuickTime.
+2. Drag the window to an SDR external display and back: the tag gains and loses "SDR", the 400 and 1000 nit patches stay distinct on the SDR display, nothing flashes.
+3. An external HDR display with HDR on in System Settings: same as step 1.
+4. Settings, High dynamic range, Limited and then Off: highlights get dimmer, the picture stays correct.
+5. Cmd+S on the ramp: the PNG looks like the SDR display in step 2.
+
+### 7.8 Dolby Vision (M3)
+
+- Detection: the Matroska (`BlockAdditionMapping`) and MP4 (`dvcC`, `dvvC`, `dvwC`) demuxers already export the configuration record as `AV_PKT_DATA_DOVI_CONF` coded side data. `DolbyVisionProbe` reads it into `MediaInfo.dolbyVision` (profile, level, RPU, EL and BL present flags, `dv_bl_signal_compatibility_id`). `reelctl probe --json` prints it.
+- Policy (`DolbyVisionPolicy`, pure, in ReelCore), by compatibility id:
+
+| Compatibility id | Typical profiles | What plays | Shown as |
+|---|---|---|---|
+| 1 | 8.1, 7 (MEL/FEL base) | HDR10 base layer, PQ, with its MDCV and CLL | tag "Dolby Vision", Video Info "Playing the HDR10 base layer" |
+| 6 | 7 (Blu-ray) | HDR10 base layer | same |
+| 4 | 8.4 | HLG base layer | tag "Dolby Vision", Video Info "Playing the HLG base layer" |
+| 2 | 8.2, 9 | SDR base layer | tag "Dolby Vision", Video Info "Playing the SDR base layer" |
+| 0 | 5, 10.0 | the decoded base, which is IPT and not displayable correctly | tag "Dolby Vision 5" with a warning glyph, note (9.13) |
+
+- The RPU (NAL type 62) and enhancement layer (type 63) are passed through untouched; VideoToolbox and libavcodec ignore them for the base layer. The non-reference skipping of 7.5 never classifies types 62 and 63 as droppable VCL units (a test covers it). `dvh1` and `dvhe` sample entries use the `hvcC` from the configuration and the HEVC codec type, `dav1` uses `av1C`.
+- **Profile 5 (my call): note only in M3.** Showing it correctly needs the RPU reshaping and IPT to RGB conversion applied per frame (libplacebo does this; FFmpeg 9 parses the RPU into `AVDOVIMetadata` in libavcodec, LGPL), which means a GPU stage between decode and the display layer. That is a large piece of work for a format the user's library may not contain (section 1 lists BluRay x265 and YouTube downloads; profile 5 comes from streaming WEB-DL releases). Whether VideoToolbox would apply profile 5 itself for a `dvh1` session is unknown and cannot be tested without a real profile 5 sample, which no generator can make. M3 therefore plays the base with the note and keeps a probe: `reelctl probe --dovi-session <file>` creates a `kCMVideoCodecType_DolbyVisionHEVC` session, decodes 10 frames and reports the output buffers' attachments and mean chroma, so the user can run it once on a real file (hands-on) and decide whether M4 needs the reshaping path.
+- Fixtures: `hdr/dv81.mp4`, `hdr/dv81.mkv` (the PQ ramp with a `dvvC` record, profile 8 level 6, compatibility 1), `hdr/dv84.mp4` (the HLG ramp, compatibility 4) and `hdr/dv5.mp4` (sample entry `dvh1`, `dvcC`, profile 5, compatibility 0), made by `scripts/make-dovi.py`, which inserts the record into the `stsd` entry of an ffmpeg-written MP4 (moov after mdat, so no chunk offsets move) and remuxes the mkv from it. The pixels are the ramps, so 8.1 must decode to the same codes as `pq_ramp_hevc.mp4`.
+
+### 7.9 Energy (M3)
+
+Research shows people judge a player's battery use against QuickTime (VLC measured 43 Energy Impact against QuickTime's 7 to 10). Reel already uses hardware decode for every common codec; M3 makes sure it does nothing when nothing changes, and measures it.
+
+What runs in each state (`EnergyPolicy`, pure, in ReelCore; the engine and app read it):
+
+| | Playing, visible | Paused | Playing, occluded | Ended or no file |
+|---|---|---|---|---|
+| Video decode and enqueue | yes | none after the shown frame (and the 8-frame decoded queue is not refilled) | stops 1 s after occlusion | none |
+| Demux read-ahead | to the 20 s limit | finishes the current fill, then the thread blocks on a condition (no polling) | audio needs only | none |
+| Audio decode | yes | none | yes | none |
+| Time events to the UI | 10 Hz chrome visible, 1 Hz hidden | one on each state change and seek, none periodic | 1 Hz (Now Playing) | none |
+| Subtitle renders | while an event is active or due within 1 s | none (one render on seek) | none | none |
+| Thumbnail generation | yes (utility QoS) | continues while the pointer moved in the window in the last 10 s, then suspends | suspended | suspended |
+| Display sleep assertion and App Nap activity | held | released | released | released |
+
+- **Occlusion** (my call): `NSWindow.occlusionState` without `.visible` (fully covered, minimised, another Space) for 1 s while playing, and PiP not active, stops video decode and enqueue; audio keeps playing. When the window becomes visible, the engine runs an exact seek to the synchronizer's current time with the keyframe preview, so a picture appears within the scrub budget and the exact frame within 300 ms for the HEVC fixture. This saves the whole video decode for people who listen with the window hidden; the cost is a short preview on return.
+- Every dispatch timer gets a leeway of 10% of its interval so the system can coalesce wakeups. In Low Power Mode (`ProcessInfo.isLowPowerModeEnabled`) thumbnail generation stops after the coarse pass (every 8th position).
+- There is no `CADisplayLink` in Reel; the subtitle renderer is a dispatch timer (8.6), and the rules above gate it.
+
+**Measurement.** `reelctl energy-bench <file> --mode play|paused|occluded --seconds 20 [--warmup 5] --json` runs one `PlaybackEngine` headless with no audio renderer (the synchronizer follows the host clock) and a standalone display layer. If that layer does not consume frames at the clock rate off screen, the bench uses a `ClockedVideoSink` that releases frames at their presentation time and says so in the report. It reads `proc_pid_rusage(RUSAGE_INFO_V6)` for its own process before and after the window: CPU time, interrupt wakeups, package idle wakeups, billed energy, instructions. Hardware decode runs in a `VTDecoderXPCService` process, so the bench also records the PIDs of `VTDecoderXPCService` processes that appeared after its session was created and reads their usage the same way (same user, no privileges; reported as `xpc` and left out when not found). Engine counters (frames decoded, packets read, subtitle renders, time events, thumbnails decoded) are reported per window. `occluded` mode sets the engine's occluded flag after warm-up and, at the end, clears it and reports the resync latency.
+
+Budgets (the bench's own process, 20 s window after 5 s warm-up, measured on the M5 Pro; the M3 build records the M2 baseline in section 16 first, and a budget that the baseline already beats by more than 3 times is tightened to 2 times the measured value):
+
+| Mode | Fixture | CPU (of one core) | Wakeups per second | Counters |
+|---|---|---|---|---|
+| play | `hevc10_1080p24.mkv` | at most 4% | at most 150 | frames decoded within 2% of 24 x 20 |
+| play | `av1_2160p60.mkv` | at most 10% | at most 300 | frames within 2% of 60 x 20 |
+| paused | both | at most 0.3% | at most 5 | 0 frames decoded, 0 packets read, 0 subtitle renders, 0 time events |
+| occluded | `hevc10_1080p24.mkv` | at most 2% | at most 60 | 0 video frames decoded after the first second; resync at most 300 ms |
+
+**Hands-on check for the user** (QuickTime is a GUI app and cannot run in a test): open `build/fixtures/h264_1080p30.mp4` and `build/fixtures/hdr/pq_ramp_hevc.mp4` in QuickTime Player and in Reel in turn, play each for 2 minutes in a window, and read Activity Monitor's Energy tab ("Avg Energy Impact" after 2 minutes) or run Instruments with the Power Profiler template. Target: Reel at most 1.5 times QuickTime on the same file, and Reel at or near 0 while paused. Record the numbers in section 16.
+
+### 7.10 Damaged and odd files (M3)
+
+Reliability decided the research reviewer's choice of player more than picture quality. M3 makes Reel predictable on files that are cut short, corrupt, or unusual, and proves it with a generated corpus.
+
+- **Open failures** are classified into `MediaProblem` (ReelCore) with fixed copy (9.14): `.notMedia` (no demuxer matched), `.cutShort` (a known container header, then end of file before the first video or audio packet), `.noPlayableStream`, `.unsupportedCodec(name)`, `.unreadable(reason)` (I/O error, permission), `.volumeGone(name)` (the path is under `/Volumes/<name>` and that volume is not mounted). Each has a title, a one-sentence explanation and a technical detail line with FFmpeg's error string.
+- **Corrupt data during playback**: a packet that fails to decode, or a decoder error event from the receiver, does not stop playback. Video waits for the next keyframe (the decoder is flushed if it reports an error state), audio drops the bad packet and re-anchors its running timestamp (7.4). One OSD per damaged region, at most one per 10 s ("Skipped damaged video at 12:04", or "audio"), and `damagedFrames` in Video Info. Three consecutive failures after a keyframe on the hardware path still switch to software at the next keyframe (7.3).
+- **Cut-short files** (`.cutShort` that opened, or any file whose index promises more than the data holds): the demuxer records the last readable presentation time (`dataEnd`) when it hits end of file early, and for MP4 compares the last sample's file offset with the file size at open. The seek bar keeps the header duration and draws the tail faint (9.14); times count to `dataEnd`; a seek past it lands on the last frame with the OSD "No data after 38:02"; the end of data is treated as the end of the file for resume and auto-advance.
+- **Drive disconnected**: a read error with `ENXIO`, `EIO` or `ENOENT` while the file's volume is no longer in `/Volumes` pauses, keeps the last frame (dimmed), saves the resume entry and shows the card (9.14). Reel listens for `NSWorkspace.didMountNotification`; when a volume with that name mounts and the file at the same path has the same content key, it reopens at the saved time and plays if it was playing. Try Again does the same at once.
+- **Odd but valid files** must play: mid-stream resolution change (H.264 SPS change in TS: a new format description at the next keyframe), audio layout change (re-create the ASBD, flush audio), MPEG-TS timestamp wrap at 2^33 (unwrap in the demuxer), negative or large start times, variable frame rate, a single-frame file, audio-only files with cover art, odd dimensions (hardware refuses, software plays), 4:2:2 and 4:4:4 (software path; listed as untested in M1), streams without a keyframe index (intra refresh: the planner falls back to the stream start and the keyframe preview is skipped), 64 tracks, and a 240-character file name with CJK and emoji.
+- **No crash, no hang**: every FFmpeg call that can fail has its return value checked (most already do); every blocking wait in the engine has a timeout that turns into a classified error; a watchdog in the engine fails an open that has not produced a result in 10 s with `.unreadable("timed out")`.
+
+**Corpus and soak.** `scripts/make-corpus.py` (stdlib only, run with `python3 -I`, fixed seed list) writes `build/fixtures/corpus/` from 8 small base fixtures (2 s each: H.264 mp4 with moov at the end and at the front, HEVC mkv, AV1 mkv, VP9 webm, TS, AVI, FLV): truncations at 1, 10, 50 and 90% of the bytes, the first 4 KB only, a 4 KB random overwrite at 25, 50 and 75%, bit flips at a rate of 1e-4 with 3 seeds, a zero-filled middle 10%, and the two halves swapped; about 100 files, under 150 MB. `scripts/fixtures.sh` adds `odd/` with the files listed above plus a 0-byte file, a text file named `.mp4`, 1 MB of random bytes named `.mkv` and a ProRes file (not in the LGPL decoder list, so `.unsupportedCodec`).
+
+`reelctl soak <file|dir> [--seed S] [--ops N] [--seconds N] [--asan-expected] --json` runs each file in its own child process (`reelctl soak-one`, tracked by PID, stopped by PID after 30 s), so a crash is a signal exit in the report instead of the end of the run. The child opens the file, plays at rate 4 for a few seconds on the host clock, runs N seeded operations (scrub, exact seek including before 0 and past the end, frame steps, track switches, speed changes, subtitle toggles, close and reopen), closes, and reports: outcome (played or the `MediaProblem` class), operations completed, the longest operation, damaged frames, `dataEnd`, peak RSS, and open file descriptors and threads after close compared with before open.
+
+### 7.11 Small M3 additions
+
+- **Subtitle visibility** (v, already bound in M2): the OSD names the key ("Subtitles Hidden, press V to show"), and visibility resets to shown when the next file opens, so a stray press never carries over **(my call; IINA removed its default binding because users lost subtitles to it)**.
+- **Add Subtitle File** gets Shift+Cmd+O (Reel's choice; IINA has no default) in the Subtitles menu and the panel tooltip. Dropping a subtitle file on the window already works (M2).
+- **Output device**: System Default (follows Sound settings) or a chosen device, stored by `AudioDeviceUID` with its name in `state.json`. The list comes from Core Audio (`kAudioHardwarePropertyDevices`, devices with output streams; reading it needs no permission and makes no sound), refreshed on the device-list property listener. The choice applies through `AVSampleBufferAudioRenderer.audioOutputDeviceUniqueID`. If the chosen device is gone at open or disappears while playing, playback continues on the system default with the OSD "Audio: MacBook Pro Speakers" and the choice is kept for when it returns. In Settings and as Audio, Output Device. `reelctl devices --json` lists the devices without attaching any renderer.
 
 ## 8. Subtitles (M2)
 
@@ -385,6 +499,35 @@ Native `NSMenu`s, mockup `png/17`. Items with a Command or Control shortcut show
 - Default app: `CFBundleDocumentTypes` with role Viewer and rank Default for mp4, m4v, mov, mkv, webm, avi, flv, ts, m2ts, mts, ogv and the audio types; `UTImportedTypeDeclarations` for the types macOS does not declare (`org.matroska.mkv`, `org.webmproject.webm`, `com.adobe.flash-video`, `public.avi` where missing). The user sets Reel as the default player in Finder themselves; Reel never calls LaunchServices to claim it.
 - Folder access: the episode list and external subtitles need to list the file's folder. Reel is not sandboxed, so macOS asks once per protected location (Documents, Downloads, Desktop, removable volumes). Info.plist carries `NSDocumentsFolderUsageDescription`, `NSDownloadsFolderUsageDescription`, `NSDesktopFolderUsageDescription` and `NSRemovableVolumesUsageDescription` ("Reel lists the other videos and subtitle files in the folder of the video you open."). If access is denied, the episode buttons hide and only embedded subtitles are offered; nothing else breaks. Tests and shots never trigger the prompt: they only list folders inside the repo's `build/fixtures` (or a `mktemp` dir), from the agent's shell, which already has access to them.
 
+### 9.13 Dynamic range tag, Video Info and the Dolby Vision note (M3)
+
+Mockups `png/19` to `png/22`.
+
+- **Tag.** After the title in the title bar, 8 pt gap, a tag names the content's dynamic range: "HDR10", "HLG", "Dolby Vision", "Dolby Vision 5". SDR files have none. 18 pt tall, radius 5, padding 0 x 7, 10.5 pt semibold with +3% tracking, white 88% on white 12% with a 0.5 pt white 28% ring (fixed colours: it always sits on the black title scrim). When the picture is tone-mapped to SDR (setting Off, or a display with potential headroom 1.0) a detail follows at 500 weight, white 62%: "SDR". Profile 5 adds an 11 pt warning glyph (`exclamationmark.triangle.fill`, system yellow). The tag fades with the title and the chrome. The title truncates in the middle before the tag shrinks.
+- The tag is a button: hover background white 20%, tooltip "This display shows standard dynamic range, so the HDR picture is tone-mapped to fit it." when tone-mapped, else "High dynamic range. Click for details."; click toggles Video Info.
+- **Video Info** (Cmd+I, the key IINA uses for its Inspector; also Video, Video Info, and the tag). A panel on the panel material, 344 pt wide, radius 16, padding 6, at the top right, 20 pt from the right edge and 48 pt from the top (under the title scrim). Header "Video Info" 13 semibold with the key on the right at tag opacity. Rows are a two-column grid (key 92 pt at secondary opacity, value at primary 88%, 12 pt, monospaced digits), grouped by separators: Video (codec, profile, size, frame rate) and Decoder; Range (with a second line for Dolby Vision saying which layer plays), Colour (primaries, transfer, range), Mastering and Light level (PQ only); Display (name, HDR or SDR) and Headroom ("3.2× now, 16× at most" with a 4 pt meter); Audio; Frames (dropped, damaged). Values update in place at most twice a second; nothing animates. Esc, Cmd+I or a click outside closes it. It is read-only: no copy button, no tabs.
+- **Dolby Vision profile 5 note.** On open, in the OSD position (9.5), the OSD component in a two-line variant: warning glyph (system yellow in dark, `#b25000` in light for contrast on the light material), "Dolby Vision profile 5 can't be shown correctly" (15 semibold), then "Reel plays the picture without its Dolby Vision colour data, so colours look wrong, often green or purple. Profile 8 files play correctly." (12 regular, secondary), then Show Info and OK capsules. It stays until OK, Esc or 10 s, whichever is first, and is shown once per file per session. Playback is not blocked. Max width 452 pt.
+
+### 9.14 Failure and damage states (M3)
+
+Mockups `png/23` to `png/26`. These replace M1's plain error line in the empty state.
+
+- **Failure card** (open failed, drive gone). Centred in the video area, on black (open failed) or on the last frame dimmed to 38% brightness and 70% saturation (drive gone): the 60 pt tile of the empty state with a 28 pt glyph (`doc.badge.exclamationmark`-style for files, `externaldrive` for drives), 18 pt, title 15 semibold white 86%, file name 12 medium white 56% middle-truncated to 520 pt, 12 pt, explanation 13 regular white 72% at most 46 characters per line, 8 pt, detail 11 regular white 50%, 20 pt, capsule buttons 26 tall (secondary white 14%, primary system blue). Fixed colours, as the video area is always black. Copy:
+
+| Problem | Title | Explanation | Buttons |
+|---|---|---|---|
+| `.cutShort` | This file can't be played | The file ends before its first video frame. It may still be downloading, or the copy was cut short. | Show in Finder, Open Another File… |
+| `.notMedia` | This file can't be played | Reel doesn't recognise this as a video or audio file. | Show in Finder, Open Another File… |
+| `.noPlayableStream` | This file can't be played | The file has no video or audio that Reel can play. | Show in Finder, Open Another File… |
+| `.unsupportedCodec(name)` | This file can't be played | The video uses \(name), which Reel can't decode. | Show in Finder, Open Another File… |
+| `.unreadable(reason)` | This file couldn't be read | macOS reported a read error. The disk may have a problem, or Reel may not have access to this folder. | Try Again, Open Another File… |
+| `.volumeGone(name)` | “\(name)” was disconnected | Reel saved your place at \(time) and will continue when the drive is connected again. | Close File, Try Again |
+
+  The detail line is the technical reason ("Matroska header found, then the file ends after 4 KB (FFmpeg: End of file).") and is also logged. During auto-advance a next episode that fails is skipped with an OSD, as in M2; the card is for files the user opened.
+- **Truncated tail** on the seek bar: the part after `dataEnd` keeps the track but at primary 7% instead of 18%, with a 2 x 12 pt tick at primary 55% at `dataEnd`. The hover pill over the tail shows the time plus "No data after 38:02" at secondary weight, without a thumbnail. Remaining time counts to `dataEnd`.
+- **Damaged data OSD**: the standard OSD with the warning glyph at the OSD symbol opacity: "Skipped damaged video at 12:04" or "Skipped damaged audio at 12:04".
+- Audio that cannot be decoded at all (decoder open fails): video plays, the OSD says "Audio can't be played: TrueHD 7.1", the audio panel lists the track as disabled with the reason (as subtitles do, 8.7).
+
 ## 10. Key bindings
 
 IINA's defaults, because the user never changed them. M1 binds the items without a tag; M2 items are marked. The M2 rows were checked against IINA's own `iina-default-input.conf` (read from the installed app bundle, read-only, on 2026-10-24); the M1 draft of this table had the delay keys as lowercase z / x / c, which IINA does not use.
@@ -413,13 +556,15 @@ IINA's defaults, because the user never changed them. M1 binds the items without
 | Shift+C (M2) | Subtitle delay 0 |
 | Shift+9 "(" / Shift+0 ")" (M2) | Audio delay +0.5 / -0.5 s; with Alt +0.1 / -0.1 s |
 | Shift+- "_" (M2) | Audio delay 0 |
-| v (M2) | Show / hide subtitles |
+| v (M2) | Show / hide subtitles (M3: the OSD names the key; resets to shown for the next file) |
 | r / Shift+R, t (M2) | Move subtitles up / down by 1% |
 | Shift+G / Shift+F (M2) | Subtitle size +10% / -10% (45 to 50, 45 to 40) |
 | Ctrl+Cmd+S / Ctrl+Cmd+A / Ctrl+Cmd+V (M2) | Cycle subtitle / audio / video track |
 | Ctrl+Cmd+P (M2) | Picture in Picture (Reel's choice; IINA's input.conf has no binding) |
 | Cmd+S (M2) | Screenshot to ~/Pictures/Reel |
 | Cmd+L (M2) | A-B loop: set A, set B, clear |
+| Cmd+I (M3) | Video Info (IINA: Inspector) |
+| Shift+Cmd+O (M3) | Add Subtitle File (Reel's choice) |
 | Shift+Cmd+L (M2) | File loop on / off |
 | media fast-forward / rewind (M2) | Seek +15 / -15 s |
 
@@ -434,6 +579,10 @@ A small Settings window (`Cmd+,`), SwiftUI form, four items:
 - Show remaining time (on).
 - Show a keyframe preview while seeking (on).
 - Hardware decoding (on; off forces software, for diagnosis).
+
+M3 adds two rows (mockup `png/27`), grouped under Playback, Video and Audio headings:
+- High dynamic range: Full, Limited or Off (default Full; 7.7).
+- Output device: System Default or a listed device (7.11; the same list is in Audio, Output Device).
 
 Volume, remaining-time toggle, window frame and controller position are remembered state, not settings. First-run volume is 47, the user's IINA level **(my call)**.
 
@@ -453,8 +602,8 @@ Volume, remaining-time toggle, window frame and controller position are remember
 
 | Path | Contents |
 |---|---|
-| `REEL_HOME/settings.json` | the four settings |
-| `REEL_HOME/state.json` | volume, remaining-time toggle, window frame, controller fractions |
+| `REEL_HOME/settings.json` | the four settings, (M3) the High dynamic range value |
+| `REEL_HOME/state.json` | volume, remaining-time toggle, window frame, controller fractions, (M3) output device UID and name |
 | `REEL_HOME/resume.json` | resume entries keyed by content key, versioned schema |
 | `REEL_HOME/logs/reel.log` | local log, rotated at 5 MB, never sent anywhere |
 | `REEL_HOME/Caches/thumbnails/<content key>.thumbs` | (M2) thumbnail pack: header, index of (pts, offset, length), JPEG blobs; 500 MB cap, oldest evicted |
@@ -583,6 +732,8 @@ Rules for every test, bench and script:
 
 **Acceptance** (`scripts/accept.sh offline`): Haul's pattern (`record id status note`, results in `build/accept/<timestamp>/results.tsv`, exit 1 on any FAIL, a missing test counts as FAIL). Criteria are in the brief and section 16.
 
+**M3 additions.** Fixtures `hdr/` (lossless PQ and HLG patch ramps in HEVC, AV1 and VP9, an SDR control, Dolby Vision 8.1, 8.4 and 5 records), `odd/` (unusual but valid files and three non-media files) and `corpus/` (seeded corruptions of 8 small base files, `scripts/make-corpus.py`). New tools `reelctl hdr`, `energy-bench`, `soak`, `devices` (section 16). `check.sh` gains two gates: `av-sync` (both sync fixtures, 20 ms) and `soak-smoke` (12 corpus files). `shot-stats --patch x y w h` reports the mean sRGB value of a region so the HDR shots can be checked numerically. AddressSanitizer runs only in acceptance (`swift build -c debug --sanitize=address` into its own scratch path), on a 24-file corpus subset. Energy and HDR on-screen behaviour have hands-on checklists (7.7, 7.9) for the user; no test shows a window to check them.
+
 ## 15. Visual design
 
 ### 15.1 Base (M1)
@@ -656,6 +807,42 @@ Secondary text is 68% in light because the impeccable measurement found M1's 55%
 Rejected, on purpose: OSD text on repeated key presses (changes in place, M1 rule; keyboard actions run hundreds of times); keyboard track cycling (OSD only, no panel); individual subtitle lines (never animated by Reel; ASS `\fad` stays authored); the thumbnail pill following the pointer (1:1, no smoothing); switching episodes (the old frame stays until the new first frame, like a seek; no cross-fade); controller relayout on window resize (resizing is direct manipulation); the speed preset selection (instant).
 
 **Accessibility.** Hit targets at least 28 pt (play 32, steppers 30 x 26, panel rows 30). Every control has an accessibility label and value ("Subtitles, Chinese (Simplified)", "Speed, 1.5 times"). Measured in the mockup: controller times 8.2:1 (light) and 10.9:1 (dark); panel labels 9.0:1 and 11.9:1. With Reduce Transparency the materials become `windowBackgroundColor` at 96% with the same hairline. Subtitle white on its black outline is about 21:1 whatever the frame.
+
+### 15.3 M3 surfaces
+
+Mockup frames 19 to 27 in `docs/mockup/index.html`, rendered by `docs/mockup/render.sh` into `docs/mockup/png/19-*` to `27-*` (light and dark, 1280 x 720 pt at 2x). They extend the M2 tokens; nothing in 15.2 changes. The Dolby Vision colour cast in `png/22` is an illustration (a hue rotation of the generated scene), not a measured result. Checked with impeccable (craft floor and the mechanical detector, no findings) and one fix round: the info rows lost their default list margins, the tooltip moved clear of the pointer, the truncated tail became fainter than the unplayed track instead of darker, and the settings menu was no longer clipped.
+
+New tokens:
+
+| Token | Light | Dark | Used for |
+|---|---|---|---|
+| Range tag | white 88% text on white 12%, ring white 28% (fixed) | same | title bar tag |
+| Range tag detail | white 62%, weight 500 | same | "SDR" |
+| Warning glyph | `#b25000` on material, system yellow on the scrim | system yellow | DV note, tag, damaged OSD in dark |
+| Missing data | primary 7% track, tick primary 55% | same | truncated tail |
+| Failure text | white 86 / 72 / 56 / 50% (title, explanation, file, detail) | same (fixed, on black) | failure card |
+| Dimmed frame | brightness 38%, saturation 70% | same | drive gone |
+
+Type: tag 10.5 semibold +3%; Video Info header 13 semibold, rows 12 regular with monospaced digits, second lines 11.5; note title 15 semibold, body 12 regular; failure title 15 semibold, explanation 13 regular, file 12 medium, detail 11 regular. Radii: tag 5, Video Info 16 (rows unboxed), note 14 (the OSD), failure tile 16, capsules round.
+
+**Motion** (from the apple-design pass: respond at once, enter and leave along the same path, no bounce on anything that did not come from a gesture; Reduce Motion turns every entry below into a 0.1 s opacity change):
+
+| Surface | What moves | Duration and curve | Purpose |
+|---|---|---|---|
+| Range tag | nothing of its own; fades with the title and chrome | chrome timing (9.2) | stays part of the title |
+| Tag detail "SDR" appearing or leaving | opacity cross-fade | 0.15 s ease-in-out | the change is noticed without a jump |
+| Video Info, open | opacity 0 to 1, scale 0.96 to 1 anchored at its top right corner (where the tag is) | 0.16 s ease-out | it grows from the tag that opened it, like the track panels |
+| Video Info, close | opacity | 0.12 s ease-in | quick exit |
+| Video Info values | none (text changes in place) | | numbers update twice a second; motion would flicker |
+| DV note | the OSD entry (opacity, scale 0.96 to 1) | 0.12 s in, 0.25 s out | same component as every OSD |
+| Failure card on open failure | opacity | 0.2 s ease-out | calm; a failure gets no shake or bounce |
+| Drive gone | frame dims to 38% brightness, then the card fades in | 0.3 s ease-out, card 0.2 s after 0.1 s | avoids an abrupt brightness drop; the reverse on reconnect, 0.2 s |
+| Truncated tail, damaged tick | none | | state, drawn statically |
+| Damaged OSD | standard OSD | 0.12 s in, 0.25 s out | |
+
+Rejected: animating the headroom meter, pulsing the warning glyph, sliding the failure card in, and any animation when the window changes display.
+
+**Accessibility.** The tag has the label "Dynamic range, HDR10" (plus ", tone-mapped to standard range" when it shows "SDR") and the button trait. Video Info rows read as "key, value". The note is announced through `NSAccessibility.post(.announcementRequested)` once. Failure cards put focus on the primary button and Return activates it. Targets, measured by M3-7 on the background shots: every text at least 4.5:1 against its measured background (failure detail text, 11 pt at white 50% on black, is the closest case at about 5.3:1 by calculation), Video Info keys at the 15.2 secondary values.
 
 ## 16. Milestones
 
@@ -732,6 +919,50 @@ First measured on 2026-10-24 by `scripts/accept.sh offline` (results in `build/a
 
 Fixed after the first acceptance run: `EpisodeList.scan` compared URLs by spelling; `reelctl thumbs` printed `warmup_ms` as about 1.8e13 (the report's finish time was set by a `defer` after the return value was copied). Later: screenshots go to `REEL_HOME/Screenshots` when `REEL_HOME` is set and `REEL_SCREENSHOTS` is not; tests that raced (restarted thumbnails, the VP9 hand-off count, the audio flush restart, auto-advance) wait on conditions instead of fixed sleeps or 2 s deadlines.
 
+### M3: trusted HDR, low energy, no surprises on bad files
+
+Why: a user-research pass (2026-10-25; Reddit could not be read, so it rests on the IINA tracker, the Firecore and VideoLAN forums, MacRumors and Hacker News) ranked the P1 gaps for Reel as: HDR10 and HLG that are correct on the built-in XDR display and external displays without dimming the screen; Dolby Vision that never shows wrong colour silently; an energy budget against QuickTime; and reliability on odd and damaged files with A/V sync kept under a gate. Seeking, the headline of M1 and M2, stays as it is and keeps its gates.
+
+Scope (detailed in 7.7 to 7.11, 9.13, 9.14, 11.1 and 15.3):
+
+- HDR10 and HLG: complete colour attachments on both decode paths, `DynamicRangePlan` and the display layer's `preferredDynamicRange`, chrome and subtitles at SDR white, PiP subtitles at reference white, `DisplayRangeMonitor`, `HDRToneMapper` for screenshots, thumbnails, artwork and shots, the High dynamic range setting.
+- Dolby Vision: detection, the compatibility policy, the profile 5 note, the `--dovi-session` probe.
+- Energy: `EnergyPolicy`, paused and occluded behaviour, timer leeway, Low Power Mode thumbnails, `reelctl energy-bench`, the hands-on QuickTime comparison.
+- Robustness: `MediaProblem` and the failure card, damaged-data skipping, `dataEnd` and the truncated tail, drive disconnect and automatic reopen, odd-file fixes, the corpus, `reelctl soak`, an AddressSanitizer pass.
+- Small items: v OSD and reset, Shift+Cmd+O, output device choice, Video Info.
+
+Not in M3: Dolby Vision RPU reshaping, HDR10+ dynamic metadata beyond what VideoToolbox propagates, audio passthrough or spatial audio settings, AirPlay, user key remapping.
+
+Build order. Seven tasks; tasks that run in parallel own disjoint files (the brief lists them).
+
+1. **M3-1 Core contracts and fixtures.** ReelCore: `DynamicRange` (content classification), `DolbyVisionConfig` in `MediaInfo`, `DolbyVisionPolicy`, `DynamicRangePlan`, `HDRSetting` in settings, `EnergyPolicy`, `MediaProblem` with its copy, `OutputDeviceChoice`, `PlayerEngine` additions with default no-ops (`setOccluded`, `setOutputDevice`, energy counters, events `.dynamicRange`, `.dataEnd`, `.damaged`, `.problem`), the Shift+Cmd+O and Cmd+I bindings; the Dolby Vision hook in the demuxer's stream info; fixtures `hdr/` (`make-ramp.py`, `make-dovi.py`) and `odd/`; `reelctl` stubs for `hdr`, `energy-bench`, `soak`, `devices`.
+2. **M3-2 HDR and Dolby Vision engine**, **M3-3 Energy engine** and **M3-5 UI surfaces**, in parallel after M3-1.
+3. **M3-4 Robustness engine** after M3-3 (both change `PlaybackEngine`).
+4. **M3-6 App shell** after M3-2, M3-4 and M3-5: layers and plans, occlusion and screen observers, Video Info and output device menus, Settings rows, drive mount handling, shot mode inputs.
+5. **M3-7 Gates, shots and acceptance**: `check.sh` gains `av-sync` and `soak-smoke`, `accept.sh` gains the M3 group, `shots.sh` the 8 new scenarios and `shot-stats --patch`, CLAUDE.md commands, measured numbers into this section.
+
+New `reelctl` commands (headless, no window, no audio):
+
+- `hdr <file> [--decoder hw|sw] [--display sdr|xdr|external|headroom=X] [--setting full|limited|off] [--screenshot png] --json` (7.7).
+- `probe <file> --json` gains `dolbyVision`; `probe <file> --dovi-session` (7.8, hands-on only).
+- `energy-bench <file> --mode play|paused|occluded [--seconds N] [--warmup N] --json` (7.9).
+- `soak <file|dir> [--seed S] [--ops N] [--seconds N] --json` and the internal `soak-one` (7.10).
+- `devices --json` (7.11).
+
+Acceptance (each checked by a command; exact commands in the brief and in `scripts/accept.sh m3` once M3-7 lands):
+
+1. All gates green, now including the av-sync gate (both sync fixtures, at most 20 ms sequentially and after 10 seeks) and the soak smoke gate (12 corpus files, no crash or hang); every M1 and M2 criterion still passes.
+2. HDR10 and HLG numbers on the ramps (7.7): patch codes, attachments, plans for SDR, XDR and external displays under each setting, tone-mapped values, PiP subtitle codes, HDR thumbnails, and the layer configuration suite.
+3. Dolby Vision (7.8): profile and compatibility detected in mp4 and mkv, 8.1 decodes to the PQ ramp's codes with an HDR10 plan, 8.4 to the HLG plan, profile 5 yields the note and the warning tag, RPU and EL NAL types never skipped as non-reference.
+4. Energy (7.9): the budget table holds for play, paused and occluded, with zero decode and zero periodic events while paused, and resync after occlusion within 300 ms.
+5. Robustness (7.10): the whole corpus and `odd/` through `reelctl soak` with no signal exit, no operation over 5 s, no descriptor or thread leak, every failure classified with non-empty copy, `dataEnd` within 1 s on the truncated files, playback past the damaged region on the corrupt files with `damagedFrames` above 0, and no AddressSanitizer report on a 24-file subset.
+6. Background shots of the 8 M3 scenarios in light and dark (on top of M2's 16), non-blank, appearance-dependent, the HDR scenarios' patches tone-mapped (203-nit patch region mean 190 to 250), frontmost app unchanged, no window.
+7. Small items: Shift+Cmd+O and the v OSD and reset tested, `reelctl devices --json` lists at least one output device with UID and name without attaching a renderer, the output device choice resolves and falls back as specified.
+
+### M3 status
+
+Design pass done on 2026-10-25 (this section, 7.7 to 7.11, 9.13, 9.14, 11.1, 15.3 and D50 to D68; mockups 19 to 27). Not built yet. The build records here: the M2 energy baseline from `energy-bench` before any M3 change, the measured HDR patch values, the soak totals, and the user's hands-on results (HDR on the XDR and external displays, dimming, QuickTime Energy Impact comparison, the profile 5 probe if they have such a file).
+
 ## 17. Risks
 
 - Real files are heavier than the noise fixtures; real-world exact seeks will be slower than the bench. The keyframe preview is the mitigation, and M2 thumbnails add another.
@@ -742,6 +973,11 @@ Fixed after the first acceptance run: `EpisodeList.scan` compared URLs by spelli
 - `ImageRenderer` shots approximate the material blur; they check layout, type and appearance, not the exact blur.
 - (M2) Picture in Picture, media keys, Now Playing and the folder-access prompt cannot be exercised without a visible app; they are covered by unit tests of the wiring and need a hands-on check by the user.
 - (M2) libass first-frame cost (46 ms in the spike) lands on the subtitle queue, never on the video path, but a track switch may show the new subtitle one frame late.
+- (M3) Whether `AVSampleBufferDisplayLayer` honours `preferredDynamicRange` the way a plain `CALayer` does is not documented; if it ignores it, the layer behaves as AVPlayerLayer does (EDR for tagged HDR buffers) and the setting only affects screenshots. The hands-on check finds out; the plan and tests stay valid either way.
+- (M3) The tone-mapping thresholds (203-nit patch at 190 to 250) assume Core Image's current curve; a macOS update may move values within the range, and the test checks properties rather than exact values for that reason.
+- (M3) The energy bench measures a headless engine; the app adds SwiftUI and the window server. The hands-on QuickTime comparison is the real figure.
+- (M3) Occlusion handling may make the first moment after revealing a window show the keyframe preview instead of the exact frame for up to 300 ms.
+- (M3) Generated corruptions are not real-world damage; the corpus catches crashes and hangs, not every way a real broken file behaves.
 - (M2) Real BluRay PGS tracks can be large (several MB per hour); they are not prefetched, so after a long seek a PGS line can appear up to one display set late.
 
 ## Decisions to review
@@ -797,3 +1033,25 @@ M2 design pass (2026-10-24), also all mine:
 - D47. Secondary text is primary 68% in light (55% in dark) and checkmarks are primary rather than accent, after the impeccable critique measured 3.8:1 and 1.9:1 for the M1-style values on the light material.
 - D48. Folder access goes through the standard usage strings; if the user denies it, episode navigation and sidecar subtitles quietly disappear and everything else works.
 - D49. An active A-B loop or file loop disables auto-advance.
+
+M3 design pass (2026-10-25), from the user-research P1s, also all mine:
+
+- D50. HDR presentation stays with the system: Reel tags every decoded buffer completely and sets the display layer's `preferredDynamicRange`; the layer and window server do EDR, headroom changes, display moves and SDR tone mapping, as for QuickTime. No Metal renderer and no on-screen tone mapper of Reel's own.
+- D51. A three-value setting, High dynamic range: Full (`.high`, default), Limited (`.constrainedHigh`), Off (`.standard`, the system tone-maps to SDR). SDR content is always `.standard`. Limited and Off are the remedy if a display dims the desktop.
+- D52. Controller, panels, OSD and subtitles stay at SDR white: their layers are explicitly `.standard` with untagged sRGB contents. Subtitles composited into HDR frames for PiP use reference white (203 nits PQ, 75% HLG), never the peak.
+- D53. Screenshots, thumbnails, the next-episode image, Now Playing artwork and shot mode tone-map HDR to 8-bit sRGB with Core Image `CIToneMapHeadroom` (source headroom from MaxCLL or mastering peak over 203 nits, else 4.93). No HDR or gain-map files.
+- D54. Display headroom is read on screen-change notifications and polled at 2 Hz only while Video Info is open.
+- D55. A dynamic range tag after the title (HDR10, HLG, Dolby Vision, with "SDR" when tone-mapped; none for SDR) that opens Video Info; Video Info is a read-only panel at the top right on Cmd+I, IINA's Inspector key.
+- D56. Dolby Vision follows `dv_bl_signal_compatibility_id`: 1 and 6 play the HDR10 base, 4 the HLG base, 2 the SDR base; 0 (profile 5 and 10.0) plays the decoded base with a two-line note (until OK or 10 s) and a warning tag. No RPU reshaping in M3; a `reelctl probe --dovi-session` lets the user test VideoToolbox's own handling on a real file.
+- D57. HDR is verified offline with generated lossless patch ramps (PQ and HLG; HEVC, AV1, VP9; Dolby Vision records inserted into the containers) and numeric checks of decoded codes, attachments, plans, tone-mapped values and layer properties; on-screen EDR, dimming and the external display are a short hands-on checklist for the user.
+- D58. Paused means idle: no decode, no read-ahead polling, no periodic time events, no subtitle renders, thumbnails suspended 10 s after the last pointer movement, and the display sleep assertion and App Nap activity released.
+- D59. While playing with the window occluded for 1 s (not in PiP), video decode stops and audio continues; on reveal an exact seek to the clock time with the keyframe preview resyncs within 300 ms.
+- D60. Every dispatch timer gets 10% leeway; Low Power Mode limits thumbnails to the coarse pass.
+- D61. Energy is gated headless by `reelctl energy-bench` (`proc_pid_rusage` of Reel and of the `VTDecoderXPCService` it started, plus engine counters), with budgets per mode; the QuickTime comparison (at most 1.5 times its Energy Impact on the same mp4) is a hands-on Activity Monitor or Instruments check.
+- D62. Damaged media never stops playback: bad packets are skipped to the next decodable frame with one OSD per region (at most one per 10 s) and a counter; truncated files keep the header duration with a faint missing tail and times counting to the end of the data.
+- D63. Open failures show a failure card with one of six classified problems and fixed copy, replacing M1's error line; a disconnected drive pauses on the dimmed last frame and reopens automatically when the same volume and file come back.
+- D64. Robustness is gated by a seeded generated corruption corpus plus odd files run through `reelctl soak` in isolated child processes (crash is a signal exit) with hang, descriptor and thread checks, an AddressSanitizer pass in acceptance, and a 12-file smoke subset plus the av-sync check as new `check.sh` gates.
+- D65. The v key keeps toggling subtitle visibility, its OSD names the key, and visibility resets to shown for the next file.
+- D66. Add Subtitle File gets Shift+Cmd+O (Reel's choice).
+- D67. Output device: System Default or a device chosen by UID, in Settings and in the Audio menu, falling back to the system default with an OSD when it is missing. No passthrough or spatial audio work.
+- D68. Settings gains only High dynamic range and Output device; energy behaviour is not a setting.
