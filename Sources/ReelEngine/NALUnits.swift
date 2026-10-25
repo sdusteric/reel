@@ -167,6 +167,10 @@ public enum NALUnits {
 
     public static func isHEVCRASL(_ nalType: Int) -> Bool { nalType == 8 || nalType == 9 }
 
+    /// Dolby Vision RPU (62) and enhancement layer (63) units ride in the HEVC stream
+    /// (section 7.8). They are not base layer pictures, so they never make a packet skippable.
+    public static func isDolbyVisionUnit(_ nalType: Int) -> Bool { nalType == 62 || nalType == 63 }
+
     /// Inspects the VCL NAL units of one length-prefixed packet.
     /// - Parameter hevcTemporalLayers: hvcC `numTemporalLayers`; HEVC non-reference skipping is
     ///   only safe when it is exactly 1.
@@ -189,7 +193,9 @@ public enum NALUnits {
                 let refIdc = (header >> 5) & 0x03
                 if refIdc != 0 { allDisposable = false }
             case .hevc:
-                guard nalType < 32 else { continue }
+                // An enhancement layer picture may be referenced by later ones: keep its packet.
+                if nalType == 63 { allDisposable = false }
+                guard nalType < 32, !isDolbyVisionUnit(nalType) else { continue }
                 flags.hasPicture = true
                 if (16...20).contains(nalType) { flags.isIDR = true }
                 if nalType == 21 { flags.isCRA = true }

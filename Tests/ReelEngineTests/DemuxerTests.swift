@@ -1,6 +1,8 @@
 import CoreMedia
+import CReelDeps
 import Foundation
 import ReelCore
+import Synchronization
 import Testing
 @testable import ReelEngine
 
@@ -329,5 +331,139 @@ import Testing
             sample = nil
         }
         #expect(released == nil, "freeing the block buffer releases the packet")
+    }
+
+    // MARK: M3 robustness (design section 7.10)
+
+    @Test(arguments: [OddFixture.zero, .text, .random])
+    func bytesNoDemuxerRecognisesAreNotMedia(_ fixture: OddFixture) throws {
+        #expect {
+            _ = try Demuxer(url: fixture.url())
+        } throws: { error in
+            guard case EngineError.notMedia(let detail) = error else { return false }
+            return !detail.isEmpty
+        }
+    }
+
+    @Test func aMatroskaHeaderWithoutAFrameIsCutShort() throws {
+        #expect {
+            _ = try Demuxer(url: fixtureURL("corpus/hevc.head4k.mkv"))
+        } throws: { error in
+            guard case EngineError.cutShort(let detail) = error else { return false }
+            return detail.hasPrefix("Matroska header found, then the file ends after 4 KB")
+        }
+    }
+
+    @Test func anMP4WithoutItsIndexIsCutShort() throws {
+        #expect {
+            _ = try Demuxer(url: fixtureURL("corpus/h264_moov_end.trunc50.mp4"))
+        } throws: { error in
+            guard case EngineError.cutShort(let detail) = error else { return false }
+            return detail.hasPrefix("MP4 header found")
+        }
+    }
+
+    /// MP4 indexes every sample with its offset, so a file cut short has its data end at open,
+    /// and keyframes past the end of the file leave the index.
+    @Test func aTruncatedMP4KnowsWhereItsDataEndsAtOpen() throws {
+        let demuxer = try Demuxer(url: fixtureURL("corpus/h264_faststart.trunc50.mp4"))
+        let dataEnd = try #require(demuxer.dataEnd)
+        #expect(abs(dataEnd.seconds - 0.25) <= 0.1, "\(dataEnd)")
+        #expect(demuxer.keyframeIndex.entries.allSatisfy { $0.pts <= dataEnd })
+        let complete = try Demuxer(url: fixtureURL("corpus/h264_faststart.mp4"))
+        #expect(complete.dataEnd == nil)
+    }
+
+    @Test func aTruncatedMatroskaFileFindsItsDataEndWhenReadingEnds() async throws {
+        let demuxer = try Demuxer(url: fixtureURL("corpus/hevc.trunc50.mkv"))
+        let reported = Mutex<MediaTime?>(nil)
+        demuxer.setDataEndHandler { time in reported.withLock { $0 = time } }
+        demuxer.start()
+        defer { demuxer.stop() }
+        #expect(await demuxer.waitUntil { demuxer.store.isAtEndOfFile })
+        let dataEnd = try #require(demuxer.dataEnd)
+        #expect(abs(dataEnd.seconds - 1.0) <= 0.2, "\(dataEnd)")
+        #expect(reported.withLock { $0 } == dataEnd)
+    }
+
+    @Test func skippedAVIChunksAreCountedFromTheIndex() {
+        // Chunks at 100, 200, 300, 400; packets start 8 bytes after their chunk.
+        let index: [Int64] = [100, 200, 300, 400]
+        #expect(Demuxer.skippedChunks(index, after: 108, before: 208) == 0)
+        #expect(Demuxer.skippedChunks(index, after: 108, before: 408) == 2)
+        #expect(Demuxer.skippedChunks(index, after: 208, before: 208) == 0)
+    }
+
+    @Test func aZeroFilledAVIMiddleCountsItsLostChunks() async throws {
+        let demuxer = try Demuxer(url: fixtureURL("corpus/mpeg4.zeromid.avi"))
+        let damage = Mutex<[DemuxDamage]>([])
+        demuxer.setDamageHandler { found in damage.withLock { $0.append(found) } }
+        demuxer.start()
+        defer { demuxer.stop() }
+        #expect(await demuxer.waitUntil { demuxer.store.isAtEndOfFile })
+        #expect(demuxer.damagedReads > 0)
+        #expect(damage.withLock { $0.reduce(0) { $0 + $1.count } } == demuxer.damagedReads)
+        #expect(damage.withLock { $0.allSatisfy(\.video) })
+    }
+
+    /// Matroska resyncs over a zero-filled middle and says so only in FFmpeg's log.
+    @Test func aDemuxerResyncLoggedByFFmpegCountsAsDamage() async throws {
+        let demuxer = try Demuxer(url: fixtureURL("corpus/vp9.zeromid.webm"))
+        demuxer.start()
+        defer { demuxer.stop() }
+        #expect(await demuxer.waitUntil { demuxer.store.isAtEndOfFile })
+        #expect(demuxer.damagedReads > 0)
+        let clean = try Demuxer(url: fixtureURL("corpus/vp9.webm"))
+        clean.start()
+        defer { clean.stop() }
+        #expect(await clean.waitUntil { clean.store.isAtEndOfFile })
+        #expect(clean.damagedReads == 0)
+        #expect(clean.dataEnd == nil)
+    }
+
+    /// A read error on a drive that is gone stalls the read thread and reports the volume; the
+    /// store does not reach the end of the file, so playback pauses instead of ending.
+    @Test func aReadErrorOnAVanishedDriveStallsInsteadOfEndingTheFile() async throws {
+        let gone = Atomic<Bool>(false)
+        let demuxer = try Demuxer(url: Fixture.h264.url(), volumeCheck: { _ in gone.load(ordering: .acquiring) ? "Media" : nil })
+        let lost = Mutex<String?>(nil)
+        demuxer.setVolumeLostHandler { volume in lost.withLock { $0 = volume } }
+        gone.store(true, ordering: .releasing)
+        demuxer.readFaultForTesting.store(reel_averror(EIO), ordering: .relaxed)
+        demuxer.start()
+        defer { demuxer.stop() }
+        #expect(await demuxer.waitUntil { lost.withLock { $0 } != nil })
+        #expect(lost.withLock { $0 } == "Media")
+        #expect(!demuxer.store.isAtEndOfFile)
+        #expect(demuxer.readError?.contains("Media") == true)
+    }
+
+    /// An SPS change in MPEG-TS gives the GOPs after it their own format (section 7.10).
+    @Test func anSPSChangeInMPEGTSTagsTheGOPsAfterItWithTheNewFormat() async throws {
+        let demuxer = try Demuxer(url: OddFixture.resolutionChange.url())
+        demuxer.start()
+        defer { demuxer.stop() }
+        #expect(await demuxer.waitUntil { demuxer.store.isAtEndOfFile })
+        let keys = demuxer.store.storedKeyframes
+        let formats = keys.map { demuxer.store.videoFormat(atKeyframe: $0) }
+        #expect(demuxer.videoFormat?.width == 1280)
+        #expect(formats.first.map { $0 == nil } == true, "the first GOP is in the format at open")
+        let changed = formats.compactMap { $0 }
+        #expect(!changed.isEmpty)
+        #expect(changed.allSatisfy { $0.width == 1920 && $0.height == 1080 && $0.formatDescription != nil })
+    }
+
+    @Test func timestampsOfAnMPEGTSFileUnwrapAcrossTheThirtyThreeBitWrap() throws {
+        let source = try MediaSource(url: OddFixture.timestampWrap.url())
+        #expect(abs((source.duration?.seconds ?? 0) - 3.0) < 0.1)
+        var last: MediaTime?
+        var count = 0
+        while let packet = try source.readPacket() {
+            guard packet.streamIndex == source.videoStreamIndex, let dts = packet.dts else { continue }
+            if let last { #expect(dts > last, "dts \(dts) after \(last)") }
+            last = dts
+            count += 1
+        }
+        #expect(count >= 70)
     }
 }

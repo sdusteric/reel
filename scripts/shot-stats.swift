@@ -1,5 +1,6 @@
 // Usage: shot-stats <png> [x y w h]
 //        shot-stats <png> --ink [x y w h]
+//        shot-stats <png> --patch x y w h
 // The first form prints "<width> <height> <mean> <stddev> <min> <max>" for the luminance
 // (Rec. 709, 0 to 255) of the whole image, or of the pixel rectangle x y w h (origin top-left).
 // Used by accept.sh to check that background screenshots are the right size, not blank and differ
@@ -7,6 +8,9 @@
 // The second form prints one number: the count of pixels in the rectangle (default the whole
 // image) with luma at least 235 that have a pixel with luma at most 40 within 4 px, which is how
 // white subtitle text with a dark outline looks (design 14 and 16, M2 acceptance 5).
+// The third form prints "<r> <g> <b>": the mean sRGB value (0 to 255, one decimal place of
+// precision is kept) of the rectangle, which is how the HDR shots are checked numerically
+// (design 7.7 and 14: the 203-nit patch of hdr-badge must be 190 to 250).
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -54,12 +58,20 @@ func fail(_ message: String, code: Int32) -> Never {
 
 var args = CommandLine.arguments
 var inkMode = false
+var patchMode = false
 if let flag = args.firstIndex(of: "--ink") {
     inkMode = true
     args.remove(at: flag)
 }
-guard args.count == 2 || args.count == 6 else {
-    fail("usage: shot-stats <png> [x y w h]\n       shot-stats <png> --ink [x y w h]", code: 2)
+if let flag = args.firstIndex(of: "--patch") {
+    patchMode = true
+    args.remove(at: flag)
+}
+guard args.count == 6 || (args.count == 2 && !patchMode) else {
+    fail(
+        "usage: shot-stats <png> [x y w h]\n       shot-stats <png> --ink [x y w h]\n       shot-stats <png> --patch x y w h",
+        code: 2
+    )
 }
 let url = URL(fileURLWithPath: args[1])
 guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -94,6 +106,20 @@ guard drawn else {
 }
 if inkMode {
     print(inkCount(pixels: pixels, width: width, height: height))
+    exit(0)
+}
+if patchMode {
+    var red = 0.0
+    var green = 0.0
+    var blue = 0.0
+    for index in 0..<(width * height) {
+        let base = index * 4
+        red += Double(pixels[base])
+        green += Double(pixels[base + 1])
+        blue += Double(pixels[base + 2])
+    }
+    let total = Double(width * height)
+    print(String(format: "%.2f %.2f %.2f", red / total, green / total, blue / total))
     exit(0)
 }
 var sum = 0.0

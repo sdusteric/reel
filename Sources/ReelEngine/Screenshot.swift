@@ -29,9 +29,10 @@ public enum Screenshot {
         return url
     }
 
-    /// The frame with `subtitle` (drawn for a frame of the same pixel size) over it.
+    /// The frame with `subtitle` (drawn for a frame of the same pixel size) over it, as an sRGB
+    /// image. The frame is drawn through ColorSync from the colour space its attachments gave it
+    /// (an HDR frame arrives already tone-mapped), and the subtitle after it, at full white.
     public static func compose(frame: CGImage, subtitle: SubtitleBitmap?) -> CGImage? {
-        guard let subtitle else { return frame }
         let width = frame.width
         let height = frame.height
         guard let space = CGColorSpace(name: CGColorSpace.sRGB),
@@ -45,12 +46,14 @@ public enum Screenshot {
                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
               ) else { return nil }
         context.draw(frame, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let subtitle else { return context.makeImage() }
         let rect = subtitle.rect
         // Core Graphics has a bottom-left origin; the subtitle rect is top-left.
         context.draw(subtitle.image, in: CGRect(x: rect.x, y: height - rect.maxY, width: rect.width, height: rect.height))
         return context.makeImage()
     }
 
+    /// Writes a PNG. The image's colour space (sRGB after `compose`) is embedded as an ICC profile.
     public static func writePNG(_ image: CGImage, to url: URL) throws {
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
             throw EngineError.io("cannot create \(url.lastPathComponent)")
@@ -59,10 +62,21 @@ public enum Screenshot {
         guard CGImageDestinationFinalize(destination) else { throw EngineError.io("cannot write \(url.lastPathComponent)") }
     }
 
-    /// Converts, composites and writes; returns the file written.
-    public static func save(frame: CVReadOnlyPixelBuffer, subtitle: SubtitleBitmap?, directory: URL, stem: String, position: MediaTime) throws -> URL {
+    /// The screenshot image: tone-mapped when HDR, converted to sRGB, subtitle on top.
+    public static func image(frame: CVReadOnlyPixelBuffer, subtitle: SubtitleBitmap?) throws -> CGImage {
         let image = try FrameGrabber.image(from: frame)
         guard let composed = compose(frame: image, subtitle: subtitle) else { throw EngineError.io("cannot draw the screenshot") }
+        return composed
+    }
+
+    /// Converts, composites and writes to `url` exactly (reelctl hdr --screenshot).
+    public static func write(frame: CVReadOnlyPixelBuffer, subtitle: SubtitleBitmap?, to url: URL) throws {
+        try writePNG(image(frame: frame, subtitle: subtitle), to: url)
+    }
+
+    /// Converts, composites and writes; returns the file written.
+    public static func save(frame: CVReadOnlyPixelBuffer, subtitle: SubtitleBitmap?, directory: URL, stem: String, position: MediaTime) throws -> URL {
+        let composed = try image(frame: frame, subtitle: subtitle)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = availableURL(in: directory, name: fileName(stem: stem, position: position))
         try writePNG(composed, to: url)

@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let stateStore: StateStore
     private let resumeStore: ResumeStore
     private let settingsModel: SettingsModel
+    private let outputDevices: OutputDeviceModel
+    private var deviceListener: AudioOutputDeviceListener?
     private let trackMenus = TrackMenus()
     private var model: PlayerModel?
     private var windowController: PlayerWindowController?
@@ -49,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
         }
         settingsModel = SettingsModel(store: settingsStore, log: log)
+        outputDevices = OutputDeviceModel(stateStore: stateStore, list: AudioOutputDevices.list, log: log)
         super.init()
     }
 
@@ -77,8 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let model = PlayerModel(dependencies: dependencies)
         self.model = model
         trackMenus.model = model
+        trackMenus.outputDevices = outputDevices
         settingsModel.onChange = { [weak model] settings in
             model?.setShowRemainingTime(settings.showRemainingTime)
+            model?.setHDRSetting(settings.highDynamicRange)
         }
         let screenshots = ScreenshotSaver(environment: environment, log: log)
         self.screenshots = screenshots
@@ -87,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         windowController = controller
         startObserving(model, controller: controller)
+        startOutputDevices(model)
         controller.present()
         if let url = pendingOpen ?? initialFile {
             pendingOpen = nil
@@ -162,6 +168,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }))
     }
 
+    /// The output device choice follows the device list (section 7.11): a missing device plays on
+    /// the system default with an OSD, and the choice returns when the device does.
+    private func startOutputDevices(_ model: PlayerModel) {
+        let outputDevices = outputDevices
+        outputDevices.onResolve = { [weak self, weak model] resolution, announce in
+            AudioOutput.setPreferredOutputDevice(resolution.uid)
+            if let engine = self?.windowController?.engine {
+                Task { await engine.setOutputDevice(resolution.uid) }
+            }
+            guard announce, let model, model.hasMedia, let text = resolution.osdText else { return }
+            model.postOSD(OSDMessage(kind: .track, text: text, symbol: "speaker.wave.2"))
+        }
+        AudioOutput.setPreferredOutputDevice(outputDevices.resolution.uid)
+        deviceListener = AudioOutputDeviceListener { [weak outputDevices] in
+            MainActor.assumeIsolated { outputDevices?.refresh() }
+        }
+        // A chosen device that is missing when a file opens gets the OSD then.
+        observers.append(ModelObserver(read: { model.media?.url }, onChange: { [weak outputDevices] url in
+            guard url != nil, let outputDevices, outputDevices.resolution.isFallback else { return }
+            outputDevices.reapply()
+        }))
+    }
+
     private func refreshNowPlaying() {
         guard let model, let nowPlaying else { return }
         guard model.hasMedia else {
@@ -181,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func showSettings(_ sender: Any?) {
         if settingsWindow == nil {
             settingsWindow = SettingsWindowController(
-                model: settingsModel, updates: updater.map { UpdateSettingsModel(updater: $0) }
+                model: settingsModel, outputDevices: outputDevices, updates: updater.map { UpdateSettingsModel(updater: $0) }
             )
         }
         settingsWindow?.showWindow(sender)
@@ -247,6 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func takeScreenshot(_ sender: Any?) { perform(.screenshot) }
+    @objc func toggleVideoInfo(_ sender: Any?) { perform(.videoInfo) }
     @objc func showScreenshots(_ sender: Any?) { screenshots?.showFolder() }
 
     // MARK: Audio menu
@@ -264,6 +294,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func decreaseAudioDelay(_ sender: Any?) { perform(.adjustAudioDelay(seconds: -AppDelegate.delayStep)) }
     @objc func resetAudioDelay(_ sender: Any?) { perform(.setAudioDelay(seconds: 0)) }
 
+    @objc func selectOutputDevice(_ sender: Any?) {
+        guard let choice = ((sender as? NSMenuItem)?.representedObject as? OutputDeviceMenuChoice)?.choice else { return }
+        outputDevices.select(choice)
+    }
+
     // MARK: Subtitles menu
 
     /// The menus step delays like the plain keys (Shift+X, "(").
@@ -275,7 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func cycleSubtitleTrack(_ sender: Any?) { perform(.cycleTrack(.subtitle)) }
-    @objc func addSubtitleFile(_ sender: Any?) { windowController?.addSubtitleFile() }
+    @objc func addSubtitleFile(_ sender: Any?) { perform(.addSubtitleFile) }
     @objc func toggleSubtitlesVisible(_ sender: Any?) { perform(.toggleSubtitleVisibility) }
     @objc func increaseSubtitleDelay(_ sender: Any?) { perform(.adjustSubtitleDelay(seconds: AppDelegate.delayStep)) }
     @objc func decreaseSubtitleDelay(_ sender: Any?) { perform(.adjustSubtitleDelay(seconds: -AppDelegate.delayStep)) }
@@ -296,6 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private static let alwaysEnabled: Set<Selector> = [
         #selector(showSettings(_:)), #selector(checkForUpdates(_:)), #selector(openDocument(_:)),
         #selector(toggleAutoAdvance(_:)), #selector(showScreenshots(_:)), #selector(toggleFullscreen(_:)),
+        #selector(selectOutputDevice(_:)),
     ]
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -332,6 +368,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             menuItem.title = model.loop.menuTitle
         case #selector(toggleSubtitlesVisible(_:)):
             menuItem.state = model.tracks?.subtitlesVisible ?? true ? .on : .off
+        case #selector(toggleVideoInfo(_:)):
+            menuItem.state = model.videoInfoVisible ? .on : .off
         case #selector(toggleFullscreen(_:)):
             menuItem.title = windowController?.isFullscreen == true ? "Exit Full Screen" : "Enter Full Screen"
         case #selector(togglePictureInPicture(_:)):

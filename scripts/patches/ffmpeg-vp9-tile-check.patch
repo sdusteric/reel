@@ -1,0 +1,94 @@
+--- a/libavcodec/vp9.c
++++ b/libavcodec/vp9.c
+@@ -1283,9 +1283,35 @@
+     return 0;
+ }
+ 
++/* Reel: the exit process of the VP9 boolean decoder (spec 9.2.3). The bits after a tile's last
++ * symbol are padding, which a conforming stream sets to zero; damaged tile data almost always
++ * leaves the decoder somewhere else. Returns 1 when the padding is all zero. Checked only when
++ * err_recognition has AV_EF_BITSTREAM; a failure returns AVERROR(EBADMSG). */
++static int vp9_tile_padding_ok(const VPXRangeCoder *c, const uint8_t *start, int64_t size)
++{
++    int64_t pos = 8 * (int64_t)(c->buffer - start) + c->bits;
++    int64_t byte;
++
++    if (pos > 8 * size)
++        return 0;
++    byte = pos >> 3;
++    if (pos & 7) {
++        if (start[byte] & (0xff >> (pos & 7)))
++            return 0;
++        byte++;
++    }
++    for (; byte < size; byte++)
++        if (start[byte])
++            return 0;
++    return 1;
++}
++
+ static int decode_tiles(AVCodecContext *avctx,
+                         const uint8_t *data, int size)
+ {
++    const uint8_t *tile_start[64];
++    int64_t tile_bytes[64];
++    int check_padding = !!(avctx->err_recognition & AV_EF_BITSTREAM);
+     VP9Context *s = avctx->priv_data;
+     VP9TileData *td = &s->td[0];
+     int row, col, tile_row, tile_col, ret;
+@@ -1322,6 +1348,8 @@
+                 return ret;
+             if (vpx_rac_get_prob_branchy(&td->c_b[tile_col], 128)) // marker bit
+                 return AVERROR_INVALIDDATA;
++            tile_start[tile_col] = data;
++            tile_bytes[tile_col] = tile_size;
+             data += tile_size;
+             size -= tile_size;
+         }
+@@ -1408,6 +1436,15 @@
+             // In fact that would also make intra pred left preparation easier?
+             ff_progress_frame_report(&s->s.frames[CUR_FRAME].tf, row >> 3);
+         }
++
++        if (check_padding && s->pass != 2) {
++            for (tile_col = 0; tile_col < s->s.h.tiling.tile_cols; tile_col++) {
++                if (!vp9_tile_padding_ok(&td->c_b[tile_col], tile_start[tile_col], tile_bytes[tile_col])) {
++                    av_log(avctx, AV_LOG_ERROR, "Nonzero padding after tile %d,%d\n", tile_row, tile_col);
++                    return AVERROR(EBADMSG);
++                }
++            }
++        }
+     }
+     return 0;
+ }
+@@ -1580,7 +1617,7 @@
+     const uint8_t *data = pkt->data;
+     int size = pkt->size;
+     VP9Context *s = avctx->priv_data;
+-    int ret, i, j, ref;
++    int ret, i, j, ref, parse_only = 0;
+     CodedBitstreamUnit *unit;
+     VP9RawFrame *rf;
+ 
+@@ -1699,8 +1736,10 @@
+     memset(s->above_uv_nnz_ctx[0], 0, s->sb_cols * 16 >> s->ss_h);
+     memset(s->above_uv_nnz_ctx[1], 0, s->sb_cols * 16 >> s->ss_h);
+     memset(s->above_segpred_ctx, 0, s->cols);
+-    s->pass = s->s.frames[CUR_FRAME].uses_2pass =
+-        avctx->active_thread_type == FF_THREAD_FRAME && s->s.h.refreshctx && !s->s.h.parallelmode;
++    // Reel: skip_idct at AVDISCARD_ALL parses the symbols (pass 1) and reconstructs nothing.
++    parse_only = avctx->skip_idct >= AVDISCARD_ALL && avctx->active_thread_type != FF_THREAD_SLICE;
++    s->pass = s->s.frames[CUR_FRAME].uses_2pass = parse_only ||
++        (avctx->active_thread_type == FF_THREAD_FRAME && s->s.h.refreshctx && !s->s.h.parallelmode);
+     if ((ret = update_block_buffers(avctx)) < 0) {
+         av_log(avctx, AV_LOG_ERROR,
+                "Failed to allocate block buffers\n");
+@@ -1793,7 +1832,7 @@
+             ff_vp9_adapt_probs(s);
+             ff_thread_finish_setup(avctx);
+         }
+-    } while (s->pass++ == 1);
++    } while (s->pass++ == 1 && !parse_only);
+ 
+     if (s->td->error_info < 0) {
+         av_log(avctx, AV_LOG_ERROR, "Failed to decode tile data\n");

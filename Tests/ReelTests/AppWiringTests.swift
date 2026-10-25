@@ -1,3 +1,4 @@
+import AppKit
 import CoreMedia
 import Foundation
 import ReelCore
@@ -22,6 +23,11 @@ nonisolated final class StubEngine: PlayerEngine {
     }
 
     var calls: [Call] { log.withLock { $0 } }
+
+    /// Sends an event as the engine would (M3: `.dynamicRange`, `.problem`, ...).
+    func emit(_ event: EngineEvent) {
+        continuation.yield(event)
+    }
 
     private func record(_ call: Call) {
         log.withLock { $0.append(call) }
@@ -61,6 +67,48 @@ nonisolated final class StubEngine: PlayerEngine {
     func close() async {
         record(.close)
         continuation.finish()
+    }
+}
+
+/// A clock for `AppScheduling`: nothing runs until the test advances it.
+final class FakeScheduler: AppScheduling {
+    private struct Item {
+        var id: Int
+        var at: TimeInterval
+        var action: @MainActor () -> Void
+    }
+
+    private(set) var now: TimeInterval = 0
+    private var items: [Item] = []
+    private var nextID = 0
+
+    var pendingCount: Int { items.count }
+
+    func schedule(after seconds: TimeInterval, _ action: @escaping @MainActor () -> Void) -> ScheduledAction {
+        nextID += 1
+        let id = nextID
+        items.append(Item(id: id, at: now + seconds, action: action))
+        return ScheduledAction { [weak self] in self?.items.removeAll { $0.id == id } }
+    }
+
+    /// Runs everything due by `now + seconds`, in time order, including work scheduled meanwhile.
+    func advance(by seconds: TimeInterval) {
+        let target = now + seconds
+        while let next = items.filter({ $0.at <= target }).min(by: { $0.at < $1.at }) {
+            items.removeAll { $0.id == next.id }
+            now = next.at
+            next.action()
+        }
+        now = target
+    }
+}
+
+/// What a fake screen reports; tests change it between notifications.
+final class DisplayBox {
+    var value: DisplayCapabilities
+
+    init(_ value: DisplayCapabilities) {
+        self.value = value
     }
 }
 
@@ -274,5 +322,363 @@ func makeAppModel(engines: EngineList = EngineList()) -> PlayerModel {
         await eventually("playing") { model.playbackState == .playing }
         model.togglePictureInPicture()
         #expect(requests == [true])
+    }
+}
+
+// MARK: M3 app shell (design 7.7 to 7.11, 9.11, 9.13, 10, 11.1)
+
+@Suite struct MainMenuM3Tests {
+    static func item(_ title: String, in menu: NSMenu) -> NSMenuItem? {
+        for entry in menu.items {
+            if entry.title == title { return entry }
+            if let submenu = entry.submenu, let found = item(title, in: submenu) { return found }
+        }
+        return nil
+    }
+
+    @Test func videoInfoAndAddSubtitleFileShowTheirShortcuts() throws {
+        let menu = MainMenu.build(trackMenus: TrackMenus())
+        let video = try #require(menu.item(withTitle: "Video")?.submenu)
+        let info = try #require(video.item(withTitle: "Video Info"))
+        #expect(info.keyEquivalent == "i")
+        #expect(info.keyEquivalentModifierMask == .command, "Cmd+I, IINA's Inspector key")
+        #expect(info.action == #selector(AppDelegate.toggleVideoInfo(_:)))
+
+        let subtitles = try #require(menu.item(withTitle: "Subtitles")?.submenu)
+        let add = try #require(subtitles.item(withTitle: "Add Subtitle File\u{2026}"))
+        #expect(add.keyEquivalent == "O", "an uppercase key equivalent is Shift+Cmd+O")
+        #expect(add.keyEquivalentModifierMask == .command)
+        #expect(add.action == #selector(AppDelegate.addSubtitleFile(_:)))
+    }
+
+    @Test func audioMenuListsOutputDevicesWithTheChoiceChecked() throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let store = StateStore(paths: ReelPaths(home: scratch.url))
+        let devices = OutputDeviceModel(stateStore: store, list: { OutputDeviceTests.devices }, log: .disabled)
+        let trackMenus = TrackMenus()
+        trackMenus.outputDevices = devices
+        let menu = MainMenu.build(trackMenus: trackMenus)
+        let audio = try #require(menu.item(withTitle: "Audio")?.submenu)
+        let output = try #require(audio.item(withTitle: "Output Device")?.submenu)
+        trackMenus.menuNeedsUpdate(output)
+        let titles = output.items.filter { !$0.isSeparatorItem }.map(\.title)
+        #expect(titles.first?.hasPrefix("System Default") == true)
+        #expect(Array(titles.dropFirst()) == ["MacBook Pro Speakers", "AirPods Pro", "Display Speakers"])
+        #expect(output.items[1].isSeparatorItem, "a separator after System Default")
+        #expect(output.items.first?.state == .on)
+        #expect(output.items.first?.attributedTitle?.string == "System Default MacBook Pro Speakers")
+
+        devices.select(.device(uid: "airpods", name: "AirPods Pro"))
+        trackMenus.menuNeedsUpdate(output)
+        let checked = output.items.filter { $0.state == .on }.map(\.title)
+        #expect(checked == ["AirPods Pro"])
+        let choice = (output.items.first { $0.title == "AirPods Pro" }?.representedObject as? OutputDeviceMenuChoice)?.choice
+        #expect(choice == .device(uid: "airpods", name: "AirPods Pro"))
+        #expect(output.items.allSatisfy { $0.tag == TrackMenus.dynamicTag }, "rebuilt on every open")
+    }
+}
+
+@Suite struct KeyHandlingM3Tests {
+    @Test func cmdIAndEscapeOpenAndCloseVideoInfo() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let model = makeAppModel()
+        let target = NullCommandTarget()
+        KeyHandling.perform(.videoInfo, model: model, target: target)
+        #expect(!model.videoInfoVisible, "nothing open, nothing to describe")
+        await model.open(try scratch.makeFile("movie.mkv"))
+        await eventually("playing") { model.playbackState == .playing }
+        #expect(InputMap.standard.action(for: KeyChord(character: "i", modifiers: .command)) == .videoInfo)
+        KeyHandling.perform(.videoInfo, model: model, target: target)
+        #expect(model.videoInfoVisible)
+        #expect(KeyHandling.handleOverlayKey(KeyChord(.escape), model: model))
+        #expect(!model.videoInfoVisible)
+        #expect(!KeyHandling.handleOverlayKey(KeyChord(.escape), model: model), "Esc passes on when nothing is open")
+        KeyHandling.perform(.videoInfo, model: model, target: target)
+        KeyHandling.perform(.videoInfo, model: model, target: target)
+        #expect(!model.videoInfoVisible, "Cmd+I toggles")
+    }
+
+    @Test func shiftCmdOAsksForASubtitleFile() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let model = makeAppModel()
+        var asked = 0
+        model.onAddSubtitleFile = { asked += 1 }
+        await model.open(try scratch.makeFile("movie.mkv"))
+        await eventually("playing") { model.playbackState == .playing }
+        let action = InputMap.standard.action(for: KeyChord(character: "O", modifiers: [.command]))
+            ?? InputMap.standard.action(for: KeyChord(character: "o", modifiers: [.command, .shift]))
+        #expect(action == .addSubtitleFile)
+        KeyHandling.perform(.addSubtitleFile, model: model, target: NullCommandTarget())
+        #expect(asked == 1)
+    }
+}
+
+@Suite struct OcclusionTests {
+    @Test func hiddenForOneSecondStopsVideoAndVisibleResumesAtOnce() {
+        let clock = FakeScheduler()
+        var told: [Bool] = []
+        let gate = OcclusionGate(scheduler: clock) { told.append($0) }
+        gate.setWindowVisible(false)
+        clock.advance(by: 0.9)
+        #expect(told.isEmpty, "not before EnergyPolicy.occlusionDelay")
+        gate.setWindowVisible(true)
+        clock.advance(by: 5)
+        #expect(told.isEmpty, "visible again within the second: nothing happens")
+        #expect(clock.pendingCount == 0)
+
+        gate.setWindowVisible(false)
+        clock.advance(by: 1)
+        #expect(told == [true])
+        #expect(gate.isOccluded)
+        gate.setWindowVisible(false)
+        clock.advance(by: 3)
+        #expect(told == [true], "told once")
+        gate.setWindowVisible(true)
+        #expect(told == [true, false], "visible resyncs at once, without waiting")
+    }
+
+    @Test func pictureInPictureNeverCountsAsHidden() {
+        let clock = FakeScheduler()
+        var told: [Bool] = []
+        let gate = OcclusionGate(scheduler: clock) { told.append($0) }
+        gate.setPictureInPictureActive(true)
+        gate.setWindowVisible(false)
+        clock.advance(by: 10)
+        #expect(told.isEmpty, "PiP shows the display layer, so video keeps decoding")
+        gate.setPictureInPictureActive(false)
+        clock.advance(by: 1)
+        #expect(told == [true])
+        gate.setPictureInPictureActive(true)
+        #expect(told == [true, false], "PiP starting while hidden brings video back")
+    }
+
+    @Test func pointerActivityHoldsForTenSecondsWithOneTimer() {
+        let clock = FakeScheduler()
+        var changes: [Bool] = []
+        let pointer = PointerActivity(now: { clock.now }, scheduler: clock) { changes.append($0) }
+        pointer.moved()
+        #expect(changes == [true])
+        for _ in 0..<50 {
+            clock.advance(by: 0.1)
+            pointer.moved()
+        }
+        #expect(clock.pendingCount == 1, "one timer per quiet period, not one per event")
+        clock.advance(by: 9.5)
+        #expect(changes == [true])
+        clock.advance(by: 0.6)
+        #expect(changes == [true, false])
+        #expect(!pointer.isRecent)
+    }
+}
+
+@Suite struct DisplayRangeMonitorTests {
+    @Test func pollsTheHeadroomOnlyWhileVideoInfoIsOpen() {
+        let clock = FakeScheduler()
+        let center = NotificationCenter()
+        let display = DisplayBox(.xdr)
+        var reported: [DisplayCapabilities] = []
+        let monitor = DisplayRangeMonitor(window: nil, read: { display.value }, center: center, scheduler: clock) { reported.append($0) }
+        defer { monitor.stop() }
+        #expect(reported == [.xdr], "read once at start")
+        let readsAtStart = monitor.reads
+        clock.advance(by: 10)
+        #expect(monitor.reads == readsAtStart, "no polling while Video Info is closed")
+
+        monitor.setPolling(true)
+        display.value = DisplayCapabilities(name: "Built-in XDR display", potentialHeadroom: 16, currentHeadroom: 5)
+        clock.advance(by: 0.5)
+        #expect(reported.last?.currentHeadroom == 5)
+        let beforeTwoSeconds = monitor.reads
+        clock.advance(by: 2)
+        #expect(monitor.reads == beforeTwoSeconds + 4, "2 Hz")
+        monitor.setPolling(false)
+        let afterClose = monitor.reads
+        clock.advance(by: 10)
+        #expect(monitor.reads == afterClose)
+        #expect(clock.pendingCount == 0)
+
+        display.value = .sdr
+        center.post(name: NSWindow.didChangeScreenNotification, object: nil)
+        #expect(reported.last == .sdr, "moving to another screen is read at once")
+    }
+}
+
+@Suite struct VolumeWatcherTests {
+    static func mount(_ name: String, on center: NotificationCenter) {
+        center.post(
+            name: NSWorkspace.didMountNotification,
+            object: nil,
+            userInfo: [NSWorkspace.volumeURLUserInfoKey: URL(filePath: "/Volumes/\(name)", directoryHint: .isDirectory)]
+        )
+    }
+
+    @Test func reopensWhenTheSameDriveAndFileComeBack() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let file = try scratch.makeFile("Northern.Line.S01E01.mkv")
+        let engines = EngineList()
+        let model = makeAppModel(engines: engines)
+        let center = NotificationCenter()
+        let watcher = VolumeWatcher(model: model, center: center, log: .disabled)
+        defer { watcher.stop() }
+        watcher.track(file)
+        await watcher.keyRead()
+        #expect(watcher.key != nil)
+        await model.open(file)
+        await eventually("playing") { model.playbackState == .playing }
+        try #require(engines.all.first).emit(.problem(.volumeGone("Eric X9 Pro")))
+        await eventually("the drive card") { model.isVolumeGone }
+
+        Self.mount("Other Drive", on: center)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(watcher.reopenCount == 0, "another volume is ignored")
+
+        await watcher.volumeMounted("Eric X9 Pro")
+        #expect(watcher.reopenCount == 1)
+        await eventually("reopened") { engines.all.count == 2 }
+        await eventually("playing again") { model.playbackState == .playing && model.problem == nil }
+    }
+
+    @Test func aDifferentFileAtTheSamePathIsNotReopened() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let file = try scratch.makeFile("movie.mkv")
+        let engines = EngineList()
+        let model = makeAppModel(engines: engines)
+        let watcher = VolumeWatcher(model: model, center: NotificationCenter(), log: .disabled)
+        defer { watcher.stop() }
+        watcher.track(file)
+        await watcher.keyRead()
+        await model.open(file)
+        await eventually("playing") { model.playbackState == .playing }
+        try #require(engines.all.first).emit(.problem(.volumeGone("Eric X9 Pro")))
+        await eventually("the drive card") { model.isVolumeGone }
+        try Data(repeating: 7, count: 9_000).write(to: file)
+        await watcher.volumeMounted("Eric X9 Pro")
+        #expect(watcher.reopenCount == 0)
+        #expect(engines.all.count == 1)
+        #expect(model.isVolumeGone)
+    }
+
+    @Test func closeFileFromTheCardLeavesTheWatcherIdle() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let file = try scratch.makeFile("movie.mkv")
+        let engines = EngineList()
+        let model = makeAppModel(engines: engines)
+        let watcher = VolumeWatcher(model: model, center: NotificationCenter(), log: .disabled)
+        defer { watcher.stop() }
+        watcher.track(file)
+        await model.open(file)
+        await eventually("playing") { model.playbackState == .playing }
+        try #require(engines.all.first).emit(.problem(.volumeGone("Eric X9 Pro")))
+        await eventually("the drive card") { model.isVolumeGone }
+        await model.performProblemAction(.closeFile)
+        #expect(!model.hasMedia)
+        await watcher.volumeMounted("Eric X9 Pro")
+        #expect(watcher.reopenCount == 0, "nothing to resume after Close File")
+    }
+
+    @Test func volumeNameComesFromTheMountURL() {
+        let note = Notification(
+            name: NSWorkspace.didMountNotification,
+            userInfo: [NSWorkspace.volumeURLUserInfoKey: URL(filePath: "/Volumes/Eric X9 Pro", directoryHint: .isDirectory)]
+        )
+        #expect(VolumeWatcher.volumeName(note) == "Eric X9 Pro")
+    }
+}
+
+@Suite struct OutputDeviceTests {
+    static let devices = [
+        AudioOutputDevice(uid: "builtin", name: "MacBook Pro Speakers", isDefault: true),
+        AudioOutputDevice(uid: "airpods", name: "AirPods Pro"),
+        AudioOutputDevice(uid: "display", name: "Display Speakers"),
+    ]
+
+    @Test func choiceResolvesFallsBackAndRoundTripsThroughStateJSON() throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let paths = ReelPaths(home: scratch.url)
+        var present = Self.devices
+        let store = StateStore(paths: paths)
+        let model = OutputDeviceModel(stateStore: store, list: { present }, log: .disabled)
+        var announced: [String] = []
+        var routed: [String?] = []
+        model.onResolve = { resolution, announce in
+            routed.append(resolution.uid)
+            if announce, let text = resolution.osdText { announced.append(text) }
+        }
+        #expect(model.choice == .systemDefault)
+        #expect(model.resolution.uid == nil)
+
+        model.select(.device(uid: "airpods", name: "AirPods Pro"))
+        #expect(routed.last == "airpods")
+        #expect(announced.isEmpty)
+
+        present.removeAll { $0.uid == "airpods" }
+        model.refresh()
+        #expect(routed.last == .some(nil), "the system default plays")
+        #expect(announced == ["Audio: MacBook Pro Speakers"])
+        #expect(model.choice == .device(uid: "airpods", name: "AirPods Pro"), "the choice is kept for when it returns")
+        #expect(model.entries.last?.isConnected == false)
+        model.refresh()
+        #expect(announced.count == 1, "announced once per disappearance")
+        model.reapply()
+        #expect(announced.count == 2, "and again when a file opens without it")
+
+        present = Self.devices
+        model.refresh()
+        #expect(routed.last == "airpods")
+
+        try store.flush()
+        let reloaded = StateStore(paths: paths)
+        _ = try reloaded.load()
+        #expect(reloaded.state.outputDevice == .device(uid: "airpods", name: "AirPods Pro"))
+        let again = OutputDeviceModel(stateStore: reloaded, list: { Self.devices }, log: .disabled)
+        #expect(again.resolution.uid == "airpods")
+        #expect(again.selectedEntry?.title == "AirPods Pro")
+    }
+}
+
+@Suite struct SettingsM3Tests {
+    @Test func settingsHavePlaybackVideoAndAudioGroupsWithTheM3Rows() {
+        let sections = SettingsSection.all
+        #expect(sections.map(\.title) == ["Playback", "Video", "Audio"])
+        #expect(sections[1].rows.contains(.highDynamicRange))
+        #expect(sections[2].rows == [.outputDevice])
+        #expect(SettingsRow.highDynamicRange.title == "High dynamic range")
+        #expect(SettingsRow.outputDevice.title == "Output device")
+        #expect(HDRSetting.allCases.map(\.title) == ["Full", "Limited", "Off"])
+        #expect(SettingsRow.outputDevice.detail == "System Default follows the Sound settings.")
+        let toggles = sections.flatMap(\.rows).filter { if case .toggle = $0 { true } else { false } }
+        #expect(toggles.count == 4, "the M1 four stay")
+    }
+
+    @Test func highDynamicRangeIsSavedAndReachesThePlayer() throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let paths = ReelPaths(home: scratch.url)
+        let store = SettingsStore(paths: paths)
+        let settings = SettingsModel(store: store, log: .disabled)
+        let player = makeAppModel()
+        settings.onChange = { [weak player] in player?.setHDRSetting($0.highDynamicRange) }
+        settings.highDynamicRange.wrappedValue = .limited
+        #expect(store.settings.highDynamicRange == .limited)
+        #expect(player.hdrSetting == .limited)
+        settings.setHighDynamicRange(.off)
+        #expect(player.dynamicRangePlan.setting == .off)
+    }
+}
+
+@Suite struct ScreenshotSaverTests {
+    @Test func screenshotsGoUnderReelHome() throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let saver = ScreenshotSaver(environment: ReelEnvironment(["REEL_HOME": scratch.url.path(percentEncoded: false)]), log: .disabled) { _ in }
+        #expect(saver.screenshotsDirectory.standardizedFileURL.path.hasPrefix(scratch.url.standardizedFileURL.path))
+        #expect(!saver.screenshotsDirectory.path.contains("/Pictures/"))
     }
 }

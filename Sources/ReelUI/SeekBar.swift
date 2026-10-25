@@ -51,11 +51,13 @@ struct SeekBar: View {
     static let thumbSize: CGFloat = 12
     static let hitHeight: CGFloat = 20
     static let loopMarkSize = CGSize(width: 3, height: 14)
+    static let dataEndTickSize = CGSize(width: 2, height: 12)
 
     let model: PlayerModel
     let context: ControllerContext
     @State private var interaction: SeekBarInteraction?
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isActive: Bool { model.seekHoverFraction != nil || model.isScrubbing }
 
@@ -66,6 +68,7 @@ struct SeekBar: View {
             ZStack(alignment: .leading) {
                 track(width: width)
                 loopMarks(width: width)
+                dataEndTick(width: width)
                 if isActive {
                     Circle()
                         .fill(Color.white)
@@ -103,7 +106,7 @@ struct SeekBar: View {
             )
         }
         .frame(height: SeekBar.hitHeight)
-        .animation(.spring(duration: 0.18), value: isActive)
+        .animation(Motion.seekTrack(reduceMotion: reduceMotion), value: isActive)
         .accessibilityElement()
         .accessibilityLabel("Seek")
         .accessibilityValue(model.elapsedLabel)
@@ -121,7 +124,8 @@ struct SeekBar: View {
     /// the bar's ends.
     private func hoverOverlay(hover: Double, width: CGFloat, barFrame: CGRect) -> some View {
         let time = TimeFormat.hover(model.time(atFraction: hover), duration: model.duration)
-        let hasThumbnail = model.hoverThumbnail != nil
+        let missing = model.missingTailText(atFraction: hover)
+        let hasThumbnail = model.hoverThumbnail != nil && missing == nil
         let windowRange = (ControllerLayout.edgeMargin - context.frame.minX - barFrame.minX)...(
             context.windowSize.width - ControllerLayout.edgeMargin - context.frame.minX - barFrame.minX
         )
@@ -136,7 +140,7 @@ struct SeekBar: View {
                     .fixedSize()
                     .transition(.opacity)
             } else {
-                HoverPill(text: time)
+                HoverPill(text: time, note: missing)
                     .fixedSize()
                     .transition(.opacity.animation(.easeOut(duration: 0.1)))
             }
@@ -146,8 +150,15 @@ struct SeekBar: View {
 
     private func track(width: CGFloat) -> some View {
         let height = isActive ? SeekBar.hoverTrackHeight : SeekBar.trackHeight
+        let dataEnd = model.dataEndFraction
         return ZStack(alignment: .leading) {
-            Capsule().fill(Color.primary.opacity(0.18))
+            // A file cut short keeps its full track: the part after the data is fainter (design 9.14).
+            Capsule().fill(Color.primary.opacity(dataEnd == nil ? 0.18 : 0.07))
+            if let dataEnd {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.18))
+                    .frame(width: max(0, width * dataEnd))
+            }
             if let range = model.storedRange {
                 let start = model.fraction(of: range.lowerBound)
                 let end = model.fraction(of: range.upperBound)
@@ -195,6 +206,19 @@ struct SeekBar: View {
         .animation(Motion.easeOut(0.12), value: model.loop)
     }
 
+    /// A 2 x 12 pt tick at primary 55% where the data ends.
+    private func dataEndTick(width: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            if let fraction = model.dataEndFraction {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.55))
+                    .frame(width: SeekBar.dataEndTickSize.width, height: SeekBar.dataEndTickSize.height)
+                    .offset(x: width * fraction - SeekBar.dataEndTickSize.width / 2)
+            }
+        }
+        .frame(width: width, height: SeekBar.hitHeight, alignment: .leading)
+    }
+
     private func loopMark(width: CGFloat, at time: MediaTime) -> some View {
         Capsule()
             .fill(Color.accentColor)
@@ -207,13 +231,23 @@ struct SeekBar: View {
 /// Time under the pointer, on the controller material (design 9.4).
 struct HoverPill: View {
     let text: String
+    /// "No data after 38:02" over the missing tail of a truncated file, at secondary weight.
+    var note: String?
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 12, weight: .semibold).monospacedDigit())
-            .foregroundStyle(Color.primary.opacity(0.9))
-            .padding(.horizontal, 9)
-            .padding(.vertical, 4)
-            .chromeSurface(Capsule(), shadow: .small)
+        HStack(spacing: 6) {
+            Text(text)
+                .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                .foregroundStyle(Color.primary.opacity(0.9))
+            if let note {
+                Text(note)
+                    .font(.system(size: 12, weight: .regular).monospacedDigit())
+                    .foregroundStyle(ChromeStyle.secondaryText(colorScheme))
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .chromeSurface(Capsule(), shadow: .small)
     }
 }

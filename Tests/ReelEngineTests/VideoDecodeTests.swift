@@ -39,7 +39,9 @@ private final class FrameSink: Sendable {
     var times: [MediaTime] { seen.withLock { $0.map(\.time) } }
 }
 
-@Suite struct VideoDecodeTests {
+/// Serialized: run in parallel, its synchronous decode cases filled every cooperative pool
+/// thread for the first seconds of `swift test` and held back other suites' timing checks.
+@Suite(.serialized) struct VideoDecodeTests {
     private static func is10Bit(_ fixture: Fixture) -> Bool { [.hevc10, .hdr10, .nocues].contains(fixture) }
 
     @Test(arguments: Fixture.hardwareFixtures)
@@ -265,6 +267,22 @@ private final class FrameSink: Sendable {
         let stale = await output.enqueue(grab.frame, releasingSlot: false)
         #expect(stale == .dropped, "a frame from generation 0 is older than 5")
         #expect(await output.enqueuedCount == 1)
+        await output.flush(removingDisplayedImage: false)
+    }
+
+    /// After a switch from VideoToolbox to software the buffers keep their size, format and
+    /// colour but not every extension; the cached format description is reused only when it
+    /// matches the new buffer, so the software frames still reach the layer.
+    @MainActor @Test func aSoftwareFrameAfterHardwareOnesIsStillEnqueued() async throws {
+        let target = HeadlessVideoTarget()
+        let output = target.output
+        for (index, decoder) in [VideoDecoderKind.hardware, .software, .hardware].enumerated() {
+            let grab = try FrameGrabber.grab(url: Fixture.h264.url(), at: .seconds(1 + Double(index)), decoder: decoder)
+            target.synchronizer.setRate(0, time: grab.frame.presentationTime)
+            await output.reserveSlot()
+            let result = await output.enqueue(grab.frame)
+            #expect(result == .enqueued, "\(decoder) frame \(index)")
+        }
         await output.flush(removingDisplayedImage: false)
     }
 

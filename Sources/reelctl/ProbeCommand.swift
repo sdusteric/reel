@@ -6,6 +6,9 @@ import ReelEngine
 /// support, keyframe count and duration, and the audio and subtitle tracks with their labels, the
 /// default selections and the sidecar subtitle files (design section 8.2).
 /// `reelctl probe --build-info` prints FFmpeg's license and configuration.
+/// (M3) The report carries the Dolby Vision configuration record and the dynamic range kind;
+/// `reelctl probe --dovi-session <file>` decodes 10 frames with a Dolby Vision HEVC session
+/// (section 7.8, a hands-on check on a real profile 5 file).
 enum ProbeCommand {
     struct TrackRow: Encodable {
         var id: String
@@ -48,11 +51,27 @@ enum ProbeCommand {
         var keyframeCount: Int
         var keyframeKinds: [String: Int]
         var tracks: Tracks
+        /// (M3) The video stream's Dolby Vision record; absent without one.
+        var dolbyVision: DolbyVisionConfig?
+        /// (M3) "sdr", "hdr10", "hlg" or "dolbyVision".
+        var dynamicRange: DynamicRange.Kind
     }
 
     static func run(_ arguments: CommandArguments) throws -> Int32 {
         if arguments.flags.contains("--build-info") {
             try printBuildInfo(json: arguments.json)
+            return 0
+        }
+        if arguments.flags.contains("--dovi-session") {
+            let report = try DolbyVisionProbe.sessionReport(url: arguments.file())
+            if arguments.json {
+                try printJSON(report)
+            } else {
+                print("session: \(report.sessionCreated ? "created" : "not created")" + (report.error.map { ", \($0)" } ?? ""))
+                print("frames: \(report.framesDecoded) of \(report.framesSubmitted) decoded, \(report.failures) failed")
+                if let cb = report.meanCb, let cr = report.meanCr { print(String(format: "mean Cb %.1f, Cr %.1f", cb, cr)) }
+                for (key, value) in report.attachments.sorted(by: { $0.key < $1.key }) { print("  \(key): \(value)") }
+            }
             return 0
         }
         let report = try probe(arguments.file(), external: !arguments.flags.contains("--no-external"))
@@ -129,7 +148,9 @@ enum ProbeCommand {
                 selectedSubtitle: state.selectedSubtitle.trackID?.description ?? "off",
                 sidecars: sidecars.map(\.url.lastPathComponent),
                 hybridSeeks: hybrid
-            )
+            ),
+            dolbyVision: info.dolbyVision,
+            dynamicRange: DynamicRange.classify(info).kind
         )
     }
 
@@ -159,6 +180,9 @@ enum ProbeCommand {
             print("video decoder: \(decoder) (\(report.decoderReason ?? "")), VideoToolbox hardware: \(report.hardwareDecodeSupported == true ? "yes" : "no")")
         }
         let kinds = report.keyframeKinds.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+        if let dolbyVision = report.dolbyVision {
+            print("dolby vision: profile \(dolbyVision.profileName), level \(dolbyVision.level), compatibility \(dolbyVision.compatibilityID)")
+        }
         print("keyframes: \(report.keyframeCount)" + (kinds.isEmpty ? "" : " (\(kinds))"))
         let tracks = report.tracks
         for track in tracks.audio {

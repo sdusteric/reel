@@ -82,6 +82,8 @@ class DropAcceptingView: NSView {
     var onDrop: ((URL) -> Void)?
     var onSubtitleDrop: ((URL) -> Void)?
     var acceptsSubtitles: () -> Bool = { false }
+    /// Tells the empty state a valid file is over the window.
+    var dropTarget: DropTargetState?
 
     func enableDrops() {
         registerForDraggedTypes(OpenAndDrop.draggedTypes)
@@ -92,14 +94,31 @@ class DropAcceptingView: NSView {
     }
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        operation(for: sender)
+        let result = operation(for: sender)
+        dropTarget?.dragged(operation: result)
+        return result
     }
 
     override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        operation(for: sender)
+        let result = operation(for: sender)
+        dropTarget?.dragged(operation: result)
+        return result
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        dropTarget?.exited()
+    }
+
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        dropTarget?.exited()
+    }
+
+    override func concludeDragOperation(_ sender: (any NSDraggingInfo)?) {
+        dropTarget?.concluded()
     }
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        dropTarget?.performed()
         switch OpenAndDrop.droppedFile(in: sender, acceptsSubtitles: acceptsSubtitles()) {
         case .media(let url)?:
             guard let onDrop else { return false }

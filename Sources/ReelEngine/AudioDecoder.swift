@@ -17,6 +17,9 @@ public struct DecodedAudioBuffer: Sendable {
     /// The `AudioDecodeThread.restartCount` it was decoded under. A restart in the same
     /// generation (device change, track switch, audio delay) makes earlier buffers stale.
     public internal(set) var restart: UInt64 = 0
+    /// The first buffer in a new sample rate or channel layout (section 7.10): a renderer
+    /// holding audio in the old format flushes before taking it.
+    public internal(set) var startsNewFormat = false
 
     public var presentationTime: CMTime { CMTime(value: startSample, timescale: CMTimeScale(sampleRate)) }
     public var endTime: CMTime { CMTime(value: startSample + Int64(frameCount), timescale: CMTimeScale(sampleRate)) }
@@ -129,6 +132,8 @@ public final class AudioDecoder {
     public private(set) var formatDescription: CMAudioFormatDescription?
     /// Packets the decoder rejected as corrupt (skipped, not fatal).
     public private(set) var corruptPackets = 0
+    /// Presentation time of the last corrupt packet, when it had one.
+    public private(set) var lastCorruptTime: MediaTime?
     /// Added to every output timestamp: the audio delay (positive plays later), applied against
     /// the synchronizer without re-decoding (design section 9.7). Trimming still uses media time.
     public var timestampOffset: MediaTime = .zero
@@ -143,6 +148,8 @@ public final class AudioDecoder {
     private var scratch: [Float] = []
     private var dropBefore: MediaTime?
     private var carriedSkip = 0
+    /// The next emitted buffer starts a new format (not set for the first format).
+    private var formatChangePending = false
     /// Opus packets always start on a 2.5 ms grid counted from minus the pre-skip.
     private let opusGrid: (step: Int64, origin: Int64)?
 
@@ -220,7 +227,8 @@ public final class AudioDecoder {
         return MediaTime(value: Int64(samples), timeBaseNum: 1, timeBaseDen: Int32(sampleRate))
     }
 
-    /// Decodes one packet. Corrupt packets are counted and skipped.
+    /// Decodes one packet. A corrupt packet is counted and dropped, and the clock re-anchors on
+    /// the next good one, so the gap it leaves does not shift later audio (section 7.10).
     public func decode(_ packet: UnsafePointer<AVPacket>) throws -> [DecodedAudioBuffer] {
         guard let codecContext else { throw EngineError.notOpen }
         var output: [DecodedAudioBuffer] = []
@@ -233,10 +241,19 @@ public final class AudioDecoder {
             throw EngineError.decoderFailed("\(codecName): out of memory")
         }
         if status < 0, status != reel_averror_eof() {
-            corruptPackets += 1
+            try noteCorrupt(pts: packet.pointee.pts, into: &output)
         }
         try receiveFrames(into: &output)
         return output
+    }
+
+    private func noteCorrupt(pts: Int64, into output: inout [DecodedAudioBuffer]) throws {
+        corruptPackets += 1
+        if pts != reel_av_nopts(), timeBase.den != 0 {
+            lastCorruptTime = MediaTime(value: pts, timeBaseNum: timeBase.num, timeBaseDen: timeBase.den)
+        }
+        try emitPending(into: &output)
+        clock.reset()
     }
 
     /// Decodes one packet from the PacketStore.
@@ -277,7 +294,7 @@ public final class AudioDecoder {
             let status = avcodec_receive_frame(codecContext, frame)
             if status == reel_averror_eagain() || status == reel_averror_eof() { return }
             if status < 0 {
-                corruptPackets += 1
+                try noteCorrupt(pts: reel_av_nopts(), into: &output)
                 return
             }
             defer { av_frame_unref(frame) }
@@ -288,6 +305,7 @@ public final class AudioDecoder {
     private func handle(_ frame: UnsafeMutablePointer<AVFrame>, into output: inout [DecodedAudioBuffer]) throws {
         if resampler?.accepts(frame) != true {
             try emitPending(into: &output)
+            if resampler != nil { formatChangePending = true }
             let fresh = try AudioResampler(matching: frame)
             let labels = ChannelLayout.labels(for: fresh.channels)
             formatDescription = try ChannelLayout.formatDescription(sampleRate: fresh.sampleRate, labels: labels)
@@ -374,13 +392,16 @@ public final class AudioDecoder {
                 presentationTime: CMTime(value: first, timescale: CMTimeScale(sampleRate))
             )
         }
-        output.append(DecodedAudioBuffer(
+        var buffer = DecodedAudioBuffer(
             sampleBuffer: ready,
             startSample: first,
             frameCount: frames,
             sampleRate: sampleRate,
             channelCount: channelCount
-        ))
+        )
+        buffer.startsNewFormat = formatChangePending
+        formatChangePending = false
+        output.append(buffer)
     }
 }
 
@@ -451,6 +472,13 @@ public final class AudioDecodeThread: Sendable {
     private let state: Mutex<State>
     private let wakeup = DispatchSemaphore(value: 0)
     private let restarts = Atomic<UInt64>(0)
+    private let damageHandler = Mutex<SendableCallback<(time: MediaTime?, generation: UInt64)>?>(nil)
+
+    /// Called on the decode thread for each packet the decoder rejected as corrupt, with its
+    /// time and generation (section 7.10).
+    public func setDamageHandler(_ handler: (@Sendable (MediaTime?, UInt64) -> Void)?) {
+        damageHandler.withLock { $0 = handler.map { handler in SendableCallback { handler($0.time, $0.generation) } } }
+    }
 
     /// Increments on every `seek`. Buffers tagged with an older value were decoded before it.
     public var restartCount: UInt64 { restarts.load(ordering: .acquiring) }
@@ -556,8 +584,12 @@ public final class AudioDecodeThread: Sendable {
                 do {
                     switch command {
                     case .packet(let packet):
+                        let corruptBefore = state.decoder.corruptPackets
                         for buffer in try state.decoder.decode(packet) {
                             continuation.yield(.buffer(tagged(buffer), generation: generation))
+                        }
+                        if state.decoder.corruptPackets != corruptBefore {
+                            damageHandler.withLock { $0 }?.call((state.decoder.lastCorruptTime ?? packet.time, generation))
                         }
                     case .reset(let target, let offset):
                         state.decoder.reset(dropBefore: target)

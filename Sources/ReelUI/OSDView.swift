@@ -1,3 +1,4 @@
+import AppKit
 import ReelCore
 import SwiftUI
 
@@ -10,42 +11,62 @@ struct OSDView: View {
 
     let model: PlayerModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if let message = model.osd {
-            HStack(spacing: 10) {
-                if let symbol = OSDView.symbol(for: message) {
-                    Image(systemName: symbol)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(Color.primary.opacity(0.7))
-                        .frame(width: 24)
-                }
-                text(for: message)
-                    .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(Color.primary.opacity(0.9))
-                    .fixedSize()
-                if model.showsSeekProgress, message.kind == .seek || message.kind == .frameStep {
-                    ProgressRing()
-                        .frame(width: 16, height: 16)
-                }
-                if message.showsStartOver {
-                    OSDButton(title: "Start Over") { model.startOver() }
-                }
-                if message.showsReveal {
-                    OSDButton(title: "Show") { model.revealScreenshot() }
-                }
+        VStack(alignment: .leading, spacing: 8) {
+            if model.dolbyVisionNoteVisible {
+                DolbyVisionNote(
+                    showInfo: { model.showInfoFromNote() },
+                    dismiss: { model.dismissDolbyVisionNote() }
+                )
+                .transition(entryTransition)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .continuousSurface(radius: OSDView.cornerRadius, shadow: .small)
-            .transition(.asymmetric(
-                insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .topLeading))
-                    .animation(.easeOut(duration: 0.12)),
-                removal: .opacity.animation(.easeIn(duration: 0.25))
-            ))
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(message.text)
+            if let message = model.osd {
+                messageView(message)
+            }
         }
+    }
+
+    private var entryTransition: AnyTransition {
+        Motion.osdTransition(reduceMotion: reduceMotion)
+    }
+
+    private func messageView(_ message: OSDMessage) -> some View {
+        HStack(spacing: 10) {
+            if let symbol = OSDView.symbol(for: message) {
+                Image(systemName: symbol)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(symbolStyle(symbol))
+                    .frame(width: 24)
+            }
+            text(for: message)
+                .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundStyle(Color.primary.opacity(0.9))
+                .fixedSize()
+            if model.showsSeekProgress, message.kind == .seek || message.kind == .frameStep {
+                ProgressRing()
+                    .frame(width: 16, height: 16)
+            }
+            if message.showsStartOver {
+                OSDButton(title: "Start Over") { model.startOver() }
+            }
+            if message.showsReveal {
+                OSDButton(title: "Show") { model.revealScreenshot() }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .continuousSurface(radius: OSDView.cornerRadius, shadow: .small)
+        .transition(entryTransition)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(message.text)
+    }
+
+    /// The warning glyph takes the warning colour at the symbol opacity; every other glyph is primary.
+    private func symbolStyle(_ symbol: String) -> Color {
+        if symbol == OSDMessage.warningSymbol { return WarningColor.onMaterial(colorScheme).opacity(0.7) }
+        return Color.primary.opacity(0.7)
     }
 
     /// "Loop 31:04 to 32:10" sets "to" at regular weight and secondary colour.
@@ -74,6 +95,7 @@ extension OSDView {
         case .loop: return "repeat"
         case .fileLoop: return "repeat.1"
         case .screenshot: return "camera"
+        case .noData, .damaged, .audioFailure: return OSDMessage.warningSymbol
         case .seek, .frameStep, .track, .episode: return nil
         }
     }
@@ -86,7 +108,7 @@ private struct OSDButton: View {
 
     var body: some View {
         Button(title, action: action)
-            .buttonStyle(.plain)
+            .buttonStyle(PressScaleStyle())
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(Color.accentColor)
             .padding(.horizontal, 10)
@@ -106,5 +128,65 @@ struct ProgressRing: View {
             .rotationEffect(.degrees(spinning ? 360 : 0))
             .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: spinning)
             .onAppear { spinning = true }
+    }
+}
+
+/// The Dolby Vision profile 5 note (design 9.13, mockup png/22): the OSD in a two-line variant
+/// with Show Info and OK. Shown by `PlayerModel` once per file, until OK, Esc or 10 s.
+struct DolbyVisionNote: View {
+    static let maxWidth: CGFloat = 452
+
+    let showInfo: () -> Void
+    let dismiss: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: OSDMessage.warningSymbol)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(WarningColor.onMaterial(colorScheme))
+                .frame(width: 20, height: 22)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(DolbyVisionPolicy.noteTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.primary.opacity(0.9))
+                Text(DolbyVisionPolicy.noteBody)
+                    .font(.system(size: 12))
+                    .foregroundStyle(ChromeStyle.secondaryText(colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    NoteButton(title: DolbyVisionPolicy.noteShowInfoButton, isPrimary: false, action: showInfo)
+                    NoteButton(title: DolbyVisionPolicy.noteOKButton, isPrimary: true, action: dismiss)
+                }
+                .padding(.top, 6)
+            }
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 12)
+        .padding(.vertical, 12)
+        .frame(maxWidth: DolbyVisionNote.maxWidth, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .continuousSurface(radius: OSDView.cornerRadius, shadow: .small)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(DolbyVisionPolicy.noteTitle)
+    }
+}
+
+private struct NoteButton: View {
+    let title: String
+    let isPrimary: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isPrimary ? Color.white : Color.primary.opacity(0.9))
+                .padding(.horizontal, 12)
+                .frame(height: 26)
+                .background(Capsule().fill(isPrimary ? Color(nsColor: .systemBlue) : Color.primary.opacity(0.1)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(PressScaleStyle())
     }
 }

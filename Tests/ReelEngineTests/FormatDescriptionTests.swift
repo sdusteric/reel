@@ -137,7 +137,7 @@ import Testing
 
     @Test func standardDefinitionFallsBackToBT601() {
         let color = VideoColor()
-        let extensions = color.formatExtensions(height: 480)
+        let extensions = color.formatExtensions(width: 640, height: 480)
         #expect(extensions[kCMFormatDescriptionExtension_YCbCrMatrix] as? String == kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4 as String)
         #expect(extensions[kCMFormatDescriptionExtension_ColorPrimaries] as? String == kCMFormatDescriptionColorPrimaries_SMPTE_C as String)
     }

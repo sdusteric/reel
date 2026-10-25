@@ -35,6 +35,8 @@ public struct RememberedState: VersionedDocument {
     public var subtitleSize: Double
     /// (M2) Playback menu "Auto-Advance to Next Episode", on by default.
     public var autoAdvance: Bool
+    /// (M3) Output device: System Default or a device by UID with its name (section 7.11).
+    public var outputDevice: OutputDeviceChoice
 
     public init(
         version: Int = RememberedState.currentVersion,
@@ -44,7 +46,8 @@ public struct RememberedState: VersionedDocument {
         controllerCenterX: Double = RememberedState.defaultControllerCenterX,
         controllerBottomY: Double = RememberedState.defaultControllerBottomY,
         subtitleSize: Double = SubtitleStyle.baseSize,
-        autoAdvance: Bool = true
+        autoAdvance: Bool = true,
+        outputDevice: OutputDeviceChoice = .systemDefault
     ) {
         self.version = version
         self.volume = RememberedState.clampVolume(volume)
@@ -54,6 +57,7 @@ public struct RememberedState: VersionedDocument {
         self.controllerBottomY = RememberedState.clampFraction(controllerBottomY)
         self.subtitleSize = SubtitleStyle(size: subtitleSize).size
         self.autoAdvance = autoAdvance
+        self.outputDevice = outputDevice
     }
 
     public init(from decoder: any Decoder) throws {
@@ -70,7 +74,8 @@ public struct RememberedState: VersionedDocument {
             controllerBottomY: try container.decodeIfPresent(Double.self, forKey: .controllerBottomY)
                 ?? defaults.controllerBottomY,
             subtitleSize: try container.decodeIfPresent(Double.self, forKey: .subtitleSize) ?? defaults.subtitleSize,
-            autoAdvance: try container.decodeIfPresent(Bool.self, forKey: .autoAdvance) ?? defaults.autoAdvance
+            autoAdvance: try container.decodeIfPresent(Bool.self, forKey: .autoAdvance) ?? defaults.autoAdvance,
+            outputDevice: try container.decodeIfPresent(OutputDeviceChoice.self, forKey: .outputDevice) ?? defaults.outputDevice
         )
     }
 
@@ -125,7 +130,8 @@ public final class StateStore: Sendable {
                 controllerCenterX: state.controllerCenterX,
                 controllerBottomY: state.controllerBottomY,
                 subtitleSize: state.subtitleSize,
-                autoAdvance: state.autoAdvance
+                autoAdvance: state.autoAdvance,
+                outputDevice: state.outputDevice
             )
         }
         try store.flushIfDue()

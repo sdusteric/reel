@@ -27,6 +27,9 @@ static inline int reel_av_time_base(void) { return AV_TIME_BASE; }
 // Thread-safe replacement for av_err2str(); copies the message into buf and returns buf.
 const char *reel_err_string(int errnum, char *buf, size_t buflen);
 
+// CRC-32 (IEEE, reflected, as EBML and zlib use it) of `length` bytes, through zlib's crc32.
+uint32_t reel_crc32(const uint8_t *data, size_t length);
+
 // MARK: libass messages
 
 // Receives each libass message, already formatted, with the sink the calling thread set through

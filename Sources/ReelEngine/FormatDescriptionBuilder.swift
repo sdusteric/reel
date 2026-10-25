@@ -150,7 +150,7 @@ public enum FormatDescriptionBuilder {
             formatDescription: nil
         )
 
-        var extensions = color.formatExtensions(height: height)
+        var extensions = color.formatExtensions(width: width, height: height)
         if let pixelAspect = format.pixelAspect, pixelAspect.num != pixelAspect.den {
             extensions[kCMFormatDescriptionExtension_PixelAspectRatio] = [
                 kCMFormatDescriptionKey_PixelAspectRatioHorizontalSpacing: Int(pixelAspect.num),

@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import ReelCore
+import Synchronization
 
 /// The audio renderer and its macOS 27 receiver on the shared synchronizer (design section 7.4).
 ///
@@ -70,8 +71,55 @@ public actor AudioOutput {
             isTestProcess: isTestProcess(environment: environment.values)
         )
         guard decision != .none else { return nil }
-        return AudioOutput(synchronizer: synchronizer, decision: decision)
+        let output = AudioOutput(synchronizer: synchronizer, decision: decision, deviceUID: preferredOutputDevice)
+        routing.withLock { state in
+            state.outputs.removeAll { $0.output == nil }
+            state.outputs.append(WeakOutput(output: output))
+        }
+        return output
     }
+
+    // MARK: Output device (section 7.11, D67)
+
+    private struct WeakOutput: Sendable {
+        weak var output: AudioOutput?
+    }
+
+    private struct Routing: Sendable {
+        var uid: String?
+        var outputs: [WeakOutput] = []
+    }
+
+    private static let routing = Mutex(Routing())
+
+    /// The `AudioDeviceUID` every renderer plays on; nil follows the system default. The app sets
+    /// it from the Output Device choice after resolving it against the device list, so a missing
+    /// device is never passed here.
+    public static var preferredOutputDevice: String? {
+        routing.withLock { $0.uid }
+    }
+
+    /// Changes the device for renderers attached later and for every live one.
+    public static func setPreferredOutputDevice(_ uid: String?) {
+        let live = routing.withLock { state -> [AudioOutput] in
+            state.uid = uid
+            state.outputs.removeAll { $0.output == nil }
+            return state.outputs.compactMap(\.output)
+        }
+        for output in live {
+            Task { await output.setOutputDevice(uid) }
+        }
+    }
+
+    /// `audioOutputDeviceUniqueID`; nil plays on the system default. The renderer flushes itself
+    /// after a change, which reaches the engine as a suggested flush.
+    public func setOutputDevice(_ uid: String?) {
+        guard renderer.audioOutputDeviceUniqueID != uid else { return }
+        renderer.audioOutputDeviceUniqueID = uid
+    }
+
+    /// The device this renderer plays on; nil is the system default.
+    public var outputDevice: String? { renderer.audioOutputDeviceUniqueID }
 
     /// Headless callers and test processes never get a renderer unless `REEL_ALLOW_AUDIO=1`, and
     /// then a silent one.
@@ -122,9 +170,10 @@ public actor AudioOutput {
         }
     }
 
-    private init(synchronizer: AVSampleBufferRenderSynchronizer, decision: AttachDecision) {
+    private init(synchronizer: AVSampleBufferRenderSynchronizer, decision: AttachDecision, deviceUID: String?) {
         let renderer = AVSampleBufferAudioRenderer()
         renderer.audioTimePitchAlgorithm = .timeDomain
+        renderer.audioOutputDeviceUniqueID = deviceUID
         let settings = AudioOutput.rendererSettings(volume: VolumeCurve.firstRunVolume, muted: false, decision: decision)
         renderer.volume = settings.gain
         renderer.isMuted = settings.muted

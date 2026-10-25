@@ -293,7 +293,9 @@ private final class Worker {
                 presentationTime: presentationTime,
                 duration: duration,
                 generation: tag.generation,
-                decoder: .software
+                decoder: .software,
+                // AV_FRAME_FLAG_CORRUPT is (1 << 0) in libavutil/frame.h; the macro is not imported.
+                concealedErrors: frame.pointee.decode_error_flags != 0 || frame.pointee.flags & 1 != 0
             )))
         }
     }
@@ -374,7 +376,7 @@ private final class Worker {
         let sourceStride: [Int32] = [frame.pointee.linesize.0, frame.pointee.linesize.1, frame.pointee.linesize.2, frame.pointee.linesize.3]
         let rows = sws_scale(scaler, source, sourceStride, 0, Int32(height), &destination, &destinationStride)
         guard rows > 0 else { return nil }
-        color.attach(to: buffer, height: height)
+        color.attach(to: buffer, width: width, height: height)
         return buffer
     }
 }

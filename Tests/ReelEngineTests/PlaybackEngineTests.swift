@@ -73,15 +73,15 @@ import Testing
         }
         _ = try await engine.open(Fixture.syncH264.url())
         await engine.play()
+        let generation = await engine.currentGeneration
+        let reports = await engine.lastReport?.generation
         // Audio decodes about 1 s ahead of the clock; wait until it is well ahead.
         let ahead = await instantWhen(timeout: .seconds(30)) {
             (delivered.withLock { $0.map(\.end).max() } ?? .zero) > engine.currentTime + .milliseconds(700)
         }
         #expect(ahead != nil, "audio got ahead of the clock")
-        let generation = await engine.currentGeneration
-        let reports = await engine.lastReport?.generation
+        // Read together, with no await between them: the clock runs on while an actor call waits.
         let decodedAhead = try #require(delivered.withLock { $0.map(\.end).max() })
-
         let clock = engine.currentTime
         flushed.store(true, ordering: .releasing)
         await engine.deliverAudioEventForTesting(.flushSuggested(.outputConfigurationChanged))
@@ -558,7 +558,11 @@ extension PlaybackEngineTests {
         let image = try #require(await engine.thumbnail(at: .seconds(31)))
         #expect(image.width == ThumbnailPack.standardWidth)
         #expect(image.pts <= .seconds(31))
-        #expect(log.all.contains { if case .thumbnailsProgress(let done, let total) = $0 { done == total && total > 0 } else { false } })
+        // The last progress event reaches the log through the event stream, after `finished()`.
+        let announced = await log.wait { log in
+            log.all.contains { if case .thumbnailsProgress(let done, let total) = $0 { done == total && total > 0 } else { false } }
+        }
+        #expect(announced, "the event stream announced the completed run")
         let packs = try FileManager.default.contentsOfDirectory(atPath: folder.url.path(percentEncoded: false))
         #expect(packs.contains { $0.hasSuffix(".thumbs") }, "the pack went to the configured cache: \(packs)")
         await engine.close()

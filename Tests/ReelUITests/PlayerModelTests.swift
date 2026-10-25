@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import ImageIO
 import ReelCore
+import Synchronization
 import Testing
 @testable import ReelUI
 
@@ -609,5 +610,361 @@ extension PlayerModelTests {
         CGImageDestinationAddImage(destination, image, nil)
         #expect(CGImageDestinationFinalize(destination))
         return data as Data
+    }
+}
+
+/// Milestone 3 model behaviour (design 7.7 to 7.11, 9.13, 9.14).
+@MainActor
+@Suite struct PlayerModelM3Tests {
+    private static let dolbyVision5 = DolbyVisionConfig(profile: 5, level: 6, rpu: true, el: false, bl: true, compatibilityID: 0)
+    private static let dolbyVision81 = DolbyVisionConfig(profile: 8, level: 6, rpu: true, el: false, bl: true, compatibilityID: 1)
+
+    @Test func seeksPastTheEndOfTheDataLandOnItAndSayWhy() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let engine = FakeEngine()
+        let (model, _, _) = makeModel(engine: engine, scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("cut.mkv"))
+        model.handle(.dataEnd(.seconds(380)))
+        #expect(model.effectiveEnd == .seconds(380))
+        #expect(abs((model.dataEndFraction ?? 0) - 380.0 / 600.0) < 0.0001)
+        model.seek(to: .seconds(500))
+        #expect(model.position == .seconds(380))
+        #expect(model.osd?.text == "No data after 06:20")
+        #expect(model.osd?.symbol == OSDMessage.warningSymbol)
+        await model.waitForEngineCommands()
+        #expect(engine.seeks == [.exact(.seconds(380))])
+        model.osd = nil
+        model.seek(by: -100, source: .keyboard)
+        #expect(model.position == .seconds(280))
+        #expect(model.osd?.kind == .seek, "a seek inside the data keeps the position OSD")
+    }
+
+    @Test func timesCountToTheEndOfTheData() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("cut.mkv"))
+        model.handle(.time(.seconds(300)))
+        #expect(model.trailingLabel == "-05:00")
+        model.handle(.dataEnd(.seconds(380)))
+        #expect(model.trailingLabel == "-01:20", "remaining time counts to dataEnd")
+        model.handle(.time(.seconds(500)))
+        #expect(model.position == .seconds(380), "the clock never runs past the data")
+        model.setShowRemainingTime(false)
+        #expect(model.trailingLabel == "10:00", "the total stays the header duration")
+        model.handle(.ended)
+        #expect(model.position == .seconds(380))
+    }
+
+    @Test func aDataEndAtTheDurationChangesNothing() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("whole.mkv"))
+        model.handle(.dataEnd(.seconds(600)))
+        #expect(model.dataEndFraction == nil)
+        #expect(model.missingTailText(atFraction: 0.99) == nil)
+        model.seek(to: .seconds(600))
+        #expect(model.osd == nil)
+    }
+
+    @Test func damagedOSDsAreLimitedToOnePerKindEveryTenSeconds() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let clock = TestClock()
+        let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch, clock: clock)
+        await openAndSettle(model, try scratch.makeMediaFile("bad.mkv"))
+        model.handle(.damaged(at: .seconds(724), kind: .video))
+        #expect(model.osd?.text == "Skipped damaged video at 12:04")
+        #expect(model.osd?.symbol == OSDMessage.warningSymbol)
+        model.osd = nil
+        clock.advance(by: 4)
+        model.handle(.damaged(at: .seconds(730), kind: .video))
+        #expect(model.osd == nil, "a second video region within 10 s only counts")
+        model.handle(.damaged(at: .seconds(731), kind: .audio))
+        #expect(model.osd?.text == "Skipped damaged audio at 12:11", "audio has its own limit")
+        model.osd = nil
+        clock.advance(by: 7)
+        model.handle(.damaged(at: .seconds(740), kind: .video))
+        #expect(model.osd?.text == "Skipped damaged video at 12:20")
+        #expect(model.damagedCount == 4)
+    }
+
+    @Test func theVKeyNamesItselfAndVisibilityResetsOnTheNextFile() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        var options = FakeEngine.Options()
+        options.extraStreams = [StreamInfo(index: 2, kind: .subtitle, codec: "subrip", timeBase: Rational(1, 1_000), language: "eng")]
+        let (model, _, _) = makeModel(engineFactory: { [options] _ in FakeEngine(options: options) }, scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        await waitUntil("tracks") { model.tracks != nil }
+        model.toggleSubtitlesVisible()
+        #expect(model.osd?.text == "Subtitles Hidden, press V to show")
+        #expect(model.tracks?.subtitlesVisible == false)
+        await model.open(try scratch.makeMediaFile("b.mkv"))
+        await waitUntil("tracks of the next file") { model.tracks != nil }
+        #expect(model.tracks?.subtitlesVisible == true, "a stray v never carries over")
+        model.toggleSubtitlesVisible()
+        model.toggleSubtitlesVisible()
+        #expect(model.osd?.text == "Subtitles Shown")
+    }
+
+    @Test func theDolbyVisionNoteShowsOncePerFilePerSession() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        var options = FakeEngine.Options()
+        options.dolbyVision = PlayerModelM3Tests.dolbyVision5
+        let (model, _, _) = makeModel(engineFactory: { [options] _ in FakeEngine(options: options) }, scratch: scratch)
+        var announcements: [String] = []
+        model.onAnnouncement = { announcements.append($0) }
+        let first = try scratch.makeMediaFile("harbour.mp4")
+        await model.open(first)
+        #expect(model.dolbyVisionNoteVisible)
+        #expect(model.dynamicRangePlan.note)
+        #expect(model.dynamicRangePlan.tag == "Dolby Vision 5")
+        #expect(announcements == ["\(DolbyVisionPolicy.noteTitle). \(DolbyVisionPolicy.noteBody)"])
+        model.dismissDolbyVisionNote()
+        #expect(!model.dolbyVisionNoteVisible)
+        await model.open(first)
+        #expect(!model.dolbyVisionNoteVisible, "the same file again in this session does not repeat it")
+        await model.open(try scratch.makeMediaFile("other.mp4"))
+        #expect(model.dolbyVisionNoteVisible)
+        #expect(announcements.count == 2)
+        model.showInfoFromNote()
+        #expect(!model.dolbyVisionNoteVisible)
+        #expect(model.videoInfoVisible)
+    }
+
+    @Test func theNoteClosesItselfAfterTenSeconds() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        var options = FakeEngine.Options()
+        options.dolbyVision = PlayerModelM3Tests.dolbyVision5
+        let waits = Mutex<[TimeInterval]>([])
+        let (model, _, _) = makeModel(
+            engineFactory: { [options] _ in FakeEngine(options: options) },
+            scratch: scratch,
+            sleep: { seconds in
+                waits.withLock { $0.append(seconds) }
+                if seconds == DolbyVisionPolicy.noteSeconds { return }
+                await longSleep(seconds)
+            }
+        )
+        var shown = 0
+        model.onAnnouncement = { _ in shown += 1 }
+        await model.open(try scratch.makeMediaFile("harbour.mp4"))
+        await waitUntil("the note times out") { !model.dolbyVisionNoteVisible }
+        #expect(shown == 1)
+        #expect(waits.withLock { $0.contains(10) })
+    }
+
+    @Test func aProfile8FileGetsNoNoteAndAnHDR10Plan() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        var options = FakeEngine.Options()
+        options.dolbyVision = PlayerModelM3Tests.dolbyVision81
+        let (model, _, _) = makeModel(engineFactory: { [options] _ in FakeEngine(options: options) }, scratch: scratch)
+        await model.open(try scratch.makeMediaFile("dv81.mp4"))
+        #expect(!model.dolbyVisionNoteVisible)
+        #expect(model.dynamicRangePlan.layer == .high)
+        #expect(model.dynamicRangePlan.tag == "Dolby Vision")
+        #expect(!model.dynamicRangePlan.warning)
+    }
+
+    @Test func escapeClosesTheNoteThenVideoInfo() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        var options = FakeEngine.Options()
+        options.dolbyVision = PlayerModelM3Tests.dolbyVision5
+        let (model, _, _) = makeModel(engineFactory: { [options] _ in FakeEngine(options: options) }, scratch: scratch)
+        #expect(!model.dismissTransient())
+        model.toggleVideoInfo()
+        #expect(!model.videoInfoVisible, "nothing to describe without a file")
+        await model.open(try scratch.makeMediaFile("harbour.mp4"))
+        model.toggleVideoInfo()
+        #expect(model.videoInfoVisible)
+        #expect(model.dismissTransient())
+        #expect(!model.dolbyVisionNoteVisible)
+        #expect(model.videoInfoVisible, "the first Esc only closes the note")
+        #expect(model.dismissTransient())
+        #expect(!model.dolbyVisionNoteVisible && !model.videoInfoVisible)
+        #expect(!model.dismissTransient())
+    }
+
+    @Test func theRangePlanFollowsTheSettingAndTheDisplayWithoutReopening() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        var options = FakeEngine.Options()
+        options.dynamicRange = .hdr10
+        let engine = FakeEngine(options: options)
+        let (model, _, _) = makeModel(engine: engine, scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("hdr.mkv"))
+        await waitUntil("range") { model.dynamicRange == .hdr10 }
+        await model.waitForEngineCommands()
+        let calls = engine.calls
+        #expect(model.dynamicRangePlan.layer == .high)
+        #expect(model.dynamicRangePlan.tagDetail == nil)
+        model.setDisplay(.sdr)
+        #expect(model.dynamicRangePlan.layer == .high, "the display never reconfigures the layer")
+        #expect(model.dynamicRangePlan.tagDetail == "SDR")
+        model.setDisplay(.external)
+        #expect(model.dynamicRangePlan.tagDetail == nil)
+        model.setHDRSetting(.limited)
+        #expect(model.dynamicRangePlan.layer == .constrainedHigh)
+        model.setHDRSetting(.off)
+        #expect(model.dynamicRangePlan.layer == .standard)
+        #expect(model.dynamicRangePlan.tagDetail == "SDR")
+        #expect(engine.calls == calls, "no engine command and no reopen")
+    }
+
+    @Test func theRangeSettingStartsFromTheStoredSetting() throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch, settings: Settings(highDynamicRange: .limited))
+        #expect(model.hdrSetting == .limited)
+    }
+
+    @Test func anOpenFailureBecomesAClassifiedProblem() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let cases: [(EngineError, MediaProblem)] = [
+            (.notMedia("Invalid data found when processing input"), .notMedia),
+            (.cutShort("End of file"), .cutShort),
+            (.unsupportedCodec("prores"), .unsupportedCodec("ProRes")),
+            (.noPlayableStream, .noPlayableStream),
+            (.io("Input/output error"), .unreadable("Input/output error")),
+        ]
+        for (error, expected) in cases {
+            var options = FakeEngine.Options()
+            options.openError = error
+            let (model, _, _) = makeModel(engine: FakeEngine(options: options), scratch: scratch)
+            await model.open(try scratch.makeMediaFile("bad.mkv"))
+            #expect(model.problem == expected, "\(error)")
+            #expect(model.showsFailureCard)
+            #expect(model.problemDetail?.isEmpty == false)
+            #expect(model.playbackState == .failed)
+            #expect(model.title == "bad.mkv", "the title bar keeps the file name")
+            #expect(model.errorMessage == error.errorDescription)
+        }
+    }
+
+    @Test func aFailureClearsOnTheNextOpen() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        var bad = FakeEngine.Options()
+        bad.openError = .notMedia("x")
+        let (model, _, _) = makeModel(
+            engineFactory: { [bad] in $0.lastPathComponent == "bad.mkv" ? FakeEngine(options: bad) : FakeEngine() },
+            scratch: scratch
+        )
+        await model.open(try scratch.makeMediaFile("bad.mkv"))
+        #expect(model.problem == .notMedia)
+        await model.open(try scratch.makeMediaFile("good.mkv"))
+        #expect(model.problem == nil)
+        #expect(model.problemDetail == nil)
+        #expect(model.hasMedia)
+    }
+
+    @Test func aDisconnectedDrivePausesOnTheFrameAndTryAgainReopens() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let engines = EngineBox()
+        let (model, resume, _) = makeModel(engineFactory: { engines.make($0) }, scratch: scratch)
+        let file = try scratch.makeMediaFile("show.mkv")
+        await openAndSettle(model, file)
+        model.handle(.time(.seconds(300)))
+        model.handle(.problem(.volumeGone("Eric X9 Pro")))
+        #expect(model.isVolumeGone)
+        #expect(model.hasMedia, "the last frame stays")
+        #expect(!model.isPlaying)
+        #expect(model.problemExplanation == "Reel saved your place at 05:00 and will continue when the drive is connected again.")
+        #expect(try resume.entry(for: ContentKey(contentsOf: file))?.position == .seconds(300))
+        await model.waitForEngineCommands()
+        #expect(engines.all[0].calls.contains(.pause))
+        await model.performProblemAction(.tryAgain)
+        #expect(engines.all.count == 2, "a new engine reopens the same file")
+        #expect(model.problem == nil)
+        #expect(model.title == "show.mkv")
+    }
+
+    @Test func theCardButtonsReachTheApp() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        var options = FakeEngine.Options()
+        options.openError = .cutShort("End of file")
+        let (model, _, _) = makeModel(engine: FakeEngine(options: options), scratch: scratch)
+        var revealed: [URL] = []
+        var openPanels = 0
+        model.onRevealFile = { revealed.append($0) }
+        model.onOpenAnotherFile = { openPanels += 1 }
+        let file = try scratch.makeMediaFile("short.mkv")
+        await model.open(file)
+        await model.performProblemAction(.showInFinder)
+        await model.performProblemAction(.openAnotherFile)
+        #expect(revealed == [file])
+        #expect(openPanels == 1)
+        await model.performProblemAction(.closeFile)
+        #expect(model.problem == nil)
+        #expect(model.playbackState == .idle)
+        #expect(model.title == nil)
+    }
+
+    @Test func anAudioTrackThatCannotBeDecodedIsListedAsDisabled() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        await waitUntil("tracks") { model.tracks != nil }
+        model.audioTrackFailed(streamIndex: 1, reason: "No decoder for AC-3")
+        #expect(model.osd?.text.hasPrefix("Audio can't be played: ") == true)
+        #expect(model.osd?.symbol == OSDMessage.warningSymbol)
+        model.openPanel(.audio)
+        let row = try #require(model.panelRows.first)
+        #expect(!row.isEnabled)
+        #expect(row.detail == "No decoder for AC-3")
+        #expect(model.isPlaying, "the video keeps playing")
+    }
+
+    @Test func theEnginesAudioFailureEventDisablesTheTrack() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        await waitUntil("tracks") { model.tracks != nil }
+        model.handle(.audioTrackFailed(streamIndex: 1, reason: "Unsupported codec: truehd"))
+        #expect(model.osd?.text.hasPrefix("Audio can't be played: ") == true)
+        model.openPanel(.audio)
+        let row = try #require(model.panelRows.first)
+        #expect(!row.isEnabled)
+        #expect(row.detail == "Unsupported codec: truehd")
+    }
+
+    /// The engine sends `.problem` (no detail for notMedia and cutShort) and then `.failed`, whose
+    /// reason becomes the card's detail line.
+    @Test func aProblemWithoutDetailTakesTheReasonOfTheFailure() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch)
+        model.handle(.problem(.notMedia))
+        #expect(model.problemDetail == nil)
+        let error = EngineError.notMedia("Invalid data found when processing input")
+        model.handle(.failed(error))
+        #expect(model.problem == .notMedia)
+        #expect(model.problemDetail == error.errorDescription)
+    }
+
+    @Test func perFileM3StateIsClearedOnTheNextOpen() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let (model, _, _) = makeModel(engineFactory: { _ in FakeEngine() }, scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        model.handle(.dataEnd(.seconds(100)))
+        model.handle(.damaged(at: .seconds(5), kind: .video))
+        model.setDroppedFrames(3)
+        await model.open(try scratch.makeMediaFile("b.mkv"))
+        #expect(model.dataEnd == nil)
+        #expect(model.damagedCount == 0)
+        #expect(model.droppedFrames == 0)
     }
 }

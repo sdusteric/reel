@@ -1,6 +1,6 @@
 import Foundation
 
-/// The four user settings (design section 11.1). Missing keys decode to their defaults, so an
+/// The user settings (design section 11.1): the M1 four and (M3) High dynamic range. Missing keys decode to their defaults, so an
 /// older file keeps working when a setting is added.
 public struct Settings: VersionedDocument {
     public static let currentVersion = 1
@@ -14,19 +14,23 @@ public struct Settings: VersionedDocument {
     public var keyframePreview: Bool
     /// Hardware decoding. Off forces software, for diagnosis.
     public var hardwareDecoding: Bool
+    /// (M3) High dynamic range: Full, Limited or Off (section 7.7, D51).
+    public var highDynamicRange: HDRSetting
 
     public init(
         version: Int = Settings.currentVersion,
         resumePlayback: Bool = true,
         showRemainingTime: Bool = true,
         keyframePreview: Bool = true,
-        hardwareDecoding: Bool = true
+        hardwareDecoding: Bool = true,
+        highDynamicRange: HDRSetting = .default
     ) {
         self.version = version
         self.resumePlayback = resumePlayback
         self.showRemainingTime = showRemainingTime
         self.keyframePreview = keyframePreview
         self.hardwareDecoding = hardwareDecoding
+        self.highDynamicRange = highDynamicRange
     }
 
     public init(from decoder: any Decoder) throws {
@@ -39,6 +43,9 @@ public struct Settings: VersionedDocument {
         keyframePreview = try container.decodeIfPresent(Bool.self, forKey: .keyframePreview) ?? defaults.keyframePreview
         hardwareDecoding = try container.decodeIfPresent(Bool.self, forKey: .hardwareDecoding)
             ?? defaults.hardwareDecoding
+        // An unknown value (a newer build's) falls back to the default rather than failing the file.
+        let hdr = try container.decodeIfPresent(String.self, forKey: .highDynamicRange)
+        highDynamicRange = hdr.flatMap(HDRSetting.init(rawValue:)) ?? defaults.highDynamicRange
     }
 }
 

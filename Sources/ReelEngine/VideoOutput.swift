@@ -12,13 +12,20 @@ public struct DecodedFrame: Sendable {
     public let duration: CMTime
     public let generation: UInt64
     public let decoder: VideoDecoderKind
+    /// The decoder found errors in this frame's data and concealed them (libavcodec's
+    /// `decode_error_flags` or `AV_FRAME_FLAG_CORRUPT`): damage that still produced a picture.
+    public let concealedErrors: Bool
 
-    public init(pixelBuffer: CVReadOnlyPixelBuffer, presentationTime: CMTime, duration: CMTime, generation: UInt64, decoder: VideoDecoderKind) {
+    public init(
+        pixelBuffer: CVReadOnlyPixelBuffer, presentationTime: CMTime, duration: CMTime, generation: UInt64,
+        decoder: VideoDecoderKind, concealedErrors: Bool = false
+    ) {
         self.pixelBuffer = pixelBuffer
         self.presentationTime = presentationTime
         self.duration = duration
         self.generation = generation
         self.decoder = decoder
+        self.concealedErrors = concealedErrors
     }
 
     public var time: MediaTime {
@@ -176,6 +183,8 @@ public actor VideoOutput {
 
     private let receiver: AVSampleBufferVideoRenderer.Receiver
     private var generation: UInt64 = 0
+    /// The receiver left the synchronizer (`detach`); nothing is enqueued or flushed any more.
+    public private(set) var isDetached = false
     private var formatCache: (key: FormatKey, description: CMVideoFormatDescription)?
     private let ahead = Mutex<Int>(0)
     private var spaceWaiters: [CheckedContinuation<Void, Never>] = []
@@ -237,7 +246,7 @@ public actor VideoOutput {
         defer {
             if releasingSlot { releaseSlot() }
         }
-        guard frame.generation >= generation else { return .dropped }
+        guard frame.generation >= generation, !isDetached else { return .dropped }
         let sample: CMReadySampleBuffer<CMSampleBuffer.DynamicContent>
         do {
             sample = try makeSampleBuffer(frame)
@@ -270,7 +279,25 @@ public actor VideoOutput {
 
     /// Flushes the receiver. With `removingDisplayedImage` false the last picture stays on screen.
     public func flush(removingDisplayedImage: Bool = false) async {
+        guard !isDetached else { return }
         await receiver.flush(removingDisplayedImage: removingDisplayedImage)
+    }
+
+    /// Takes the renderer off `synchronizer` (section 7.9: a layer on a running clock wakes the
+    /// process about 50 times a second with nothing queued). The layer keeps its last picture.
+    /// The output is finished afterwards; re-adding the layer makes a new receiver and output.
+    @discardableResult
+    public func detach(from synchronizer: AVSampleBufferRenderSynchronizer) async -> Bool {
+        guard !isDetached else { return false }
+        // Set first: an enqueue entering while the flush below suspends is dropped instead of
+        // waiting on a receiver that is about to leave. The flush cancels one already waiting.
+        isDetached = true
+        resumeSpaceWaiters()
+        await receiver.flush(removingDisplayedImage: false)
+        // `removeReceiver` takes the receiver as `sending`. This actor owns it and never uses it
+        // again once `isDetached` is set, so handing it over cannot race.
+        nonisolated(unsafe) let owned = receiver
+        return await synchronizer.removeReceiver(owned, at: .invalid)
     }
 
     private func resumeSpaceWaiters() {
@@ -291,7 +318,11 @@ public actor VideoOutput {
             )
         }
         let description: CMVideoFormatDescription
-        if let cached = formatCache, cached.key == key {
+        // The key alone is not enough: a software buffer after VideoToolbox ones has the same size,
+        // format and colour but other extensions (CGColorSpace, chroma siting), and a sample
+        // buffer whose description does not match its image fails with -12743.
+        if let cached = formatCache, cached.key == key,
+           frame.pixelBuffer.withUnsafeBuffer({ CMVideoFormatDescriptionMatchesImageBuffer(cached.description, imageBuffer: $0) }) {
             description = cached.description
         } else {
             description = try frame.pixelBuffer.withUnsafeBuffer { try VideoOutput.formatDescription(for: $0) }

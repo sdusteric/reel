@@ -41,6 +41,9 @@ public final class PiPFrameCompositor: @unchecked Sendable {
     }
 
     private let context: CIContext
+    /// Colour-managed (extended linear working space) for HDR frames, where the subtitle must be
+    /// drawn at reference white rather than at the signal peak.
+    private let hdrContext: CIContext
     private let lock = NSLock()
     private var stateStorage = State()
 
@@ -54,6 +57,16 @@ public final class PiPFrameCompositor: @unchecked Sendable {
         // No colour management: the frame converts YCbCr to RGB and back with its own matrix,
         // so pixels without a subtitle come out as they went in.
         context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull(), .cacheIntermediates: false])
+        hdrContext = CIContext(options: [.cacheIntermediates: false, .name: "reel.pip-hdr"])
+    }
+
+    /// The colour space Core Image writes an HDR frame in, from its transfer attachment; nil for SDR.
+    static func hdrColorSpace(of buffer: CVPixelBuffer) -> CGColorSpace? {
+        switch HDRToneMapper.transfer(of: buffer) {
+        case .pq?: CGColorSpace(name: CGColorSpace.itur_2100_PQ)
+        case .hlg?: CGColorSpace(name: CGColorSpace.itur_2100_HLG)
+        case nil: nil
+        }
     }
 
     public var statistics: Statistics { withState { $0.statistics } }
@@ -86,18 +99,23 @@ public final class PiPFrameCompositor: @unchecked Sendable {
         // Core Image has a bottom-left origin.
         let placement = CGAffineTransform(scaleX: CGFloat(rect.width) * scaleX / CGFloat(subtitle.image.width), y: CGFloat(rect.height) * scaleY / CGFloat(subtitle.image.height))
             .concatenating(CGAffineTransform(translationX: CGFloat(rect.x) * scaleX, y: CGFloat(height) - CGFloat(rect.maxY) * scaleY))
-        let overlay = CIImage(cgImage: subtitle.image, options: [.colorSpace: NSNull()]).transformed(by: placement)
+        let hdrSpace = frame.pixelBuffer.withUnsafeBuffer { PiPFrameCompositor.hdrColorSpace(of: $0) }
+        // HDR: the subtitle is sRGB, so white enters the extended linear working space at 1.0,
+        // which is reference white (203 nits in PQ, 75% in HLG) once written back to the frame.
+        let overlay = (hdrSpace == nil ? CIImage(cgImage: subtitle.image, options: [.colorSpace: NSNull()]) : CIImage(cgImage: subtitle.image))
+            .transformed(by: placement)
         // Only the subtitle's region is rendered (on whole chroma pairs); the rest of the copy is
         // the frame's own bytes, so pixels without a subtitle stay exactly as decoded.
         let region = PiPFrameCompositor.evenRegion(overlay.extent, width: width, height: height)
         let rendered = frame.pixelBuffer.withUnsafeBuffer { source -> Bool in
             guard !region.isEmpty, PiPFrameCompositor.copyPlanes(from: source, to: copy) else { return false }
             CVBufferPropagateAttachments(source, copy)
-            let base = CIImage(cvPixelBuffer: source, options: [.colorSpace: NSNull()])
+            let base = hdrSpace == nil ? CIImage(cvPixelBuffer: source, options: [.colorSpace: NSNull()]) : CIImage(cvPixelBuffer: source)
             let destination = CIRenderDestination(pixelBuffer: copy)
-            destination.colorSpace = nil
+            destination.colorSpace = hdrSpace
             do {
-                let task = try context.startTask(toRender: overlay.composited(over: base), from: region, to: destination, at: region.origin)
+                let renderer = hdrSpace == nil ? context : hdrContext
+                let task = try renderer.startTask(toRender: overlay.composited(over: base), from: region, to: destination, at: region.origin)
                 _ = try task.waitUntilCompleted()
                 return true
             } catch {

@@ -91,6 +91,70 @@ import Testing
         await engine.close()
     }
 
+    // MARK: M3: HDR and colour management (sections 7.7 and 16)
+
+    private static func whiteBox(width: Int, height: Int) throws -> CGImage {
+        let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try #require(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ))
+        context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return try #require(context.makeImage())
+    }
+
+    @Test(arguments: [HDRFixture.pqHEVCMKV, .hlgHEVCMP4, .dv81MP4])
+    func hdrScreenshotsAreToneMappedWithTheSubtitleAtFullWhite(_ fixture: HDRFixture) throws {
+        let folder = try TemporaryFolder()
+        let ramps = try RampSet.load()
+        let ramp = ramps[fixture.ramp]
+        let frame = try FrameGrabber.grab(url: fixture.url(), at: .seconds(0.5)).frame
+        let black = ramp.patches[0]
+        let box = PixelRect(x: black.center.x - 40, y: black.center.y - 20, width: 80, height: 40)
+        let url = folder.url.appending(path: "hdr.png")
+        try Screenshot.write(frame: frame.pixelBuffer, subtitle: SubtitleBitmap(image: try Self.whiteBox(width: 80, height: 40), rect: box), to: url)
+        let image = try Self.image(at: url)
+        #expect(image.width == 1920 && image.height == 1080)
+        let raster = try #require(SRGBRaster(image))
+        let lumas = ramp.patches.filter { $0.kind == "neutral" }.dropFirst().map { raster.mean(centerX: $0.center.x, centerY: $0.center.y).luma.rounded() }
+        for index in lumas.indices.dropFirst() where lumas[index - 1] < 255 {
+            #expect(lumas[index] > lumas[index - 1], "\(lumas)")
+        }
+        let white = try #require(ramp.patches.first { fixture.ramp == .pq ? $0.nits == 203 : $0.signal == 0.75 })
+        let value = raster.mean(centerX: white.center.x, centerY: white.center.y)
+        #expect((190...250).contains(value.luma), "reference white \(value)")
+        #expect(value.neutralSpread <= 3)
+        // The subtitle is drawn after tone mapping, so its white is SDR white.
+        let subtitle = raster.mean(centerX: black.center.x, centerY: black.center.y, size: 8)
+        #expect(subtitle.r >= 254 && subtitle.g >= 254 && subtitle.b >= 254, "subtitle \(subtitle)")
+    }
+
+    @Test(arguments: [HDRFixture.sdrH264, .pqHEVCMKV])
+    func screenshotsAreSRGBWithAnEmbeddedProfile(_ fixture: HDRFixture) throws {
+        let folder = try TemporaryFolder()
+        let frame = try FrameGrabber.grab(url: fixture.url(), at: .seconds(0.5)).frame
+        let url = try Screenshot.save(frame: frame.pixelBuffer, subtitle: nil, directory: folder.url, stem: "ramp", position: .seconds(0.5))
+        let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let properties = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        #expect(properties[kCGImagePropertyProfileName] as? String != nil, "no ICC profile in \(properties)")
+        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(image.colorSpace?.copyICCData() != nil)
+        #expect(image.colorSpace?.name == CGColorSpace.sRGB)
+    }
+
+    @Test func aScreenshotWrittenByTheEngineEmbedsAProfile() async throws {
+        let folder = try TemporaryFolder()
+        let engine = M2Engines.make(environment: ["REEL_SCREENSHOTS": folder.url.path(percentEncoded: false)])
+        _ = try await engine.open(Fixture.h264.url())
+        _ = await engine.seekAndWait(.exact(.seconds(1)))
+        let url = try await engine.takeScreenshot()
+        await engine.close()
+        let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let properties = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        #expect(properties[kCGImagePropertyProfileName] != nil)
+    }
+
     @Test func theScreenshotFolderDefaultsToPicturesReelUnderHome() {
         // Only the path is computed; nothing is written there.
         let environment = ReelEnvironment(["HOME": "/Users/someone"])

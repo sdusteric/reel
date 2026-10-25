@@ -99,16 +99,20 @@ enum TrackPanelContent {
         return rows
     }
 
-    static func audioRows(_ tracks: TrackState?) -> [TrackRow] {
+    /// `failures` lists audio tracks whose decoder would not open: they show their reason and
+    /// cannot be chosen (as subtitles do, 8.7 and 9.14).
+    static func audioRows(_ tracks: TrackState?, failures: [Int: String] = [:]) -> [TrackRow] {
         guard let tracks else { return [] }
         return tracks.audio.enumerated().map { offset, track in
             let label = track.label(ordinal: offset + 1)
+            let reason = failures[track.streamIndex]
             return TrackRow(
                 id: "audio-\(track.streamIndex)",
                 title: label.title,
-                detail: label.detail,
+                detail: reason ?? label.detail,
                 tag: label.tag,
                 isSelected: tracks.selectedAudio == track.streamIndex,
+                isEnabled: reason == nil,
                 choice: .audio(track.streamIndex)
             )
         }
@@ -419,10 +423,9 @@ private struct StepperCell: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Color.primary.opacity(PanelMetrics.stepperGlyph))
                 .frame(width: 29.75, height: 26)
-                .background(Color.primary.opacity(hovering ? 0.08 : 0))
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressFillStyle(hovering: hovering))
         .onHover { hovering = $0 }
         .accessibilityLabel(label)
     }

@@ -7,16 +7,22 @@ as the clock. The design doc is the source of truth: `docs/superpowers/specs/202
 ## Commands
 
 ```sh
-scripts/deps.sh                 # static LGPL FFmpeg 9.0.2 + libass into vendor/prefix (stamped, about 60 s cold)
+scripts/deps.sh                 # static LGPL FFmpeg 9.0.2 (+ scripts/patches) + libass into vendor/prefix (stamped, about 60 s cold)
 scripts/fixtures.sh             # generated test media into ${REEL_FIXTURES:-build/fixtures} (stamped, about 50 s)
 swift build --scratch-path "$TMPDIR/reel-<task>"
 swift test --scratch-path "$TMPDIR/reel-<task>" --filter <Suite>
 swiftlint lint --strict
 REEL_SCRATCH="$TMPDIR/reel-check" scripts/check.sh   # every gate
-scripts/shots.sh                # 16 scenarios x light/dark background screenshots into build/shots
-REEL_SCRATCH="$TMPDIR/reel-accept" scripts/accept.sh offline   # M1 criteria, then the M2 group
+scripts/shots.sh                # 24 scenarios x light/dark background screenshots into build/shots
+REEL_SCRATCH="$TMPDIR/reel-accept" scripts/accept.sh offline   # M1 criteria, then the M2 and M3 groups
+REEL_SCRATCH="$TMPDIR/reel-accept" scripts/accept.sh m3        # only AC-M3-1 to AC-M3-10
 scripts/release.sh [--notes <file.md>] [--dry-run <dir>]   # check.sh, release bundle, app-updates publish.sh
 ```
+
+`check.sh` gates, in order: deps, fixtures, build, test, lint, license, `av-sync` (both sync
+fixtures, at most 20 ms sequentially and after 10 seeks), `soak-smoke` (12 corpus files through
+`reelctl soak`: no crash, hang or manifest mismatch), no-sparkle, bundle, codesign, plist, sparkle,
+requirement, dashes.
 
 `reelctl` (headless, always with `REEL_HOME` set to a temp dir; `swift build -c release` puts it in
 `$SCRATCH/release/reelctl`). `probe`, `decode-bench`, `seek-bench` and `av-sync` are the M1 tools;
@@ -29,16 +35,36 @@ reelctl episodes <file> --json                            # folder order, index,
 reelctl seek-bench <file> [--runs N] [--with-thumbs] --json   # M1 seek thresholds, VP9 hand-offs; --with-thumbs restarts generation before each gated exact seek
 ```
 
-`scripts/shots.sh` compiles `scripts/shot-stats.swift` into
-`build/shots/bin`; `shot-stats <png> --ink x y w h` counts white pixels with a dark outline
-(subtitle text).
+The M3 ones (`probe --json` also prints `dolbyVision`):
 
+```sh
+reelctl hdr <file> [--decoder hw|sw] [--display sdr|xdr|external|headroom=X] [--display-headroom X] [--setting full|limited|off] [--screenshot png] [--thumbnail] [--pip-check] --json   # kind, decoded patch codes, attachments, DynamicRangePlan, tone-mapped patches, screenshot, thumbnail and PiP readbacks
+reelctl energy-bench <file> --mode play|paused|occluded [--seconds N] [--warmup N] [--no-tile-check] --json   # cpuPercent, wakeupsPerSecond, engine counters, resyncMs, VP9 tile check share; no audio renderer
+reelctl soak <file|dir> [--seed S] [--ops N] [--seconds N] --json    # one child per file (soak-one): crashes, hangs, leaks, manifest mismatches, dataEnd
+reelctl soak --list <file>... [--seed S] [--ops N] --json            # the same on a list (the ASan run in accept.sh uses 24 files)
+reelctl devices --json                                    # audio output devices (uid, name, isDefault), attaches no renderer
+reelctl color <file> --frame N [--decoder hw|sw] [--screenshot png] --json   # Reel's sRGB against AVAssetImageGenerator on a 6 x 4 grid, attachments, ICC (sdr/bars*.mp4)
+```
+
+`scripts/shots.sh` compiles `scripts/shot-stats.swift` into `build/shots/bin`;
+`shot-stats <png> [x y w h]` prints size and luma statistics, `--ink x y w h` counts white pixels
+with a dark outline (subtitle text) and `--patch x y w h` prints the mean sRGB r g b of a region
+(the HDR shots are checked with it). The ASan step of `accept.sh m3` builds into
+`$TMPDIR/reel-asan` and deletes that exact path afterwards.
+
+- FFmpeg carries one patch, `scripts/patches/ffmpeg-vp9-tile-check.patch` (the VP9 tile check of
+  design 7.10); `deps.sh` applies it and hashes it into its stamp.
+- `scripts/make-dovi-rpu.c` is a fixture generator built against Homebrew's FFmpeg by `fixtures.sh`
+  (Dolby Vision files with real RPUs); it is never linked into Reel.
 - Run `scripts/deps.sh` before the first build: it builds the static libraries and syncs their
   headers into `Sources/CReelDeps/include/` (gitignored). Swift must never see Homebrew's FFmpeg
   headers; their struct layout differs and the spike crashed with SIGBUS.
 - Several agents may build at once. Always pass your own `--scratch-path` outside the repo and
   delete it by its exact path when done.
 - Use `caffeinate -i` for long runs (deps, fixtures, benches).
+- `check.sh` and `accept.sh` run `swift test` with `SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=8`
+  (at most 8 test cases at once). Unbounded, the decode tests fill the cooperative pool for the first
+  seconds and the async timing tests beside them fail. Set it too when you run the whole suite.
 - Set `REEL_NO_UPDATES=1` for every test, shot or `reelctl` run (check.sh and shots.sh export it).
 - `scripts/release.sh` publishes a real update for the user. Agents run it only with
   `--dry-run <dir>`, and only when asked.

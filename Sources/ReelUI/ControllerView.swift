@@ -30,42 +30,7 @@ enum ChromeStyle {
     static let hitSize: CGFloat = 28
     static let playHitSize: CGFloat = 32
     static let controllerSpace = "reel.controller"
-}
-
-/// The curves and durations of design 15.2. With Reduce Motion every movement is a 0.1 s
-/// opacity change.
-enum Motion {
-    static func easeOut(_ duration: TimeInterval) -> Animation {
-        .timingCurve(0.23, 1, 0.32, 1, duration: duration)
-    }
-
-    static func easeIn(_ duration: TimeInterval) -> Animation {
-        .timingCurve(0.4, 0, 1, 1, duration: duration)
-    }
-
-    static func easeInOut(_ duration: TimeInterval) -> Animation {
-        .timingCurve(0.65, 0, 0.35, 1, duration: duration)
-    }
-
-    static let reduced = Animation.linear(duration: 0.1)
-
-    /// Panel open: 0.16 s ease-out, opacity and scale 0.96 to 1 from the button.
-    static func panelTransition(reduceMotion: Bool) -> AnyTransition {
-        if reduceMotion { return .opacity.animation(reduced) }
-        return .asymmetric(
-            insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)).animation(easeOut(0.16)),
-            removal: .opacity.animation(easeIn(0.12))
-        )
-    }
-
-    /// Next card: opacity and 12 pt of travel, 0.32 s in and 0.2 s out.
-    static func cardTransition(reduceMotion: Bool) -> AnyTransition {
-        if reduceMotion { return .opacity.animation(reduced) }
-        return .asymmetric(
-            insertion: .opacity.combined(with: .offset(y: 12)).animation(easeOut(0.32)),
-            removal: .opacity.combined(with: .offset(y: 12)).animation(easeIn(0.2))
-        )
-    }
+    static let sceneSpace = "reel.scene"
 }
 
 /// How much shadow a material surface carries (design 15.2 tokens).
@@ -190,9 +155,12 @@ struct ControllerContext: Equatable {
 /// What the controller's buttons do beyond the model (window-level actions).
 public struct SceneActions {
     public var toggleFullscreen: () -> Void
+    /// Whether a file drag is over the window; the empty state reacts to it.
+    public var dropTarget: DropTargetState
 
-    public init(toggleFullscreen: @escaping () -> Void = {}) {
+    public init(toggleFullscreen: @escaping () -> Void = {}, dropTarget: DropTargetState = DropTargetState()) {
         self.toggleFullscreen = toggleFullscreen
+        self.dropTarget = dropTarget
     }
 }
 
@@ -423,8 +391,9 @@ private struct ControllerOverlays: View {
                 AboveLayout(x: panelOriginX(proxy), gap: ControllerOverlays.panelGap) {
                     if let panel = model.activePanel {
                         PanelHost(model: model, panel: panel, windowHeight: context.windowSize.height)
+                            .id(panel)
                             .frame(width: PanelMetrics.width(for: panel))
-                            .transition(Motion.panelTransition(reduceMotion: reduceMotion))
+                            .transition(Motion.panelTransition(reduceMotion: reduceMotion, anchor: panelAnchor(panel, proxy)))
                     }
                 }
                 AboveLayout(x: cardOriginX(controllerWidth: proxy.size.width), gap: ControllerOverlays.cardGap) {
@@ -436,13 +405,24 @@ private struct ControllerOverlays: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
-        .animation(reduceMotion ? Motion.reduced : Motion.easeOut(0.16), value: model.activePanel)
+        // Keyed on open or closed: switching straight between panels swaps with no morph.
+        .animation(reduceMotion ? Motion.reduced : Motion.easeOut(0.16), value: model.activePanel != nil)
         .animation(reduceMotion ? Motion.reduced : Motion.easeOut(0.32), value: model.autoAdvance.isActive)
     }
 
     private func panelOriginX(_ proxy: GeometryProxy) -> CGFloat {
         guard let panel = model.activePanel, let anchor = anchors[panel] else { return 0 }
         return originX(centre: proxy[anchor].midX, width: PanelMetrics.width(for: panel))
+    }
+
+    /// The scale starts over the button, even when the panel was clamped away from it.
+    private func panelAnchor(_ panel: ControllerPanel, _ proxy: GeometryProxy) -> UnitPoint {
+        guard let anchor = anchors[panel] else { return .bottom }
+        return PanelAnchor.track(
+            buttonMidX: proxy[anchor].midX,
+            panelOriginX: panelOriginX(proxy),
+            panelWidth: PanelMetrics.width(for: panel)
+        )
     }
 
     /// Centred on the button, kept 16 pt inside the window, in controller coordinates.
@@ -469,6 +449,26 @@ struct PressScaleStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.94 : 1)
             .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+/// Press feedback for the stepper cells, which are pressed in bursts: a fill that follows the
+/// pointer-down at once and fades back in 0.1 s. A scale would pull half a cell off its divider.
+struct PressFillStyle: ButtonStyle {
+    static let hoverOpacity = 0.08
+    static let pressedOpacity = 0.16
+
+    var hovering: Bool
+
+    static func fillOpacity(pressed: Bool, hovering: Bool) -> Double {
+        if pressed { return pressedOpacity }
+        return hovering ? hoverOpacity : 0
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(Color.primary.opacity(PressFillStyle.fillOpacity(pressed: configuration.isPressed, hovering: hovering)))
+            .animation(configuration.isPressed ? nil : Motion.pressRelease, value: configuration.isPressed)
     }
 }
 
@@ -571,6 +571,7 @@ struct VolumeControl: View {
 
     let model: PlayerModel
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var symbol: String {
         if model.isMuted || model.volume == 0 { return "speaker.slash.fill" }
@@ -588,7 +589,7 @@ struct VolumeControl: View {
                 .frame(width: hovering ? VolumeControl.wideWidth : VolumeControl.narrowWidth, height: ChromeStyle.hitSize)
         }
         .onHover { over in
-            withAnimation(.easeInOut(duration: 0.12)) { hovering = over }
+            withAnimation(Motion.volumeWiden(reduceMotion: reduceMotion)) { hovering = over }
         }
     }
 }

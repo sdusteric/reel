@@ -3,9 +3,10 @@
 # process that has no window and no NSApplication run loop.
 #
 # Usage: scripts/shots.sh [scenario ...]
-#        default: the M1 four (empty playing paused-osd scrubbing) and the M2 surfaces
+#        default: the M1 four (empty playing paused-osd scrubbing), the M2 surfaces
 #        (subtitle-panel audio-panel speed-panel thumbnail subtitles subtitles-lifted osd-speed
-#        osd-loop next-episode pip fullscreen edge-states), 16 scenarios
+#        osd-loop next-episode pip fullscreen edge-states) and the M3 surfaces (hdr-badge
+#        video-info hdr-sdr dv-note open-failed truncated damaged-osd drive-gone), 24 scenarios
 #        each scenario in light and dark -> build/shots/<scenario>-<light|dark>.png (2560x1440)
 # Env:   REEL_APP       bundle to run (default build/bundle/Reel.app, from scripts/bundle.sh)
 #        REEL_FIXTURES  fixture dir (default build/fixtures, from scripts/fixtures.sh)
@@ -40,11 +41,14 @@ SCENARIOS=("$@")
   empty playing paused-osd scrubbing
   subtitle-panel audio-panel speed-panel thumbnail subtitles subtitles-lifted
   osd-speed osd-loop next-episode pip fullscreen edge-states
+  hdr-badge video-info hdr-sdr dv-note open-failed truncated damaged-osd drive-gone
 )
 
 [ -x "$BIN" ] || { echo "no binary at $BIN (run scripts/bundle.sh --release)" >&2; exit 1; }
 [ -f "$FIXTURE" ] || { echo "no fixture at $FIXTURE (run scripts/fixtures.sh)" >&2; exit 1; }
-for extra in subs_tracks.mkv episodes/Northern.Line.S01E03.mkv; do
+# The M3 shots take their frames from these (hdr/ and odd/ are made by scripts/fixtures.sh).
+for extra in subs_tracks.mkv episodes/Northern.Line.S01E03.mkv hdr/pq_ramp_hevc.mkv hdr/dv5.mp4 \
+  odd/text.mp4 hevc10_1080p24.mkv; do
   [ -f "$FIXTURES/$extra" ] || { echo "no fixture at $FIXTURES/$extra (run scripts/fixtures.sh)" >&2; exit 1; }
 done
 # A shot-mode process is the only kind started here; refuse if this bundle is already running.

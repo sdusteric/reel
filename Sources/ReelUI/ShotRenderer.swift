@@ -39,6 +39,23 @@ nonisolated public enum ShotScenario: String, CaseIterable, Sendable {
     case fullscreen
     /// A file alone in its folder with no subtitles: no previous or next, empty subtitle panel (png/18).
     case edgeStates = "edge-states"
+    // M3 (design 15.3, mockups png/19 to png/26)
+    /// The HDR10 tag after the title (png/19).
+    case hdrBadge = "hdr-badge"
+    /// Video Info open on a Dolby Vision 8.1 file (png/20).
+    case videoInfo = "video-info"
+    /// HDR10 on a display without headroom: the tag gains "SDR" and its tooltip shows (png/21).
+    case hdrSDR = "hdr-sdr"
+    /// The Dolby Vision profile 5 note and the warning tag (png/22).
+    case dvNote = "dv-note"
+    /// The failure card on black (png/23).
+    case openFailed = "open-failed"
+    /// A file cut short: the faint tail, the tick and the pill over the tail (png/24).
+    case truncated
+    /// The damaged-data OSD (png/25).
+    case damagedOSD = "damaged-osd"
+    /// A disconnected drive: the dimmed last frame and the card (png/26).
+    case driveGone = "drive-gone"
 
     /// Where the controller sits (centre x, bottom y as fractions); nil keeps the remembered default.
     var controllerPosition: (centerX: Double, bottomY: Double)? {
@@ -52,6 +69,35 @@ nonisolated public enum ShotScenario: String, CaseIterable, Sendable {
     var drawsSubtitles: Bool { self == .subtitles || self == .subtitlesLifted }
 
     var isFullscreen: Bool { self == .fullscreen }
+
+    /// The scenario shows a decoded frame (the open failure sits on black).
+    var showsFrame: Bool { self != .empty && self != .openFailed }
+
+    /// The title the mockup uses for the scenario.
+    @MainActor var defaultTitle: String {
+        switch self {
+        case .hdrBadge, .hdrSDR: "Northern.Line.S03E01.2160p.UHD.BluRay.HDR10.x265-RLS.mkv"
+        case .videoInfo: "Northern.Line.S03E02.2160p.UHD.BluRay.DV.HDR10.x265-RLS.mkv"
+        case .dvNote: "Harbour.Lights.2024.2160p.WEB-DL.DV.H265-GRP.mp4"
+        case .openFailed: "Northern.Line.S02E07.1080p.BluRay.x265.10bit-RLS.mkv"
+        default: ShotRenderer.demoTitle
+        }
+    }
+
+    /// The content range the scenario shows when the caller gives none.
+    @MainActor var defaultDynamicRange: DynamicRange? {
+        switch self {
+        case .hdrBadge, .hdrSDR: .hdr10
+        case .videoInfo: .dolbyVision(ShotRenderer.dolbyVision81)
+        case .dvNote: .dolbyVision(ShotRenderer.dolbyVision5)
+        default: nil
+        }
+    }
+
+    /// The display the scenario shows when the caller gives none.
+    var defaultDisplay: DisplayCapabilities {
+        self == .hdrSDR ? .sdr : .xdr
+    }
 }
 
 nonisolated public enum ShotAppearance: String, CaseIterable, Sendable {
@@ -175,7 +221,12 @@ public enum ShotRenderer {
         position: MediaTime,
         duration: MediaTime,
         thumbnail: CGImage? = nil,
-        snapshot: CGImage? = nil
+        snapshot: CGImage? = nil,
+        dynamicRange: DynamicRange? = nil,
+        display: DisplayCapabilities? = nil,
+        problem: MediaProblem? = nil,
+        problemDetail: String? = nil,
+        dataEnd: MediaTime? = nil
     ) -> PlayerModel {
         let clock = ShotClock()
         let model = PlayerModel(dependencies: PlayerModel.Dependencies(
@@ -186,7 +237,18 @@ public enum ShotRenderer {
         ))
         guard scenario != .empty else { return model }
         let url = URL(filePath: "/Show/\(title)")
-        model.media = MediaInfo(url: url, formatName: "matroska,webm", duration: duration)
+        if scenario == .openFailed {
+            model.title = title
+            model.problem = problem ?? .cutShort
+            model.problemDetail = problemDetail ?? demoFailureDetail
+            model.playbackState = .failed
+            return model
+        }
+        let range = dynamicRange ?? scenario.defaultDynamicRange ?? .sdr
+        model.media = demoMedia(url: url, duration: duration, range: range)
+        model.dynamicRange = range
+        model.videoDecoder = .hardware
+        model.displayCapabilities = display ?? scenario.defaultDisplay
         model.title = title
         model.position = min(position, duration)
         model.storedRange = max(.zero, model.position - .seconds(8))...min(duration, model.position + .seconds(20))
@@ -253,6 +315,33 @@ public enum ShotRenderer {
         case .pip:
             model.isPictureInPictureActive = true
             model.pictureInPictureSnapshot = snapshot
+        case .hdrBadge:
+            break
+        case .videoInfo:
+            model.videoInfoVisible = true
+        case .hdrSDR:
+            model.showsTagTooltip = true
+        case .dvNote:
+            model.dolbyVisionNoteVisible = true
+        case .openFailed:
+            break
+        case .truncated:
+            let end = dataEnd ?? MediaTime(microseconds: Int64(Double(duration.microseconds) * 0.86))
+            model.dataEnd = end
+            model.position = min(model.position, end)
+            model.storedRange = max(.zero, model.position - .seconds(8))...min(end, model.position + .seconds(20))
+            model.seekHoverFraction = 0.93
+        case .damagedOSD:
+            model.osd = OSDMessage(
+                kind: .damaged,
+                text: "Skipped damaged video at \(TimeFormat.clock(model.position, duration: duration))",
+                symbol: OSDMessage.warningSymbol
+            )
+        case .driveGone:
+            model.playbackState = .paused
+            model.isPlaying = false
+            model.storedRange = nil
+            model.problem = problem ?? .volumeGone("Eric X9 Pro")
         }
         model.chrome.setPlaying(model.isPlaying)
         if model.activePanel != nil { model.chrome.setPanelOpen(true) }
@@ -277,20 +366,30 @@ public enum ShotRenderer {
         appearance: ShotAppearance,
         size: CGSize,
         frame: CGImage?,
-        title: String = demoTitle,
+        title: String? = nil,
         position: MediaTime = .seconds(ShotOptions.defaultAt),
         duration: MediaTime = .seconds(ShotOptions.defaultDuration),
         subtitleImage: CGImage? = nil,
         subtitleRect: CGRect? = nil,
-        thumbnail: CGImage? = nil
+        thumbnail: CGImage? = nil,
+        dynamicRange: DynamicRange? = nil,
+        display: DisplayCapabilities? = nil,
+        problem: MediaProblem? = nil,
+        problemDetail: String? = nil,
+        dataEnd: MediaTime? = nil
     ) -> CGImage? {
         let model = makeModel(
             scenario: scenario,
-            title: title,
+            title: title ?? scenario.defaultTitle,
             position: position,
             duration: duration,
             thumbnail: thumbnail,
-            snapshot: frame
+            snapshot: frame,
+            dynamicRange: dynamicRange,
+            display: display,
+            problem: problem,
+            problemDetail: problemDetail,
+            dataEnd: dataEnd
         )
         var subtitle: ShotSubtitle?
         if scenario.drawsSubtitles || subtitleImage != nil {
@@ -301,7 +400,7 @@ public enum ShotRenderer {
             )
         }
         let scene = PlayerSceneView(model: model, subtitle: subtitle) {
-            if scenario != .empty, let frame {
+            if scenario.showsFrame, let frame {
                 Image(decorative: frame, scale: 1)
                     .resizable()
                     .interpolation(.high)
@@ -374,6 +473,55 @@ public enum ShotRenderer {
         var tracks = TrackState(info: info, external: external)
         if subtitles { tracks.selectedSubtitle = .embedded(streamIndex: 5) }
         return tracks
+    }
+
+    static let demoFailureDetail = "Matroska header found, then the file ends after 4 KB (FFmpeg: End of file)."
+
+    /// Dolby Vision profile 8.1 (HDR10 base) and profile 5 (no compatible base), as the fixtures have them.
+    static let dolbyVision81 = DolbyVisionConfig(profile: 8, level: 6, rpu: true, el: false, bl: true, compatibilityID: 1)
+    static let dolbyVision5 = DolbyVisionConfig(profile: 5, level: 6, rpu: true, el: false, bl: true, compatibilityID: 0)
+
+    /// The file Video Info describes: 4K HEVC Main 10 with the colour fields of `range` and E-AC-3 5.1.
+    static func demoMedia(url: URL, duration: MediaTime, range: DynamicRange) -> MediaInfo {
+        var color = ColorInfo(primaries: "bt709", transfer: "bt709", matrix: "bt709")
+        if range.isHDR || range.dolbyVision != nil {
+            color = ColorInfo(primaries: "bt2020", transfer: DynamicRange.pqTransfer, matrix: "bt2020nc", hasHDRMetadata: true)
+            if range.dolbyVisionBase == .hlg || range == .hlg { color.transfer = DynamicRange.hlgTransfer }
+            if range != .hlg {
+                color.mastering = .p3D65()
+                color.contentLight = ContentLightLevel(maxCLL: 1_000, maxFALL: 400)
+            }
+        }
+        let base = Rational(1, 1_000)
+        let streams = [
+            StreamInfo(
+                index: 0, kind: .video, codec: "hevc", profile: "Main 10", timeBase: base,
+                video: VideoParameters(width: 3_840, height: 2_160, frameRate: Rational(24_000, 1_001), bitDepth: 10, color: color)
+            ),
+            StreamInfo(
+                index: 1, kind: .audio, codec: "eac3", timeBase: base, language: "eng", isDefault: true,
+                audio: AudioParameters(sampleRate: 48_000, channels: 6, channelLayout: "5.1(side)")
+            ),
+        ]
+        return MediaInfo(
+            url: url,
+            formatName: "matroska,webm",
+            duration: duration,
+            streams: streams,
+            videoStreamIndex: 0,
+            audioStreamIndex: 1,
+            videoDecoder: .hardware,
+            dolbyVision: range.dolbyVision
+        )
+    }
+
+    /// Where light and dark must differ for `scenario`, in image pixels: the controller, which every
+    /// shot but the open failure shows, or the title text for the open failure.
+    public static func appearanceRegion(size: CGSize, scenario: ShotScenario) -> CGRect {
+        if scenario == .openFailed {
+            return CGRect(x: size.width * scale * 0.3, y: 0, width: size.width * scale * 0.4, height: 28 * scale)
+        }
+        return controllerPixelRect(size: size, scenario: scenario).insetBy(dx: 40, dy: 20)
     }
 
     /// Three files in one folder, so previous and next show and the card has a next name.

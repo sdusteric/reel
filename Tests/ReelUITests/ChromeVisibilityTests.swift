@@ -99,7 +99,7 @@ import Testing
     }
 
     @Test func fadeTimingsFollowTheDesign() {
-        #expect(ChromeVisibility.duration(visible: true, reduceMotion: false) == 0.22)
+        #expect(ChromeVisibility.duration(visible: true, reduceMotion: false) == 0.16)
         #expect(ChromeVisibility.duration(visible: false, reduceMotion: false) == 0.35)
         #expect(ChromeVisibility.duration(visible: true, reduceMotion: true) == 0.1)
         #expect(ChromeVisibility.duration(visible: false, reduceMotion: true) == 0.1)

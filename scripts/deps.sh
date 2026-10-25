@@ -58,7 +58,9 @@ unpack() { # file dir
 step() { echo; echo "=== $1 ($(date +%H:%M:%S)) ==="; }
 
 # Skip the rebuild when PREFIX was already built by this exact script (FORCE=1 overrides).
-SCRIPT_HASH="$(shasum -a 256 "${BASH_SOURCE[0]}" | cut -c1-16)"
+# Patches applied to the FFmpeg source (scripts/patches): the VP9 tile check of section 7.10.
+FFMPEG_PATCHES=("$ROOT/scripts/patches/ffmpeg-vp9-tile-check.patch")
+SCRIPT_HASH="$(cat "${BASH_SOURCE[0]}" "${FFMPEG_PATCHES[@]}" | shasum -a 256 | cut -c1-16)"
 STAMP="$PREFIX/.deps-stamp-$SCRIPT_HASH"
 HEADERS_DEST="$ROOT/Sources/CReelDeps/include"
 HEADER_DIRS=(libavcodec libavformat libavutil libswscale libswresample ass freetype2 harfbuzz fribidi dav1d)
@@ -174,6 +176,10 @@ unpack "libass-$LIBASS_VER.tar.xz" libass
 
 step ffmpeg
 unpack "ffmpeg-$FFMPEG_VER.tar.xz" ffmpeg
+for patch in "${FFMPEG_PATCHES[@]}"; do
+  echo "patch $(basename "$patch")"
+  patch -d "$BUILD/ffmpeg" -p1 --forward --silent < "$patch"
+done
 ( cd "$BUILD/ffmpeg" && ./configure \
     --prefix="$PREFIX" --arch=arm64 --target-os=darwin \
     --cc="$CC" --extra-cflags="$CFLAGS" --extra-ldflags="$LDFLAGS" \

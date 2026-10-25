@@ -6,10 +6,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <zlib.h>
 
 const char *reel_err_string(int errnum, char *buf, size_t buflen) {
     if (av_strerror(errnum, buf, buflen) < 0) { snprintf(buf, buflen, "error %d", errnum); }
     return buf;
+}
+
+uint32_t reel_crc32(const uint8_t *data, size_t length) {
+    uLong crc = crc32(0L, Z_NULL, 0);
+    // zlib takes a uInt length; feed large buffers in pieces.
+    while (length > 0) {
+        uInt piece = length > (1u << 30) ? (1u << 30) : (uInt)length;
+        crc = crc32(crc, data, piece);
+        data += piece;
+        length -= piece;
+    }
+    return (uint32_t)crc;
 }
 
 // MARK: libass messages

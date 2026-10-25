@@ -10,7 +10,7 @@ import VideoToolbox
 /// Seek-bar thumbnails from keyframes only (design section 9.4, D38).
 ///
 /// A background thread at utility priority opens its own `MediaSource` and its own
-/// `VTDecompressionSession` (BGRA, 384 wide, VideoToolbox scales), takes the keyframe list from the
+/// `VTDecompressionSession` (BGRA, or x420 for HDR, 384 wide, VideoToolbox scales), takes the keyframe list from the
 /// container index, plans at most 400 of them and decodes them coarse to fine with up to four
 /// frames in flight. Each frame becomes a JPEG (quality 0.75) in a `ThumbnailPack` stored in the
 /// `ThumbnailCache`. Codecs VideoToolbox cannot decode go through `SoftwareVideoDecoder`.
@@ -28,6 +28,9 @@ public final class ThumbnailGenerator: Sendable {
         public var decoder: VideoDecoderKind?
         /// A partial pack is written after this many new thumbnails, so a crash loses little.
         public var partialSaveInterval: Int
+        /// Stop after the coarse pass (every 8th slot), as in Low Power Mode (section 7.9). The
+        /// pack is stored as partial, so a later full run continues it.
+        public var coarseOnly: Bool
 
         public init(
             width: Int = ThumbnailPack.standardWidth,
@@ -35,7 +38,8 @@ public final class ThumbnailGenerator: Sendable {
             jpegQuality: Double = 0.75,
             maximumInFlight: Int = 4,
             decoder: VideoDecoderKind? = nil,
-            partialSaveInterval: Int = 64
+            partialSaveInterval: Int = 64,
+            coarseOnly: Bool = false
         ) {
             self.width = width
             self.maximumCount = maximumCount
@@ -43,6 +47,7 @@ public final class ThumbnailGenerator: Sendable {
             self.maximumInFlight = maximumInFlight
             self.decoder = decoder
             self.partialSaveInterval = partialSaveInterval
+            self.coarseOnly = coarseOnly
         }
 
         public static let standard = Options()
@@ -145,15 +150,18 @@ public final class ThumbnailGenerator: Sendable {
     }
 
     /// Starts generation on a background thread. Later calls do nothing.
-    /// - Parameter progress: called with (done, total) after each stored thumbnail, on a
-    ///   background queue.
-    public func start(progress: (@Sendable (_ done: Int, _ total: Int) -> Void)? = nil) {
+    /// - Parameters:
+    ///   - coarseOnly: stop after the every-8th pass (Low Power Mode), whatever `options` says.
+    ///   - progress: called with (done, total) after each stored thumbnail, on a background queue.
+    public func start(coarseOnly: Bool = false, progress: (@Sendable (_ done: Int, _ total: Int) -> Void)? = nil) {
         guard shared.markStarted(progress: progress) else { return }
         let shared = self.shared
         let url = self.url
         let key = self.key
         let cache = self.cache
-        let options = self.options
+        var chosen = self.options
+        if coarseOnly { chosen.coarseOnly = true }
+        let options = chosen
         let thread = Thread {
             let worker = ThumbnailWorker(url: url, key: key, cache: cache, options: options, shared: shared)
             shared.finish(worker.run())
@@ -446,7 +454,7 @@ final class ThumbnailShared: Sendable {
 
 // MARK: Encoding
 
-/// Turns decoded BGRA frames into JPEGs on a serial utility queue and settles each in-flight slot
+/// Turns decoded frames into JPEGs (HDR tone-mapped to sRGB) on a serial utility queue and settles each in-flight slot
 /// exactly once.
 final class ThumbnailSink: Sendable {
     let shared: ThumbnailShared
@@ -575,6 +583,8 @@ private final class ThumbnailWorker {
     private var format: VideoFormat?
     private var parameters: CodecParameters?
     private var session: VTDecompressionSession?
+    /// HDR keyframes decode to `x420` and are tone-mapped when encoded (section 7.7); SDR to BGRA.
+    private var hdrOutput = false
     private var software: SoftwareThumbnailDecoder?
     private var sink: ThumbnailSink?
     /// The first keyframe packet, read at open; used for its slot without a seek.
@@ -639,7 +649,7 @@ private final class ThumbnailWorker {
         report.completions = shared.completions
         report.generated = report.completions.count
         if shared.isCancelled, report.outcome == .completed, shared.done < report.planned { report.outcome = .cancelled }
-        save(complete: report.outcome == .completed)
+        save(complete: report.outcome == .completed && !(options.coarseOnly && shared.done < report.planned))
     }
 
     // MARK: Open
@@ -698,6 +708,15 @@ private final class ThumbnailWorker {
         }
         report.sessionNanos = lap()
         if let session { prime(session) }
+        if let current = session, !hdrOutput, let frame = primed?.frame, frame.withUnsafeBuffer({ HDRToneMapper.isHDR($0) }) {
+            // HDR the container did not tag (AV1 or VP9 colour lives in the bitstream): decode
+            // to 10-bit so the tone map starts from x420, not from 8-bit PQ-coded BGRA.
+            VTDecompressionSessionInvalidate(current)
+            hdrOutput = true
+            session = try makeSession(format)
+            primed = nil
+            if let session { prime(session) }
+        }
         report.primeNanos = lap()
     }
 
@@ -733,8 +752,9 @@ private final class ThumbnailWorker {
 
     private func makeSession(_ format: VideoFormat) throws -> VTDecompressionSession {
         guard let description = format.formatDescription else { throw EngineError.unsupportedCodec(format.codecName) }
+        if format.color.isHDR { hdrOutput = true }
         let attributes: [CFString: Any] = [
-            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferPixelFormatTypeKey: hdrOutput ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey: decodeWidth,
             kCVPixelBufferHeightKey: decodeHeight,
             kCVPixelBufferIOSurfacePropertiesKey: [:] as [CFString: Any],
@@ -826,7 +846,9 @@ private final class ThumbnailWorker {
 
     private func generate(_ plan: ThumbnailPlan) throws {
         var doneAtLastSave = shared.done
-        let pending = plan.order.filter { !shared.hasImage($0) }
+        let pending = plan.order.filter { slot in
+            !shared.hasImage(slot) && (!options.coarseOnly || slot % ThumbnailShared.standInStride == 0)
+        }
         let opening = Array(pending.prefix(options.maximumInFlight))
         try submitOpening(opening, plan: plan)
         for slot in pending.dropFirst(opening.count) where !shared.hasImage(slot) {
@@ -1058,8 +1080,11 @@ private final class SoftwareThumbnailDecoder {
         decoder.drainSynchronously()
         guard let frame = slot.frame.withLock({ $0 }) else { return nil }
         let attributes: [CFString: Any] = [kCVPixelBufferIOSurfacePropertiesKey: [:] as [CFString: Any]]
+        // HDR stays 10-bit YCbCr (tone-mapped when encoded); SDR becomes BGRA as before.
+        let hdr = frame.pixelBuffer.withUnsafeBuffer { HDRToneMapper.isHDR($0) }
+        let outputFormat = hdr ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_32BGRA
         var output: CVPixelBuffer?
-        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, attributes as CFDictionary, &output) == kCVReturnSuccess,
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, outputFormat, attributes as CFDictionary, &output) == kCVReturnSuccess,
               let output else { return nil }
         let status = frame.pixelBuffer.withUnsafeBuffer { source in
             VTPixelTransferSessionTransferImage(transfer, from: source, to: output)

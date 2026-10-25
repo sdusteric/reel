@@ -29,6 +29,10 @@ final class FakeEngine: PlayerEngine {
         case loop(LoopState)
         case thumbnail(MediaTime)
         case subtitleEvents
+        // M3
+        case occluded(Bool)
+        case outputDevice(String?)
+        case energyCounters
     }
 
     struct Options {
@@ -45,6 +49,12 @@ final class FakeEngine: PlayerEngine {
         var subtitleEvents: [SubtitleEventTime] = []
         /// Answer track, rate and loop commands with the matching events.
         var echoesM2Commands = true
+        /// (M3) Sent after `.opened`; nil sends none.
+        var dynamicRange: DynamicRange?
+        /// (M3) Added to the opened `MediaInfo`.
+        var dolbyVision: DolbyVisionConfig?
+        /// (M3) Returned by `energyCounters()`.
+        var counters = EnergyCounters.zero
     }
 
     let events: AsyncStream<EngineEvent>
@@ -93,7 +103,8 @@ final class FakeEngine: PlayerEngine {
             videoStreamIndex: 0,
             audioStreamIndex: 1,
             videoDecoder: .hardware,
-            keyframeCount: 60
+            keyframeCount: 60,
+            dolbyVision: options.dolbyVision
         )
     }
 
@@ -107,6 +118,7 @@ final class FakeEngine: PlayerEngine {
         let tracks = TrackState(info: info)
         trackState.withLock { $0 = tracks }
         continuation.yield(.opened(info))
+        if let range = options.dynamicRange { continuation.yield(.dynamicRange(range)) }
         continuation.yield(.tracksChanged(tracks))
         continuation.yield(.stateChanged(.paused))
         return info
@@ -218,6 +230,16 @@ final class FakeEngine: PlayerEngine {
     func subtitleEvents() async -> [SubtitleEventTime] {
         record(.subtitleEvents)
         return options.subtitleEvents
+    }
+
+    // MARK: M3
+
+    func setOccluded(_ occluded: Bool) async { record(.occluded(occluded)) }
+    func setOutputDevice(_ uid: String?) async { record(.outputDevice(uid)) }
+
+    func energyCounters() async -> EnergyCounters {
+        record(.energyCounters)
+        return options.counters
     }
 
     /// Applies `change` to the track state (built from the last opened file) and emits it.

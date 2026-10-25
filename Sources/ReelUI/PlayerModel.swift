@@ -10,7 +10,12 @@ public struct OSDMessage: Equatable, Sendable {
         // M2
         case speed, subtitleDelay, audioDelay, subtitleSize, subtitlePosition, track, loop, fileLoop
         case screenshot, episode
+        // M3
+        case noData, damaged, audioFailure
     }
+
+    /// The warning glyph used by the damaged-data, no-data and audio failure messages.
+    public static let warningSymbol = "exclamationmark.triangle.fill"
 
     public var kind: Kind
     public var text: String
@@ -136,6 +141,9 @@ public final class PlayerModel {
         public var now: () -> TimeInterval
         /// How timers wait (OSD hide, seek progress ring, drag rest). Tests pass a long sleep.
         public var sleep: (TimeInterval) async -> Void
+        /// Names of the mounted volumes, asked only for paths under `/Volumes` when classifying a
+        /// failed open (`MediaProblem.classify`).
+        public var mountedVolumes: () -> Set<String>
 
         public init(
             makeEngine: @escaping (URL) async -> any PlayerEngine,
@@ -151,7 +159,8 @@ public final class PlayerModel {
             now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
             sleep: @escaping (TimeInterval) async -> Void = { seconds in
                 try? await Task.sleep(for: .seconds(seconds))
-            }
+            },
+            mountedVolumes: @escaping () -> Set<String> = Dependencies.systemMountedVolumes
         ) {
             self.makeEngine = makeEngine
             self.settings = settings
@@ -165,6 +174,13 @@ public final class PlayerModel {
             self.wallClock = wallClock
             self.now = now
             self.sleep = sleep
+            self.mountedVolumes = mountedVolumes
+        }
+
+        /// The volume names `FileManager` reports as mounted.
+        nonisolated public static func systemMountedVolumes() -> Set<String> {
+            let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: []) ?? []
+            return Set(urls.map { $0.lastPathComponent })
         }
     }
 
@@ -184,6 +200,13 @@ public final class PlayerModel {
     public static let screenshotOSDDuration: TimeInterval = 3
     /// Files tried when the next episode cannot be opened (design 9.8).
     public static let episodeSkipLimit = 3
+    /// The v key's OSD names the key so a stray press is easy to undo (D65).
+    public static let subtitlesHiddenText = "Subtitles Hidden, press V to show"
+    public static let subtitlesShownText = "Subtitles Shown"
+    /// At most one damaged-data OSD per kind in this many seconds (D62).
+    public static let damagedOSDInterval: TimeInterval = 10
+    /// How long the damaged-data and no-data OSDs stay.
+    public static let warningOSDDuration: TimeInterval = 2.5
     /// The most thumbnails kept decoded for the hover pill.
     static let thumbnailCacheLimit = 64
 
@@ -241,6 +264,33 @@ public final class PlayerModel {
     /// The Playback menu's "Auto-Advance to Next Episode".
     public internal(set) var autoAdvanceEnabled = true
 
+    // M3 state (design sections 7.7 to 7.10, 9.13, 9.14)
+
+    /// The content's dynamic range, classified at open and updated by the engine.
+    public internal(set) var dynamicRange: DynamicRange = .sdr
+    /// The display the window is on; the app sets it from `DisplayRangeMonitor` (D54).
+    public internal(set) var displayCapabilities = DisplayCapabilities.xdr
+    public internal(set) var hdrSetting = HDRSetting.default
+    public internal(set) var videoDecoder: VideoDecoderKind?
+    /// Video Info is open (Cmd+I, the tag).
+    public internal(set) var videoInfoVisible = false
+    /// Dropped frames, reported by the app (the engine has no per-frame event).
+    public internal(set) var droppedFrames = 0
+    /// Damaged regions skipped since open.
+    public internal(set) var damagedCount = 0
+    /// The Dolby Vision profile 5 note is showing (until OK, Esc or 10 s).
+    public internal(set) var dolbyVisionNoteVisible = false
+    /// Why the file could not be opened or stopped being readable; drives the failure card.
+    public internal(set) var problem: MediaProblem?
+    /// The technical reason under the card's explanation.
+    public internal(set) var problemDetail: String?
+    /// The last readable time of a file cut short. Times count to it and seeks stop at it.
+    public internal(set) var dataEnd: MediaTime?
+    /// Audio tracks whose decoder could not be opened, by stream index, with the reason.
+    public internal(set) var audioFailures: [Int: String] = [:]
+    /// Draws the tag's tooltip in shots (a real tooltip needs a window).
+    public internal(set) var showsTagTooltip = false
+
     public let chrome: ChromeVisibility
     /// The end-of-episode countdown and its card.
     public let autoAdvance: AutoAdvance
@@ -257,6 +307,12 @@ public final class PlayerModel {
     @ObservationIgnored public var onAddSubtitleFile: (() -> Void)?
     /// Reveals a saved screenshot in Finder.
     @ObservationIgnored public var onRevealScreenshot: ((URL) -> Void)?
+    /// Reveals the file that failed (the card's Show in Finder).
+    @ObservationIgnored public var onRevealFile: ((URL) -> Void)?
+    /// Asks the app for the Open panel (the card's Open Another File).
+    @ObservationIgnored public var onOpenAnotherFile: (() -> Void)?
+    /// Spoken once through the accessibility API by the app (the Dolby Vision note).
+    @ObservationIgnored public var onAnnouncement: ((String) -> Void)?
 
     @ObservationIgnored let dependencies: Dependencies
     @ObservationIgnored private(set) var session: EngineSession?
@@ -278,6 +334,17 @@ public final class PlayerModel {
     @ObservationIgnored private var avoidanceTask: Task<Void, Never>?
     @ObservationIgnored private var lastAvoidance: Double?
     @ObservationIgnored private var lastScreenshot: URL?
+    @ObservationIgnored private var currentURL: URL?
+    @ObservationIgnored private var noteTask: Task<Void, Never>?
+    /// Files whose profile 5 note was shown in this session (path), so it shows once per file.
+    @ObservationIgnored private var notedFiles: Set<String> = []
+    @ObservationIgnored private var lastDamagedOSD: [DamageKind: TimeInterval] = [:]
+    /// The user hid subtitles with v: the next file starts with them shown (D65).
+    @ObservationIgnored private var subtitlesWereHidden = false
+    @ObservationIgnored private var resetSubtitleVisibility = false
+    /// The engine reported the range itself (it may have probed a decoded frame), so a later
+    /// classification from the stream fields must not replace it.
+    @ObservationIgnored fileprivate var dynamicRangeReported = false
 
     public init(dependencies: Dependencies, chrome: ChromeVisibility? = nil) {
         self.dependencies = dependencies
@@ -293,6 +360,7 @@ public final class PlayerModel {
         } else {
             showRemainingTime = dependencies.settings().showRemainingTime
         }
+        hdrSetting = dependencies.settings().highDynamicRange
         self.chrome.onChange = { [weak self] visible in
             self?.chromeVisibilityChanged(visible)
         }
@@ -314,9 +382,22 @@ public final class PlayerModel {
 
     public var elapsedLabel: String { TimeFormat.elapsed(position, duration: duration) }
 
-    /// `-12:34` or the total, by the remembered toggle.
+    /// Where the data ends: the header duration, or `dataEnd` for a file cut short.
+    public var effectiveEnd: MediaTime? {
+        guard let duration else { return dataEnd }
+        guard let dataEnd, dataEnd < duration else { return duration }
+        return dataEnd
+    }
+
+    /// The fraction of the bar where the data ends; nil when the file is whole.
+    public var dataEndFraction: Double? {
+        guard let dataEnd, let duration, duration > .zero, dataEnd < duration else { return nil }
+        return fraction(of: dataEnd)
+    }
+
+    /// `-12:34` (counting to the end of the data) or the total, by the remembered toggle.
     public var trailingLabel: String {
-        if showRemainingTime { return TimeFormat.remaining(position, duration: duration) }
+        if showRemainingTime { return TimeFormat.remaining(position, duration: effectiveEnd) }
         guard let duration else { return "--:--" }
         return TimeFormat.clock(duration, duration: duration)
     }
@@ -352,7 +433,10 @@ public final class PlayerModel {
         let token = openToken
         await closeSession(saving: true)
         resetForNewFile()
+        resetSubtitleVisibility = subtitlesWereHidden
+        subtitlesWereHidden = false
         title = url.lastPathComponent
+        currentURL = url
         playbackState = .opening
         let engine = await dependencies.makeEngine(url)
         guard token == openToken else {
@@ -387,6 +471,7 @@ public final class PlayerModel {
             guard token == openToken else { return .superseded }
             dependencies.log.error("open \(url.lastPathComponent) failed: \(error)")
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            presentProblem(for: error, url: url)
             playbackState = .failed
             await closeSession(saving: false)
             return .failed
@@ -397,6 +482,9 @@ public final class PlayerModel {
         session.send(.volume(volume))
         session.send(.muted(isMuted))
         session.send(.timeInterval(chrome.isVisible ? PlayerModel.visibleTimeInterval : PlayerModel.hiddenTimeInterval))
+        if resetSubtitleVisibility {
+            session.send(.run { await $0.setSubtitlesVisible(true) })
+        }
         if !PlaybackSpeed.isNormal(rate) {
             let rate = rate
             session.send(.run { await $0.setRate(rate) })
@@ -432,6 +520,8 @@ public final class PlayerModel {
         episodes = nil
         playbackState = .idle
         title = nil
+        currentURL = nil
+        videoInfoVisible = false
         chrome.setPlaying(false)
     }
 
@@ -483,8 +573,11 @@ public final class PlayerModel {
     /// Exact seek to an absolute time (seek bar click, release, keyboard).
     public func seek(to time: MediaTime, source: SeekSource = .pointer) {
         guard hasMedia else { return }
+        let pastEnd = isPastDataEnd(time)
         requestExact(time, source: source)
-        if source == .keyboard {
+        if pastEnd {
+            showNoDataOSD()
+        } else if source == .keyboard {
             showOSD(OSDMessage(kind: .seek, text: TimeFormat.positionOverTotal(position, duration: duration)))
         }
     }
@@ -641,8 +734,16 @@ public final class PlayerModel {
         case .storedRange(let range):
             storedRange = range
         case .decoderChanged(let kind, let reason):
+            videoDecoder = kind
             dependencies.log.info("video decoder now \(kind.rawValue): \(reason)")
-        case .tracksChanged(let state):
+        case .tracksChanged(var state):
+            if resetSubtitleVisibility {
+                resetSubtitleVisibility = false
+                if !state.subtitlesVisible {
+                    state.subtitlesVisible = true
+                    send { await $0.setSubtitlesVisible(true) }
+                }
+            }
             tracks = state
             if let pending = pendingChoices {
                 pendingChoices = nil
@@ -659,15 +760,36 @@ public final class PlayerModel {
             if let index = tracks?.subtitles.firstIndex(where: { $0.id == id }) {
                 tracks?.subtitles[index].unsupportedReason = reason
             }
+        case .dynamicRange(let range):
+            dynamicRange = range
+            dynamicRangeReported = true
+            dependencies.log.info("dynamic range: \(range.kind.rawValue)")
+            presentDolbyVisionNoteIfNeeded()
+        case .dataEnd(let time):
+            dataEnd = time
+            dependencies.log.info("data ends at \(time.seconds) s")
+        case .damaged(let time, let kind):
+            noteDamage(at: time, kind: kind)
+        case .problem(let problem):
+            presentProblem(problem, detail: nil)
+        case .audioTrackFailed(let streamIndex, let reason):
+            audioTrackFailed(streamIndex: streamIndex, reason: reason)
         case .ended:
             playbackState = .ended
             setPlayIntent(false)
-            if let duration { position = duration }
+            if let end = effectiveEnd { position = end }
             saveResume(flush: true)
             beginAutoAdvanceIfPossible()
         case .failed(let error):
             dependencies.log.error("engine failed: \(error)")
             errorMessage = error.errorDescription
+            if problem == nil {
+                presentProblem(for: error, url: currentURL ?? media?.url)
+            } else if problemDetail == nil {
+                // `.problem` came first without a detail (notMedia, cutShort): FFmpeg's reason
+                // arrives with `.failed`.
+                problemDetail = error.errorDescription
+            }
             playbackState = .failed
             setPlayIntent(false)
         }
@@ -683,7 +805,7 @@ public final class PlayerModel {
             try store.record(
                 key: key,
                 position: pendingExact ?? position,
-                duration: duration,
+                duration: effectiveEnd ?? duration,
                 audioStreamIndex: media.audioStreamIndex,
                 choices: userEdits.isEmpty ? nil : userEdits,
                 path: media.url.path(percentEncoded: false)
@@ -724,6 +846,11 @@ public final class PlayerModel {
         media = info
         title = info.title
         errorMessage = nil
+        problem = nil
+        problemDetail = nil
+        if !dynamicRangeReported { dynamicRange = DynamicRange.classify(info) }
+        videoDecoder = info.videoDecoder
+        presentDolbyVisionNoteIfNeeded()
     }
 
     private func resetForNewFile() {
@@ -745,6 +872,7 @@ public final class PlayerModel {
         restExactTarget = nil
         setPlayIntent(false)
         resetTrackState()
+        resetM3State()
     }
 
     private func closeSession(saving: Bool) async {
@@ -763,7 +891,7 @@ public final class PlayerModel {
 
     private func clamp(_ time: MediaTime) -> MediaTime {
         var result = max(time, .zero)
-        if let duration, duration > .zero { result = min(result, duration) }
+        if let end = effectiveEnd, end > .zero { result = min(result, end) }
         return result
     }
 
@@ -906,7 +1034,7 @@ extension PlayerModel {
     var panelRows: [TrackRow] {
         switch activePanel {
         case .subtitles?: TrackPanelContent.subtitleRows(tracks)
-        case .audio?: TrackPanelContent.audioRows(tracks)
+        case .audio?: TrackPanelContent.audioRows(tracks, failures: audioFailures)
         case .speed?, nil: []
         }
     }
@@ -1044,8 +1172,13 @@ extension PlayerModel {
         guard hasMedia, let tracks else { return }
         let visible = !tracks.subtitlesVisible
         self.tracks?.subtitlesVisible = visible
+        subtitlesWereHidden = !visible
         send { await $0.setSubtitlesVisible(visible) }
-        showOSD(OSDMessage(kind: .track, text: visible ? "Subtitles Shown" : "Subtitles Hidden", symbol: "captions.bubble"))
+        showOSD(OSDMessage(
+            kind: .track,
+            text: visible ? PlayerModel.subtitlesShownText : PlayerModel.subtitlesHiddenText,
+            symbol: "captions.bubble"
+        ))
     }
 
     /// Shift+Right and Shift+Left: the next or previous subtitle line.
@@ -1445,5 +1578,227 @@ extension PlayerModel {
             userEdits.subtitlePosition = position
             send { await $0.setSubtitlePosition(position) }
         }
+    }
+}
+
+// MARK: M3: dynamic range, Video Info, notes and problems (design 7.7 to 7.10, 9.13, 9.14)
+
+extension PlayerModel {
+    // MARK: Derived
+
+    /// The presentation plan for this file, setting and display (section 7.7). The app applies its
+    /// `layer` and `overlay`; the views read the tag and Video Info rows from it.
+    public var dynamicRangePlan: DynamicRangePlan {
+        DynamicRangePlan.make(content: dynamicRange, setting: hdrSetting, display: displayCapabilities)
+    }
+
+    /// The drive went away while a file was open: paused on the dimmed last frame.
+    public var isVolumeGone: Bool {
+        if case .volumeGone? = problem { return true }
+        return false
+    }
+
+    /// The failure card is showing: on black without a file, over the dimmed frame with one.
+    public var showsFailureCard: Bool { problem != nil }
+
+    /// The card's explanation; for a disconnected drive it names the saved time.
+    public var problemExplanation: String? {
+        guard let problem else { return nil }
+        let saved = TimeFormat.clock(pendingExact ?? position, duration: duration)
+        return problem.explanation(savedPosition: saved)
+    }
+
+    /// The rows of Video Info in their four groups (section 9.13).
+    public var videoInfoGroups: [[VideoInfoRow]] {
+        VideoInfoContent.groups(
+            media: media,
+            plan: dynamicRangePlan,
+            decoder: videoDecoder,
+            droppedFrames: droppedFrames,
+            damagedCount: damagedCount,
+            audioStreamIndex: tracks?.selectedAudio ?? media?.audioStreamIndex
+        )
+    }
+
+    // MARK: Display and setting inputs
+
+    /// The window moved to another display, or its headroom changed. Never reopens the file.
+    public func setDisplay(_ display: DisplayCapabilities) {
+        guard display != displayCapabilities else { return }
+        displayCapabilities = display
+    }
+
+    public func setHDRSetting(_ setting: HDRSetting) {
+        hdrSetting = setting
+    }
+
+    public func setDroppedFrames(_ count: Int) {
+        droppedFrames = max(0, count)
+    }
+
+    // MARK: Video Info
+
+    public func toggleVideoInfo() {
+        guard hasMedia else { return }
+        videoInfoVisible.toggle()
+    }
+
+    public func closeVideoInfo() {
+        videoInfoVisible = false
+    }
+
+    /// Esc: closes the Dolby Vision note, then Video Info. False when neither was open.
+    @discardableResult
+    public func dismissTransient() -> Bool {
+        if dolbyVisionNoteVisible {
+            dismissDolbyVisionNote()
+            return true
+        }
+        if videoInfoVisible {
+            closeVideoInfo()
+            return true
+        }
+        return false
+    }
+
+    // MARK: Dolby Vision note
+
+    func presentDolbyVisionNoteIfNeeded() {
+        guard let media, dynamicRangePlan.note else { return }
+        let path = media.url.path(percentEncoded: false)
+        guard !notedFiles.contains(path) else { return }
+        notedFiles.insert(path)
+        dolbyVisionNoteVisible = true
+        onAnnouncement?("\(DolbyVisionPolicy.noteTitle). \(DolbyVisionPolicy.noteBody)")
+        noteTask?.cancel()
+        let sleep = dependencies.sleep
+        noteTask = Task { [weak self] in
+            await sleep(DolbyVisionPolicy.noteSeconds)
+            guard !Task.isCancelled else { return }
+            self?.dolbyVisionNoteVisible = false
+        }
+    }
+
+    /// OK, Esc, or the 10 s timer.
+    public func dismissDolbyVisionNote() {
+        noteTask?.cancel()
+        noteTask = nil
+        dolbyVisionNoteVisible = false
+    }
+
+    /// The note's Show Info button.
+    public func showInfoFromNote() {
+        dismissDolbyVisionNote()
+        videoInfoVisible = true
+    }
+
+    // MARK: Problems and the failure card
+
+    func presentProblem(for error: any Error, url: URL?) {
+        let engineError = (error as? EngineError) ?? .openFailed("\(error)")
+        let path = url?.path(percentEncoded: false) ?? ""
+        let volumes = MediaProblem.volumeName(of: path) != nil ? dependencies.mountedVolumes() : []
+        let classified = MediaProblem.classify(from: engineError, path: path, mountedVolumes: volumes)
+        presentProblem(classified, detail: engineError.errorDescription)
+    }
+
+    func presentProblem(_ newProblem: MediaProblem, detail: String?) {
+        problem = newProblem
+        switch newProblem {
+        case .unreadable(let reason), .unsupportedCodec(let reason):
+            problemDetail = detail ?? reason
+        default:
+            problemDetail = detail
+        }
+        dependencies.log.error("media problem: \(newProblem.kind) \(problemDetail ?? "")")
+        if case .volumeGone = newProblem, hasMedia {
+            setPlayIntent(false)
+            session?.send(.pause)
+            saveResume(flush: true)
+        }
+    }
+
+    /// A card button. Try Again reopens the same file, which resumes from the saved place.
+    public func performProblemAction(_ button: MediaProblemButton) async {
+        switch button {
+        case .showInFinder:
+            if let url = currentURL { onRevealFile?(url) }
+        case .openAnotherFile:
+            onOpenAnotherFile?()
+        case .tryAgain:
+            if let url = currentURL { await open(url) }
+        case .closeFile:
+            await close()
+        }
+    }
+
+    // MARK: Damage, data end and audio failures
+
+    func noteDamage(at time: MediaTime, kind: DamageKind) {
+        damagedCount += 1
+        dependencies.log.info("skipped damaged \(kind.rawValue) at \(time.seconds) s")
+        let now = dependencies.now()
+        if let last = lastDamagedOSD[kind], now - last < PlayerModel.damagedOSDInterval { return }
+        lastDamagedOSD[kind] = now
+        showOSD(
+            OSDMessage(
+                kind: .damaged,
+                text: "Skipped damaged \(kind.rawValue) at \(TimeFormat.clock(time, duration: duration))",
+                symbol: OSDMessage.warningSymbol
+            ),
+            hold: PlayerModel.warningOSDDuration
+        )
+    }
+
+    func isPastDataEnd(_ time: MediaTime) -> Bool {
+        guard let dataEnd, let duration, dataEnd < duration else { return false }
+        return time > dataEnd
+    }
+
+    /// "No data after 38:02", for a seek past the end of the data.
+    func showNoDataOSD() {
+        guard let dataEnd else { return }
+        showOSD(
+            OSDMessage(kind: .noData, text: PlayerModel.noDataText(dataEnd, duration: duration), symbol: OSDMessage.warningSymbol),
+            hold: PlayerModel.warningOSDDuration
+        )
+    }
+
+    public static func noDataText(_ dataEnd: MediaTime, duration: MediaTime?) -> String {
+        "No data after \(TimeFormat.clock(dataEnd, duration: duration))"
+    }
+
+    /// The hover pill's text over the missing tail, or nil over data.
+    public func missingTailText(atFraction fraction: Double) -> String? {
+        guard let dataEnd, isPastDataEnd(time(atFraction: fraction)) else { return nil }
+        return PlayerModel.noDataText(dataEnd, duration: duration)
+    }
+
+    /// An audio track whose decoder could not be opened: video plays, the panel lists the track as
+    /// disabled with the reason and the OSD says so (section 9.14).
+    public func audioTrackFailed(streamIndex: Int, reason: String) {
+        audioFailures[streamIndex] = reason
+        dependencies.log.error("audio track \(streamIndex) failed: \(reason)")
+        let name = tracks?.audio.first { $0.streamIndex == streamIndex }?.formatTag ?? "audio"
+        showOSD(
+            OSDMessage(kind: .audioFailure, text: "Audio can't be played: \(name)", symbol: OSDMessage.warningSymbol),
+            hold: PlayerModel.warningOSDDuration
+        )
+    }
+
+    // MARK: Reset
+
+    func resetM3State() {
+        dynamicRange = .sdr
+        dynamicRangeReported = false
+        videoDecoder = nil
+        droppedFrames = 0
+        damagedCount = 0
+        problem = nil
+        problemDetail = nil
+        dataEnd = nil
+        audioFailures = [:]
+        lastDamagedOSD = [:]
+        dismissDolbyVisionNote()
     }
 }

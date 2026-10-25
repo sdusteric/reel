@@ -200,7 +200,7 @@ import Testing
         model.cycleSubtitle()
         #expect(model.osd?.text.hasPrefix("Subtitles: ") == true)
         model.toggleSubtitlesVisible()
-        #expect(model.osd?.text == "Subtitles Hidden")
+        #expect(model.osd?.text == "Subtitles Hidden, press V to show")
         #expect(!model.subtitlesAreOn)
     }
 

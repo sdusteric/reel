@@ -131,14 +131,16 @@ public struct VideoColor: Sendable, Hashable {
     }
 
     /// Format description extensions for the colour, with the size-based fallback when a field is
-    /// still unknown: BT.709 for height 720 and above, SMPTE-C/601 below.
-    public func formatExtensions(height: Int) -> [CFString: Any] {
-        let hd = height >= 720
+    /// still unknown (`isStandardDefinition`): SMPTE-C/601 for SD, BT.709 otherwise.
+    public func formatExtensions(width: Int, height: Int) -> [CFString: Any] {
+        let hd = !VideoColor.isStandardDefinition(width: width, height: height)
+        let resolved = resolvingDefaults(width: width, height: height)
+        // A specified value Core Media has no name for falls back the same way.
         var extensions: [CFString: Any] = [
-            kCMFormatDescriptionExtension_ColorPrimaries: primariesValue
+            kCMFormatDescriptionExtension_ColorPrimaries: resolved.primariesValue
                 ?? (hd ? kCMFormatDescriptionColorPrimaries_ITU_R_709_2 : kCMFormatDescriptionColorPrimaries_SMPTE_C),
-            kCMFormatDescriptionExtension_TransferFunction: transferValue ?? kCMFormatDescriptionTransferFunction_ITU_R_709_2,
-            kCMFormatDescriptionExtension_YCbCrMatrix: matrixValue
+            kCMFormatDescriptionExtension_TransferFunction: resolved.transferValue ?? kCMFormatDescriptionTransferFunction_ITU_R_709_2,
+            kCMFormatDescriptionExtension_YCbCrMatrix: resolved.matrixValue
                 ?? (hd ? kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2 : kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4),
             kCMFormatDescriptionExtension_FullRangeVideo: isFullRange,
         ]
@@ -149,8 +151,8 @@ public struct VideoColor: Sendable, Hashable {
     }
 
     /// Sets the colour attachments on a decoded buffer so they propagate into sample buffers.
-    public func attach(to buffer: CVBuffer, height: Int) {
-        let extensions = formatExtensions(height: height)
+    public func attach(to buffer: CVBuffer, width: Int, height: Int) {
+        let extensions = formatExtensions(width: width, height: height)
         let keys: [(CFString, CFString)] = [
             (kCMFormatDescriptionExtension_ColorPrimaries, kCVImageBufferColorPrimariesKey),
             (kCMFormatDescriptionExtension_TransferFunction, kCVImageBufferTransferFunctionKey),
@@ -178,8 +180,48 @@ public struct VideoColor: Sendable, Hashable {
             transfer: transfer == AVCOL_TRC_UNSPECIFIED ? nil : name(av_color_transfer_name(transfer)),
             matrix: matrix == AVCOL_SPC_UNSPECIFIED ? nil : name(av_color_space_name(matrix)),
             fullRange: isFullRange,
-            hasHDRMetadata: masteringDisplay != nil || contentLightLevel != nil
+            hasHDRMetadata: masteringDisplay != nil || contentLightLevel != nil,
+            mastering: VideoColor.masteringDisplayInfo(masteringDisplay),
+            contentLight: contentLightLevel.flatMap { data in
+                AttachmentValues.maxCLL(data).map { ContentLightLevel(maxCLL: $0, maxFALL: AttachmentValues.maxFALL(data) ?? 0) }
+            }
         )
+    }
+
+    /// ReelCore's mastering display from the 24-byte Core Media layout.
+    public static func masteringDisplayInfo(_ data: Data?) -> MasteringDisplay? {
+        guard let points = AttachmentValues.masteringPrimaries(data), points.count == 4,
+              let peak = AttachmentValues.masteringPeak(data), let minimum = AttachmentValues.masteringMinimum(data) else { return nil }
+        func chromaticity(_ point: (x: Double, y: Double)) -> Chromaticity {
+            Chromaticity(x: (point.x * 100_000).rounded() / 100_000, y: (point.y * 100_000).rounded() / 100_000)
+        }
+        return MasteringDisplay(
+            red: chromaticity(points[0]),
+            green: chromaticity(points[1]),
+            blue: chromaticity(points[2]),
+            whitePoint: chromaticity(points[3]),
+            minLuminance: minimum,
+            maxLuminance: peak
+        )
+    }
+
+    /// Colour for a stream that tags nothing and has no in-band description: SMPTE 170M for SD,
+    /// BT.709 otherwise (section 7.3), as QuickTime assumes.
+    public func resolvingDefaults(width: Int, height: Int) -> VideoColor {
+        let hd = !VideoColor.isStandardDefinition(width: width, height: height)
+        var resolved = self
+        if resolved.primaries == AVCOL_PRI_UNSPECIFIED { resolved.primaries = hd ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M }
+        if resolved.transfer == AVCOL_TRC_UNSPECIFIED { resolved.transfer = hd ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M }
+        if resolved.matrix == AVCOL_SPC_UNSPECIFIED { resolved.matrix = hd ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M }
+        return resolved
+    }
+
+    /// The size VideoToolbox (and so QuickTime and `AVAssetImageGenerator`) reads as SD when a
+    /// stream tags no colour: at most 704 x 576. Measured on H.264 and HEVC (2026-10-25): 640 x 480,
+    /// 704 x 480 and 704 x 576 get SMPTE-C and BT.601; 706 x 480, 720 x 480, 720 x 576, 704 x 578 and
+    /// 640 x 600 get BT.709 (`ColorInfoGuessedBy = VideoToolbox` on the decoded buffer).
+    public static func isStandardDefinition(width: Int, height: Int) -> Bool {
+        width <= 704 && height <= 576
     }
 
     // MARK: HDR static metadata

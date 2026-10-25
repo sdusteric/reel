@@ -10,6 +10,13 @@ import ReelUI
 enum MainMenu {
     /// `offersUpdates` adds "Check for Updates..." under About; only the app's updater sets it.
     static func make(appName: String = "Reel", trackMenus: TrackMenus, offersUpdates: Bool = false) -> NSMenu {
+        let main = build(appName: appName, trackMenus: trackMenus, offersUpdates: offersUpdates)
+        NSApplication.shared.windowsMenu = main.item(withTitle: "Window")?.submenu
+        return main
+    }
+
+    /// The menu bar without touching `NSApp`, so tests can read it.
+    static func build(appName: String = "Reel", trackMenus: TrackMenus, offersUpdates: Bool = false) -> NSMenu {
         let main = NSMenu()
         let updates = offersUpdates ? [item("Check for Updates\u{2026}", #selector(AppDelegate.checkForUpdates(_:)))] : []
         main.addItem(submenu(appName, items: [
@@ -32,14 +39,16 @@ enum MainMenu {
         ]))
         main.addItem(submenu("Playback", items: playbackItems(trackMenus: trackMenus)))
         main.addItem(submenu("Video", items: videoItems(trackMenus: trackMenus)))
-        main.addItem(dynamicSubmenu("Audio", kind: .audio, trackMenus: trackMenus, items: audioItems()))
+        main.addItem(dynamicSubmenu("Audio", kind: .audio, trackMenus: trackMenus, items: audioItems() + [
+            .separator(),
+            dynamicSubmenu("Output Device", kind: .outputDevice, trackMenus: trackMenus, items: []),
+        ]))
         main.addItem(dynamicSubmenu("Subtitles", kind: .subtitles, trackMenus: trackMenus, items: subtitleItems()))
         let window = submenu("Window", items: [
             item("Minimize", #selector(NSWindow.performMiniaturize(_:)), key: "m"),
             item("Zoom", #selector(NSWindow.performZoom(_:))),
         ])
         main.addItem(window)
-        NSApplication.shared.windowsMenu = window.submenu
         return main
     }
 
@@ -80,6 +89,8 @@ enum MainMenu {
             .separator(),
             item("Take Screenshot", #selector(AppDelegate.takeScreenshot(_:)), key: "s"),
             item("Show Screenshots in Finder", #selector(AppDelegate.showScreenshots(_:))),
+            .separator(),
+            item("Video Info", #selector(AppDelegate.toggleVideoInfo(_:)), key: "i"),
         ]
     }
 
@@ -102,7 +113,7 @@ enum MainMenu {
     static func subtitleItems() -> [NSMenuItem] {
         [
             item("Next Subtitle Track", #selector(AppDelegate.cycleSubtitleTrack(_:)), key: "s", modifiers: [.command, .control]),
-            item("Add Subtitle File\u{2026}", #selector(AppDelegate.addSubtitleFile(_:))),
+            item("Add Subtitle File\u{2026}", #selector(AppDelegate.addSubtitleFile(_:)), key: "O"),
             .separator(),
             item("Show Subtitles", #selector(AppDelegate.toggleSubtitlesVisible(_:))),
             submenu("Delay", items: [
@@ -178,6 +189,27 @@ enum MainMenu {
             entry.state = tracks.selectedVideo == track.streamIndex ? .on : .off
             return entry
         }
+    }
+
+    /// System Default (with the default device's name), a separator, then the devices, the
+    /// current choice checked (design 7.11). A chosen device that is unplugged stays, disabled.
+    static func outputDeviceItems(_ entries: [OutputDeviceModel.Entry]) -> [NSMenuItem] {
+        var items: [NSMenuItem] = []
+        for (index, entry) in entries.enumerated() {
+            if index == 1 { items.append(.separator()) }
+            let menuItem = item(entry.title, #selector(AppDelegate.selectOutputDevice(_:)))
+            if let detail = entry.detail {
+                let font = NSFont.menuFont(ofSize: 0)
+                let title = NSMutableAttributedString(string: entry.title, attributes: [.font: font])
+                title.append(NSAttributedString(string: " " + detail, attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+                menuItem.attributedTitle = title
+            }
+            menuItem.representedObject = OutputDeviceMenuChoice(entry.choice)
+            menuItem.state = entry.isSelected ? .on : .off
+            if !entry.isConnected { menuItem.action = nil }
+            items.append(menuItem)
+        }
+        return items
     }
 
     static func speedPresetItems(rate: Double) -> [NSMenuItem] {
@@ -265,11 +297,12 @@ enum MainMenu {
 /// tracks with the current choice checked. Items it adds carry `TrackMenus.dynamicTag`.
 final class TrackMenus: NSObject, NSMenuDelegate {
     enum Kind {
-        case audio, subtitles, video, speed
+        case audio, subtitles, video, speed, outputDevice
     }
 
     static let dynamicTag = 0x7265_656C
     weak var model: PlayerModel?
+    weak var outputDevices: OutputDeviceModel?
     private var kinds: [ObjectIdentifier: Kind] = [:]
 
     func manage(_ menu: NSMenu, kind: Kind) {
@@ -292,6 +325,9 @@ final class TrackMenus: NSObject, NSMenuDelegate {
         case .speed:
             fresh = MainMenu.speedPresetItems(rate: model?.rate ?? PlaybackSpeed.normal)
             atEnd = true
+        case .outputDevice:
+            outputDevices?.refresh()
+            fresh = MainMenu.outputDeviceItems(outputDevices?.entries ?? [])
         }
         if !menu.items.isEmpty {
             if atEnd { fresh.insert(.separator(), at: 0) } else { fresh.append(.separator()) }
@@ -301,5 +337,14 @@ final class TrackMenus: NSObject, NSMenuDelegate {
         for (offset, item) in fresh.enumerated() {
             menu.insertItem(item, at: start + offset)
         }
+    }
+}
+
+/// The output device choice a menu item selects (its `representedObject`).
+final class OutputDeviceMenuChoice: NSObject {
+    let choice: OutputDeviceChoice
+
+    init(_ choice: OutputDeviceChoice) {
+        self.choice = choice
     }
 }

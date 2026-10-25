@@ -66,12 +66,90 @@ import Testing
     }
 
     @Test func everyScenarioChangesTheControllerRegionBetweenLightAndDark() throws {
-        for scenario in ShotScenario.allCases where scenario != .empty {
-            let rect = ShotRenderer.controllerPixelRect(size: size, scenario: scenario).insetBy(dx: 40, dy: 20)
+        let m3: Set<ShotScenario> = [.hdrBadge, .videoInfo, .hdrSDR, .dvNote, .truncated, .damagedOSD, .driveGone]
+        for scenario in ShotScenario.allCases where scenario != .empty && scenario != .openFailed {
+            let rect = ShotRenderer.appearanceRegion(size: size, scenario: scenario)
             let light = try #require(ShotRenderer.luminance(of: try render(scenario, .light), in: rect))
             let dark = try #require(ShotRenderer.luminance(of: try render(scenario, .dark), in: rect))
-            #expect(light.mean - dark.mean >= 20, "\(scenario.rawValue): light \(light.mean) vs dark \(dark.mean)")
+            let needed = m3.contains(scenario) ? 40.0 : 20.0
+            #expect(light.mean - dark.mean >= needed, "\(scenario.rawValue): light \(light.mean) vs dark \(dark.mean)")
         }
+    }
+
+    /// Pixel rect of a region given in points, origin top-left.
+    private func pixels(_ rect: CGRect) -> CGRect {
+        CGRect(x: rect.minX * 2, y: rect.minY * 2, width: rect.width * 2, height: rect.height * 2)
+    }
+
+    private func differs(_ scenario: ShotScenario, from other: ShotScenario, in region: CGRect, _ appearance: ShotAppearance = .dark) throws -> Bool {
+        let first = try #require(ShotRenderer.luminance(of: try render(scenario, appearance), in: region))
+        let second = try #require(ShotRenderer.luminance(of: try render(other, appearance), in: region))
+        return abs(first.mean - second.mean) > 1 || abs(first.standardDeviation - second.standardDeviation) > 1
+    }
+
+    @Test func theOpenFailureShowsTheTitleBarTextAndTheCardOnBlack() throws {
+        for appearance in ShotAppearance.allCases {
+            let image = try render(.openFailed, appearance)
+            let titleRegion = ShotRenderer.appearanceRegion(size: size, scenario: .openFailed)
+            let title = try #require(ShotRenderer.luminance(of: image, in: titleRegion))
+            #expect(!title.isBlank, "the file name is drawn in the title bar")
+            let card = try #require(ShotRenderer.luminance(of: image, in: pixels(CGRect(x: 440, y: 240, width: 400, height: 240))))
+            #expect(!card.isBlank, "the card is drawn")
+            let corner = try #require(ShotRenderer.luminance(of: image, in: pixels(CGRect(x: 0, y: 500, width: 200, height: 200))))
+            #expect(corner.maximum < 4, "everything else stays black")
+        }
+    }
+
+    @Test func theRangeSurfacesDrawWhereTheMockupsPutThem() throws {
+        let topRight = pixels(CGRect(x: 1_280 - 20 - 344, y: 48, width: 344, height: 340))
+        #expect(try differs(.videoInfo, from: .hdrBadge, in: topRight), "Video Info is at the top right")
+        let note = pixels(CGRect(x: 20, y: 20, width: 460, height: 130))
+        #expect(try differs(.dvNote, from: .hdrBadge, in: note), "the note is at the OSD position")
+        let tag = pixels(CGRect(x: 800, y: 3, width: 150, height: 22))
+        #expect(try differs(.hdrBadge, from: .playing, in: tag), "the tag follows the title")
+        let tooltip = pixels(CGRect(x: 500, y: 34, width: 320, height: 60))
+        #expect(try differs(.hdrSDR, from: .hdrBadge, in: tooltip), "the tone-mapped tag shows its tooltip")
+    }
+
+    @Test func theTruncatedTailAndTheDamagedOSDAreDrawn() throws {
+        let controller = ShotRenderer.controllerPixelRect(size: size, scenario: .truncated)
+        let bar = CGRect(x: controller.minX + 120, y: controller.minY + 24, width: controller.width - 240, height: 40)
+        #expect(try differs(.truncated, from: .playing, in: bar))
+        let osd = pixels(CGRect(x: 20, y: 20, width: 360, height: 70))
+        #expect(try differs(.damagedOSD, from: .playing, in: osd))
+    }
+
+    @Test func aDisconnectedDriveDimsTheFrame() throws {
+        let top = pixels(CGRect(x: 0, y: 40, width: 1_280, height: 120))
+        let playing = try #require(ShotRenderer.luminance(of: try render(.playing, .dark), in: top))
+        let gone = try #require(ShotRenderer.luminance(of: try render(.driveGone, .dark), in: top))
+        #expect(gone.mean < playing.mean * 0.6, "brightness drops to about 38%: \(gone.mean) vs \(playing.mean)")
+        let card = pixels(CGRect(x: 440, y: 260, width: 400, height: 200))
+        #expect(try differs(.driveGone, from: .pausedOSD, in: card))
+    }
+
+    @Test func theScenarioNamesMatchTheAcceptanceList() {
+        let names = ["hdr-badge", "video-info", "hdr-sdr", "dv-note", "open-failed", "truncated", "damaged-osd", "drive-gone"]
+        for name in names {
+            #expect(ShotScenario(rawValue: name) != nil, Comment(rawValue: name))
+        }
+        #expect(ShotScenario.allCases.count == 24)
+    }
+
+    @Test func hdrShotsTakeTheirInputsFromTheCaller() throws {
+        let image = try #require(ShotRenderer.render(
+            scenario: .hdrBadge,
+            appearance: .dark,
+            size: size,
+            frame: ShotRenderer.placeholderFrame(),
+            dynamicRange: .hlg,
+            display: .sdr
+        ))
+        let plain = try render(.hdrBadge, .dark)
+        let tag = pixels(CGRect(x: 800, y: 3, width: 150, height: 22))
+        let first = try #require(ShotRenderer.luminance(of: image, in: tag))
+        let second = try #require(ShotRenderer.luminance(of: plain, in: tag))
+        #expect(abs(first.mean - second.mean) > 0.5 || abs(first.standardDeviation - second.standardDeviation) > 0.5)
     }
 
     @Test func subtitleShotsHaveOutlinedWhiteInk() throws {

@@ -246,6 +246,34 @@ import Testing
         #expect(map.chord(for: .togglePictureInPicture) == KeyChord(character: "p", modifiers: [.control, .command]))
     }
 
+    @Test func videoInfoIsCommandI() {
+        #expect(action("Meta+i") == .videoInfo)
+        #expect(map.action(for: KeyChord(character: "i", modifiers: .command)) == .videoInfo)
+        #expect(map.chord(for: .videoInfo) == KeyChord(character: "i", modifiers: .command))
+    }
+
+    @Test func addSubtitleFileIsShiftCommandO() {
+        #expect(map.action(for: KeyChord(character: "o", modifiers: [.command, .shift])) == .addSubtitleFile)
+        #expect(map.action(for: KeyChord(character: "O", modifiers: .command)) == .addSubtitleFile)
+        #expect(map.chord(for: .addSubtitleFile) == KeyChord(character: "o", modifiers: [.command, .shift]))
+        // Cmd+O without Shift still opens a file.
+        #expect(map.action(for: KeyChord(character: "o", modifiers: .command)) == .openFile)
+    }
+
+    @Test func m3CommandsParseInBothSyntaxes() {
+        let text = """
+            Meta+i script-binding video-info
+            Meta+O script-message reel-add-subtitle-file
+            Meta+j script-message reel-video-info
+            Meta+k script-binding stats/display-stats
+            """
+        let parsed = InputMap(parsing: text)
+        #expect(parsed.action(for: KeyChord(character: "i", modifiers: .command)) == .videoInfo)
+        #expect(parsed.action(for: KeyChord(character: "j", modifiers: .command)) == .videoInfo)
+        #expect(parsed.action(for: KeyChord(character: "o", modifiers: [.command, .shift])) == .addSubtitleFile)
+        #expect(parsed.diagnostics.map(\.line) == [4])
+    }
+
     @Test func numbersAcceptSignsAndFractions() {
         #expect(InputMap.number("+0.1") == 0.1)
         #expect(InputMap.number("-1") == -1)

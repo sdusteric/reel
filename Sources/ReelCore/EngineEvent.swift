@@ -21,6 +21,10 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
     case decoderFailed(String)
     case io(String)
     case notOpen
+    /// (M3) No demuxer recognised the file (`MediaProblem.notMedia`); the FFmpeg detail.
+    case notMedia(String)
+    /// (M3) A container header, then end of file before the first packet (`MediaProblem.cutShort`).
+    case cutShort(String)
 
     public var errorDescription: String? {
         switch self {
@@ -31,6 +35,8 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
         case .decoderFailed(let reason): "Decoding failed: \(reason)"
         case .io(let reason): "Read error: \(reason)"
         case .notOpen: "No file is open."
+        case .notMedia(let reason): "Not a video or audio file: \(reason)"
+        case .cutShort(let reason): "The file ends before its first frame: \(reason)"
         }
     }
 }
@@ -58,7 +64,24 @@ public enum EngineEvent: Sendable, Hashable {
     case thumbnailsProgress(done: Int, total: Int)
     /// A subtitle track could not be opened or decoded; it is listed as disabled with `reason`.
     case subtitleTrackFailed(TrackID, reason: String)
+    // M3 (sections 7.7 to 7.10).
+    /// The content's dynamic range, sent after `.opened` (and again if a decoded frame changes it).
+    case dynamicRange(DynamicRange)
+    /// The last readable presentation time of a file cut short (section 7.10).
+    case dataEnd(MediaTime)
+    /// A damaged region was skipped at `at`; one event per region.
+    case damaged(at: MediaTime, kind: DamageKind)
+    /// The file failed or became unreadable (failure card, section 9.14).
+    case problem(MediaProblem)
+    /// An audio track's decoder could not be opened (at open or when the track was chosen): video
+    /// plays on, and the track is listed as disabled with `reason` (section 9.14).
+    case audioTrackFailed(streamIndex: Int, reason: String)
     /// Playback reached the end of the file.
     case ended
     case failed(EngineError)
+}
+
+/// Which stream a skipped damaged region was in (section 9.14).
+public enum DamageKind: String, Sendable, Hashable, Codable {
+    case video, audio
 }

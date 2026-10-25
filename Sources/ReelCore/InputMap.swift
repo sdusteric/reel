@@ -50,6 +50,12 @@ public enum InputAction: Sendable, Hashable {
     case toggleFileLoop
     /// `toggle-pip` (IINA's command name; Reel binds it to Ctrl+Cmd+P).
     case togglePictureInPicture
+    // M3 (design section 10).
+    /// Video Info (Cmd+I, IINA's Inspector key): `script-message reel-video-info`, or
+    /// `script-binding video-info`.
+    case videoInfo
+    /// Add Subtitle File (Shift+Cmd+O): `script-message reel-add-subtitle-file`.
+    case addSubtitleFile
     /// Unbinds the key (`ignore` in input.conf).
     case ignore
 }
@@ -345,6 +351,8 @@ public struct InputMap: Sendable, Hashable {
             return .success(.quit)
         case "script-message":
             return parseScriptMessage(args)
+        case "script-binding":
+            return args.first == "video-info" ? .success(.videoInfo) : .failure(.unknown("script-binding \(args.first ?? "")"))
         default:
             return .failure(.unknown(name))
         }
@@ -371,6 +379,8 @@ public struct InputMap: Sendable, Hashable {
         case "reel-open": return .success(.openFile)
         case "reel-close": return .success(.closeFile)
         case "reel-settings": return .success(.showSettings)
+        case "reel-video-info": return .success(.videoInfo)
+        case "reel-add-subtitle-file": return .success(.addSubtitleFile)
         case "reel-window-scale":
             guard args.count == 2 else { return .failure(.badArguments("reel-window-scale")) }
             if args[1] == "fit" { return .success(.windowScale(.fitScreen)) }

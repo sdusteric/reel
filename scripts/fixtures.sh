@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Generates Reel's test media (design section 14) with Homebrew ffmpeg, used only as a generator.
 # Every file comes from lavfi sources (testsrc2 plus temporal noise, colour, sine, aevalsrc),
-# subtitle text written by this script and a PGS stream from scripts/make-pgs.swift; nothing is
-# read from the user's media.
+# subtitle text written by this script and a PGS stream from scripts/make-pgs.swift, and (M3)
+# raw patch ramps from scripts/make-ramp.py, Dolby Vision records from scripts/make-dovi.py and
+# damaged copies from scripts/make-corpus.py (all run with python3 -I, standard library only);
+# nothing is read from the user's media.
 #
 # Usage: scripts/fixtures.sh            output: ${REEL_FIXTURES:-<repo>/build/fixtures}
 # Env:   FORCE=1 regenerates everything.
 #
 # The stamp file .fixtures-<script hash> is written last; when it matches and every file is
 # present the script exits at once. Encodes run in parallel, tracked and awaited by PID.
+# The M3 recipes sit between '# >>> m3' and '# <<< m3' lines and have their own version, so
+# changing them never regenerates the M1 and M2 files, and the reverse.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,7 +28,9 @@ if [ -z "$FFMPEG" ]; then
   echo "ffmpeg not found (looked in /opt/homebrew/bin, /usr/local/bin and PATH)" >&2
   exit 1
 fi
-for encoder in libx265 libx264 libsvtav1 libvpx-vp9 libopus ac3 aac mpeg4 flv libmp3lame; do
+FFPROBE="$(dirname "$FFMPEG")/ffprobe"
+[ -x "$FFPROBE" ] || { echo "ffprobe not found next to $FFMPEG" >&2; exit 1; }
+for encoder in libx265 libx264 libsvtav1 libvpx-vp9 libopus ac3 aac mpeg4 flv libmp3lame prores_ks mjpeg; do
   if ! "$FFMPEG" -hide_banner -encoders 2>/dev/null | awk '{print $2}' | grep -qx "$encoder"; then
     echo "ffmpeg at $FFMPEG lacks the $encoder encoder" >&2
     exit 1
@@ -41,8 +47,58 @@ FIXTURES=(
   episodes/Northern.Line.S01E10.mkv episodes/._Northern.Line.S01E02.mkv episodes/notes.txt
 )
 
-SCRIPT_HASH="$(shasum -a 256 "${BASH_SOURCE[0]}" | cut -c1-16)"
+# >>> m3
+# M3 fixtures (design sections 7.7, 7.8, 7.10 and 14). The long name has 240 characters, CJK and
+# emoji, 250 UTF-16 units (APFS allows 255).
+LONG_NAME="$(python3 -I -c 'print(("北線終點站的長夜與清晨" * 30)[:226] + "🚇🌃" * 5 + ".mkv")')"
+CORPUS_BASES=(h264_moov_end.mp4 h264_faststart.mp4 hevc.mkv av1.mkv vp9.webm h264.ts mpeg4.avi flv1.flv)
+M3_FIXTURES=(
+  logs/ramps.json
+  hdr/pq_ramp_hevc.mkv hdr/pq_ramp_hevc.mp4 hdr/hlg_ramp_hevc.mkv hdr/hlg_ramp_hevc.mp4
+  hdr/pq_ramp_av1.mkv hdr/pq_ramp_vp9.webm hdr/sdr_ramp_h264.mp4
+  hdr/dv81.mp4 hdr/dv81.mkv hdr/dv84.mp4 hdr/dv5.mp4
+  odd/zero.mkv odd/text.mp4 odd/random.mkv odd/prores.mov odd/audio_cover.mp3 odd/video_only.mp4
+  odd/one_frame.mkv odd/tiny_16x16.mp4 odd/odd_1921x1081.mkv odd/res_change.ts odd/layout_change.ts
+  odd/ts_wrap.ts odd/vfr.mkv odd/intra_refresh.mp4 odd/h264_422_10bit.mkv odd/h264_444.mkv
+  odd/edit_list_offset.mp4 odd/many_tracks.mkv "odd/$LONG_NAME"
+  corpus/manifest.json
+)
+for base in "${CORPUS_BASES[@]}"; do M3_FIXTURES+=("corpus/$base"); done
+# <<< m3
+
+# >>> m3-color
+# SDR colour bars for AC-M3-8 (design section 7.9): a 6 x 4 grid of flat patches, so each patch
+# centre that `reelctl color` measures is far from an edge. Tagged BT.709, untagged HD (Reel
+# treats it as BT.709) and untagged SD at 704 x 480 (treated as SMPTE 170M, as VideoToolbox does
+# for QuickTime up to 704 x 576; it reads untagged 720 x 480 as BT.709).
+COLOR_FIXTURES=(sdr/bars709_h264.mp4 sdr/bars709_untagged_h264.mp4 sdr/bars601_sd_h264.mp4)
+# <<< m3-color
+
+# >>> m3-dovi
+# Dolby Vision with real RPUs (design section 7.8): the ramps re-encoded by scripts/make-dovi-rpu.c
+# (Homebrew's libavcodec and libx265 with Dolby Vision metadata on every frame), so AVFoundation
+# and VideoToolbox see real profile 8.1, 8.4 and 5 streams.
+DOVI_RPU_FIXTURES=(hdr/dv81_rpu.mp4 hdr/dv84_rpu.mp4 hdr/dv5_rpu.mp4)
+# <<< m3-dovi
+
+# Version groups: the M1 and M2 recipes (everything outside the m3 blocks) and the M3 recipes
+# (the m3 blocks and the Python generators). The stamp covers both.
+# The SDR colour bars ('# >>> m3-color' blocks) are a third group, so adding them regenerated
+# neither the M1 and M2 files nor the M3 corpus.
+strip_m3() { awk '/^# >>> m3/{skip=1} !skip{print} /^# <<< m3/{skip=0}' "$1"; }
+only_m3() { awk '/^# >>> m3$/{keep=1} keep{print} /^# <<< m3$/{keep=0}' "$1"; }
+only_color() { awk '/^# >>> m3-color$/{keep=1} keep{print} /^# <<< m3-color$/{keep=0}' "$1"; }
+only_dovi() { awk '/^# >>> m3-dovi$/{keep=1} keep{print} /^# <<< m3-dovi$/{keep=0}' "$1"; }
+BASE_HASH="$(strip_m3 "${BASH_SOURCE[0]}" | shasum -a 256 | cut -c1-16)"
+M3_HASH="$({ only_m3 "${BASH_SOURCE[0]}"; cat "$ROOT/scripts/make-ramp.py" "$ROOT/scripts/make-dovi.py" "$ROOT/scripts/make-corpus.py"; } | shasum -a 256 | cut -c1-16)"
+COLOR_HASH="$(only_color "${BASH_SOURCE[0]}" | shasum -a 256 | cut -c1-16)"
+# The Dolby Vision RPU files ('# >>> m3-dovi' blocks and make-dovi-rpu.c) are a fourth group.
+DOVI_HASH="$({ only_dovi "${BASH_SOURCE[0]}"; cat "$ROOT/scripts/make-dovi-rpu.c"; } | shasum -a 256 | cut -c1-16)"
+SCRIPT_HASH="$(printf '%s %s %s %s\n' "$BASE_HASH" "$M3_HASH" "$COLOR_HASH" "$DOVI_HASH" | shasum -a 256 | cut -c1-16)"
 STAMP="$OUT/.fixtures-$SCRIPT_HASH"
+# Base hashes of earlier versions whose M1 and M2 recipes are the ones here, so their files are
+# kept: 9720b018b84371bc is the M2 script, 4c872f63da278f6a the M3 script before the colour group.
+LEGACY_BASE_VERSIONS=(9720b018b84371bc 4c872f63da278f6a)
 
 # Several agents and gates may run this at once: one generates, the others wait for its stamp.
 LOCK="$OUT/.lock"
@@ -60,8 +116,12 @@ trap 'rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true' EXIT
 
 all_present() {
   local name
-  for name in "${FIXTURES[@]}"; do
-    [ -s "$OUT/$name" ] || return 1
+  for name in "${FIXTURES[@]}" "${M3_FIXTURES[@]}" "${COLOR_FIXTURES[@]}" "${DOVI_RPU_FIXTURES[@]}"; do
+    if [ "$name" = odd/zero.mkv ]; then
+      [ -f "$OUT/$name" ] || return 1
+    else
+      [ -s "$OUT/$name" ] || return 1
+    fi
   done
 }
 
@@ -73,11 +133,35 @@ fi
 # A different script version invalidates every file; a rerun of an interrupted run of the
 # same version keeps what it finished (each file is renamed into place only when complete).
 VERSION_FILE="$OUT/.version"
-if [ "${FORCE:-0}" = 1 ] || [ "$(cat "$VERSION_FILE" 2>/dev/null || true)" != "$SCRIPT_HASH" ]; then
+M3_VERSION_FILE="$OUT/.version-m3"
+COLOR_VERSION_FILE="$OUT/.version-m3-color"
+DOVI_VERSION_FILE="$OUT/.version-m3-dovi"
+base_version="$(cat "$VERSION_FILE" 2>/dev/null || true)"
+for legacy in "${LEGACY_BASE_VERSIONS[@]}"; do
+  if [ "$base_version" = "$legacy" ]; then base_version="$BASE_HASH"; fi
+done
+if [ "${FORCE:-0}" = 1 ] || [ "$base_version" != "$BASE_HASH" ]; then
   for name in "${FIXTURES[@]}"; do rm -f "$OUT/$name"; done
 fi
+if [ "${FORCE:-0}" = 1 ] || [ "$(cat "$M3_VERSION_FILE" 2>/dev/null || true)" != "$M3_HASH" ]; then
+  # Corpus copies are listed in the manifest; each is removed by its exact path.
+  if [ -f "$OUT/corpus/manifest.json" ]; then
+    python3 -I -c 'import json, sys; print("\n".join(e["file"] for e in json.load(open(sys.argv[1]))["files"]))' \
+      "$OUT/corpus/manifest.json" | while IFS= read -r name; do rm -f "${OUT:?}/corpus/${name:?}"; done
+  fi
+  for name in "${M3_FIXTURES[@]}"; do rm -f "${OUT:?}/${name:?}"; done
+fi
+if [ "${FORCE:-0}" = 1 ] || [ "$(cat "$COLOR_VERSION_FILE" 2>/dev/null || true)" != "$COLOR_HASH" ]; then
+  for name in "${COLOR_FIXTURES[@]}"; do rm -f "${OUT:?}/${name:?}"; done
+fi
+if [ "${FORCE:-0}" = 1 ] || [ "$(cat "$DOVI_VERSION_FILE" 2>/dev/null || true)" != "$DOVI_HASH" ]; then
+  for name in "${DOVI_RPU_FIXTURES[@]}"; do rm -f "${OUT:?}/${name:?}"; done
+fi
 rm -f "$OUT"/.fixtures-*
-echo "$SCRIPT_HASH" >"$VERSION_FILE"
+echo "$BASE_HASH" >"$VERSION_FILE"
+echo "$M3_HASH" >"$M3_VERSION_FILE"
+echo "$COLOR_HASH" >"$COLOR_VERSION_FILE"
+echo "$DOVI_HASH" >"$DOVI_VERSION_FILE"
 
 ff() { "$FFMPEG" -hide_banner -loglevel error -nostdin -y "$@"; }
 
@@ -122,6 +206,7 @@ muxer_for() {
     ts) echo mpegts ;;
     avi) echo avi ;;
     flv) echo flv ;;
+    mp3) echo mp3 ;;
     *) echo "unknown extension $1" >&2; return 1 ;;
   esac
 }
@@ -338,6 +423,210 @@ episode Northern.Line.S01E02.mkv 0x2E6B8B
 episode Northern.Line.S01E03.mkv 0x3C8B2E
 episode Northern.Line.S01E10.mkv 0x8B7A2E
 
+# >>> m3
+# ---- M3 stage 1: HDR ramps, odd files and corpus bases (design sections 7.7, 7.8, 7.10) ----
+mkdir -p "$OUT/hdr" "$OUT/odd" "$OUT/corpus"
+
+# HDR ramps: one raw frame per transfer from make-ramp.py, looped to 2 s at 24 fps. The PQ and
+# HLG masters are lossless HEVC carrying the HDR SEI; the published files are encoded from the
+# decoded masters, so ffmpeg also writes the mastering metadata into each container.
+MASTER_DISPLAY="G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)"
+X265_LOSSLESS="log-level=error:lossless=1:keyint=24:min-keyint=24:scenecut=0:repeat-headers=1"
+PQ_X265="colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:range=limited:hdr10=1:master-display=$MASTER_DISPLAY:max-cll=1000,400"
+HLG_X265="colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:range=limited"
+RAMP_FRAMES=48
+
+make_ramp_masters() {
+  local transfer
+  for transfer in pq hlg sdr; do
+    python3 -I "$ROOT/scripts/make-ramp.py" "$transfer" "$SRC/ramp_$transfer.yuv" "$LOGS/ramps.json" || return 1
+  done
+  local raw10=(-f rawvideo -pix_fmt yuv420p10le -s 1920x1080 -framerate 24 -stream_loop -1)
+  ff "${raw10[@]}" -i "$SRC/ramp_pq.yuv" -frames:v "$RAMP_FRAMES" \
+    -vf "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv" \
+    -c:v libx265 -preset ultrafast -pix_fmt yuv420p10le -x265-params "$X265_LOSSLESS:$PQ_X265" \
+    -f matroska "$SRC/pq_master.mkv" >"$LOGS/pq_master.log" 2>&1 || return 1
+  ff "${raw10[@]}" -i "$SRC/ramp_hlg.yuv" -frames:v "$RAMP_FRAMES" \
+    -vf "setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv" \
+    -c:v libx265 -preset ultrafast -pix_fmt yuv420p10le -x265-params "$X265_LOSSLESS:$HLG_X265" \
+    -f matroska "$SRC/hlg_master.mkv" >"$LOGS/hlg_master.log" 2>&1 || return 1
+}
+
+# The AV1 ramp has its Matroska Colour element voided, so colour comes from the bitstream only.
+make_av1_ramp() {
+  local tmp="$OUT/hdr/.partial-pq_ramp_av1.mkv"
+  rm -f "${tmp:?}"
+  if ff -i "$SRC/pq_master.mkv" -map 0:v -c:v libsvtav1 -preset 6 -crf 4 -g 24 -pix_fmt yuv420p10le \
+      -svtav1-params "tune=0:enable-hdr=1" -f matroska "$tmp" >"$LOGS/hdr_pq_ramp_av1.mkv.log" 2>&1 \
+      && python3 -I "$ROOT/scripts/make-ramp.py" strip-mkv-colour "$tmp"; then
+    mv "$tmp" "$OUT/hdr/pq_ramp_av1.mkv"
+    echo "  hdr/pq_ramp_av1.mkv"
+  else
+    rm -f "${tmp:?}"
+    echo "FAILED hdr/pq_ramp_av1.mkv, log: $LOGS/hdr_pq_ramp_av1.mkv.log" >&2
+    return 1
+  fi
+}
+
+if ! [ -s "$LOGS/ramps.json" ] || ! [ -s "$OUT/hdr/pq_ramp_hevc.mkv" ] || ! [ -s "$OUT/hdr/hlg_ramp_hevc.mkv" ] \
+    || ! [ -s "$OUT/hdr/pq_ramp_av1.mkv" ] || ! [ -s "$OUT/hdr/pq_ramp_vp9.webm" ] || ! [ -s "$OUT/hdr/sdr_ramp_h264.mp4" ]; then
+  rm -f "${LOGS:?}/ramps.json"
+  make_ramp_masters || { echo "FAILED ramp masters, logs in $LOGS" >&2; FAILED=1; }
+fi
+if [ "$FAILED" = 0 ]; then
+  start hdr/pq_ramp_hevc.mkv -i "$SRC/pq_master.mkv" -map 0:v \
+    -c:v libx265 -preset ultrafast -pix_fmt yuv420p10le -x265-params "$X265_LOSSLESS:$PQ_X265"
+  start hdr/hlg_ramp_hevc.mkv -i "$SRC/hlg_master.mkv" -map 0:v \
+    -c:v libx265 -preset ultrafast -pix_fmt yuv420p10le -x265-params "$X265_LOSSLESS:$HLG_X265"
+  start hdr/pq_ramp_vp9.webm -i "$SRC/pq_master.mkv" -map 0:v \
+    -c:v libvpx-vp9 -lossless 1 -profile:v 2 -pix_fmt yuv420p10le -g 24 -row-mt 1 -deadline good -cpu-used 4
+  start hdr/sdr_ramp_h264.mp4 \
+    -f rawvideo -pix_fmt yuv420p -s 1920x1080 -framerate 24 -stream_loop -1 -i "$SRC/ramp_sdr.yuv" -frames:v "$RAMP_FRAMES" \
+    -vf "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv" \
+    -c:v libx264 -preset veryfast -crf 1 -profile:v high -g 24 -pix_fmt yuv420p \
+    -x264-params "colorprim=bt709:transfer=bt709:colormatrix=bt709"
+  if [ -s "$OUT/hdr/pq_ramp_av1.mkv" ]; then
+    echo "  hdr/pq_ramp_av1.mkv (kept)"
+  else
+    make_av1_ramp &
+    PIDS+=("$!")
+    NAMES+=(hdr/pq_ramp_av1.mkv)
+  fi
+fi
+
+# Odd but valid files and three non-media files (section 7.10), 3 s or less each.
+[ -f "$OUT/odd/zero.mkv" ] || : >"$OUT/odd/zero.mkv"
+printf 'This is a text file with a video file name.\nIt has no media in it.\n' | put odd/text.mp4
+python3 -I -c 'import random, sys; sys.stdout.buffer.write(random.Random(1).randbytes(1 << 20))' | put odd/random.mkv
+srt_file "$EN1" "$EN2" >"$SRC/many.srt"
+
+ODD_VIDEO="testsrc2=s=1280x720:r=24:d=3"
+ODD_AUDIO="sine=f=440:d=3"
+start odd/prores.mov -f lavfi -i "testsrc2=s=640x360:r=24:d=2" -c:v prores_ks -profile:v 2 -pix_fmt yuv422p10le
+# The cover is a one-frame source: -frames:v 1 would also end the audio after two packets.
+start odd/audio_cover.mp3 -f lavfi -i "$ODD_AUDIO" -f lavfi -i "color=c=0x2E6B8B:s=320x320:r=1:d=1" \
+  -map 0:a -map 1:v -c:a libmp3lame -b:a 128k -c:v mjpeg -disposition:v attached_pic -id3v2_version 3 \
+  -metadata title="Northern Line Theme" -metadata:s:v comment="Cover (front)"
+start odd/video_only.mp4 -f lavfi -i "$ODD_VIDEO" -c:v libx264 -preset veryfast -g 24 -pix_fmt yuv420p
+start odd/one_frame.mkv -f lavfi -i "testsrc2=s=1280x720:r=24:d=1" -frames:v 1 -c:v libx264 -preset veryfast -pix_fmt yuv420p
+start odd/tiny_16x16.mp4 -f lavfi -i "testsrc2=s=16x16:r=24:d=3" -f lavfi -i "$ODD_AUDIO" \
+  -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -b:a 64k
+# Odd dimensions need 4:4:4: 4:2:0 HEVC crops only in steps of two.
+start odd/odd_1921x1081.mkv -f lavfi -i "testsrc2=s=1920x1080:r=24:d=2" -vf "format=yuv444p,scale=1921:1081" \
+  -c:v libx265 -preset ultrafast -pix_fmt yuv444p -x265-params "log-level=error:keyint=24"
+# MPEG-TS wraps its 33-bit 90 kHz clock at 95443.72 s; this offset (plus the muxer's 1.4 s
+# delay) puts the wrap about 1.5 s into the file.
+start odd/ts_wrap.ts -f lavfi -i "$ODD_VIDEO" -f lavfi -i "$ODD_AUDIO" \
+  -c:v libx264 -preset veryfast -g 24 -pix_fmt yuv420p -c:a aac -b:a 96k -output_ts_offset 95440.8
+start odd/vfr.mkv -f lavfi -i "$ODD_VIDEO" -f lavfi -i "$ODD_AUDIO" -vf "select='lt(n,24)+not(mod(n,3))'" -fps_mode vfr \
+  -c:v libx264 -preset veryfast -g 24 -pix_fmt yuv420p -c:a aac -b:a 96k
+start odd/intra_refresh.mp4 -f lavfi -i "$ODD_VIDEO" -f lavfi -i "$ODD_AUDIO" \
+  -c:v libx264 -preset veryfast -pix_fmt yuv420p -x264-params "intra-refresh=1:keyint=1000:min-keyint=1000:scenecut=0" \
+  -c:a aac -b:a 96k
+start odd/h264_422_10bit.mkv -f lavfi -i "testsrc2=s=1280x720:r=24:d=2" -f lavfi -i "sine=f=440:d=2" \
+  -c:v libx264 -preset veryfast -pix_fmt yuv422p10le -c:a aac -b:a 96k
+start odd/h264_444.mkv -f lavfi -i "testsrc2=s=1280x720:r=24:d=2" -f lavfi -i "sine=f=440:d=2" \
+  -c:v libx264 -preset veryfast -pix_fmt yuv444p -profile:v high444 -c:a aac -b:a 96k
+# Video starts 0.5 s after audio: an empty edit in the video track's edit list.
+start odd/edit_list_offset.mp4 -itsoffset 0.5 -f lavfi -i "testsrc2=s=1280x720:r=24:d=2.5" -f lavfi -i "$ODD_AUDIO" \
+  -map 0:v -map 1:a -c:v libx264 -preset veryfast -g 24 -pix_fmt yuv420p -c:a aac -b:a 96k
+
+make_many_tracks() {
+  local args=(-f lavfi -i "testsrc2=s=640x360:r=24:d=3" -f lavfi -i "$ODD_AUDIO" -i "$SRC/many.srt" -map 0:v)
+  local languages=(eng jpn zho kor fra deu spa ita)
+  local i
+  for i in $(seq 0 31); do args+=(-map 1:a); done
+  for i in $(seq 0 31); do args+=(-map 2:s); done
+  args+=(-c:v libx264 -preset veryfast -g 24 -pix_fmt yuv420p -c:a aac -ac 1 -b:a 32k -c:s srt)
+  for i in $(seq 0 31); do
+    args+=("-metadata:s:a:$i" "language=${languages[$((i % 8))]}" "-metadata:s:a:$i" "title=Audio $((i + 1))")
+    args+=("-metadata:s:s:$i" "language=${languages[$(((i + 3) % 8))]}" "-metadata:s:s:$i" "title=Subtitles $((i + 1))")
+  done
+  start odd/many_tracks.mkv "${args[@]}"
+}
+make_many_tracks
+
+# Format changes mid-stream: two segments joined by the concat demuxer (timestamps continue).
+make_joined_ts() { # make_joined_ts <name> <segment 1 args> -- <segment 2 args>
+  local name="$1"
+  shift
+  local first=()
+  while [ "$1" != -- ]; do first+=("$1"); shift; done
+  shift
+  local stem
+  stem="$(basename "$name" .ts)"
+  local a="$SRC/${stem}_a.ts" b="$SRC/${stem}_b.ts" list="$SRC/${stem}.txt"
+  ff "${first[@]}" -f mpegts "$a" >"$LOGS/${stem}_a.log" 2>&1 \
+    && ff "$@" -f mpegts "$b" >"$LOGS/${stem}_b.log" 2>&1 \
+    && printf "file '%s'\nfile '%s'\n" "$a" "$b" >"$list" \
+    && encode "$name" -f concat -safe 0 -i "$list" -map 0 -c copy
+}
+if [ -s "$OUT/odd/res_change.ts" ]; then
+  echo "  odd/res_change.ts (kept)"
+else
+  make_joined_ts odd/res_change.ts \
+    -f lavfi -i "testsrc2=s=1280x720:r=24:d=1.5" -f lavfi -i "sine=f=440:d=1.5" \
+    -c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p -c:a aac -b:a 96k -- \
+    -f lavfi -i "testsrc2=s=1920x1080:r=24:d=1.5" -f lavfi -i "sine=f=550:d=1.5" \
+    -c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p -c:a aac -b:a 96k &
+  PIDS+=("$!")
+  NAMES+=(odd/res_change.ts)
+fi
+if [ -s "$OUT/odd/layout_change.ts" ]; then
+  echo "  odd/layout_change.ts (kept)"
+else
+  make_joined_ts odd/layout_change.ts \
+    -f lavfi -i "testsrc2=s=1280x720:r=24:d=1.5" -f lavfi -i "sine=f=440:d=1.5" \
+    -c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p -c:a aac -ac 2 -b:a 128k -- \
+    -f lavfi -i "testsrc2=s=1280x720:r=24:d=1.5" -f lavfi -i "sine=f=550:d=1.5" \
+    -c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p -c:a aac -ac 6 -b:a 256k &
+  PIDS+=("$!")
+  NAMES+=(odd/layout_change.ts)
+fi
+
+# The 240-character name is too long for the log and temp names, so the file is encoded under
+# a short name and renamed.
+make_long_name() {
+  local tmp="$OUT/odd/.partial-long-name.mkv"
+  rm -f "${tmp:?}"
+  if ff -f lavfi -i "testsrc2=s=1280x720:r=24:d=2" -f lavfi -i "sine=f=440:d=2" \
+      -c:v libx264 -preset veryfast -g 24 -pix_fmt yuv420p -c:a aac -b:a 96k -f matroska "$tmp" >"$LOGS/odd_long_name.log" 2>&1; then
+    mv "$tmp" "$OUT/odd/$LONG_NAME"
+    echo "  odd/<240-character name>.mkv"
+  else
+    rm -f "${tmp:?}"
+    echo "FAILED the long-name file, log: $LOGS/odd_long_name.log" >&2
+    return 1
+  fi
+}
+if [ -s "$OUT/odd/$LONG_NAME" ]; then
+  echo "  odd/<240-character name>.mkv (kept)"
+else
+  make_long_name &
+  PIDS+=("$!")
+  NAMES+=(odd/long-name)
+fi
+
+# Corpus bases: 2 s, 640x360 with noise, keyframes every 0.5 s, one per container.
+CORPUS_VIDEO="testsrc2=s=640x360:r=24:d=2,noise=alls=8:allf=t"
+CORPUS_AUDIO="sine=f=440:d=2"
+corpus_base() { # corpus_base <name> <codec args...>
+  local name="$1"
+  shift
+  start "corpus/$name" -f lavfi -i "$CORPUS_VIDEO" -f lavfi -i "$CORPUS_AUDIO" "$@"
+}
+corpus_base h264_moov_end.mp4 -c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p -b:v 1500k -c:a aac -b:a 96k
+corpus_base h264_faststart.mp4 -c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p -b:v 1500k -c:a aac -b:a 96k \
+  -movflags +faststart
+corpus_base hevc.mkv -c:v libx265 -preset ultrafast -pix_fmt yuv420p -b:v 1500k \
+  -x265-params "log-level=error:keyint=12:min-keyint=12:scenecut=0" -c:a libopus -b:a 96k
+corpus_base av1.mkv -c:v libsvtav1 -preset 10 -g 12 -pix_fmt yuv420p -b:v 1500k -c:a libopus -b:a 96k
+corpus_base vp9.webm -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -g 12 -pix_fmt yuv420p -b:v 1500k -c:a libopus -b:a 96k
+corpus_base h264.ts -c:v libx264 -preset veryfast -g 12 -pix_fmt yuv420p -b:v 1500k -c:a aac -b:a 96k
+corpus_base mpeg4.avi -c:v mpeg4 -vtag XVID -q:v 5 -g 12 -c:a libmp3lame -b:a 96k
+corpus_base flv1.flv -c:v flv -q:v 5 -g 12 -c:a libmp3lame -ar 44100 -b:a 96k
+# <<< m3
+
 await_all
 
 # nocues: the HEVC file remuxed without Cues. Live mode skips the index (and the duration
@@ -345,6 +634,195 @@ await_all
 if [ "$FAILED" = 0 ] && ! [ -s "$OUT/nocues_hevc.mkv" ]; then
   encode nocues_hevc.mkv -i "$OUT/hevc10_1080p24.mkv" -map 0 -c copy -live 1 || FAILED=1
 fi
+
+# >>> m3
+# ---- M3 stage 2: files made from stage 1 outputs ----
+if [ "$FAILED" = 0 ]; then
+  for transfer in pq hlg; do
+    if [ -s "$OUT/hdr/${transfer}_ramp_hevc.mp4" ]; then
+      echo "  hdr/${transfer}_ramp_hevc.mp4 (kept)"
+    else
+      # moov after mdat (no faststart): make-dovi.py relies on it.
+      encode "hdr/${transfer}_ramp_hevc.mp4" -i "$OUT/hdr/${transfer}_ramp_hevc.mkv" -map 0 -c copy -tag:v hvc1 || FAILED=1
+    fi
+  done
+fi
+make_dovi() { # make_dovi <name> <source> <make-dovi.py args...>
+  local name="$1" source="$2"
+  shift 2
+  if [ -s "$OUT/$name" ]; then echo "  $name (kept)"; return 0; fi
+  local log="$LOGS/${name//\//_}.log"
+  if python3 -I "$ROOT/scripts/make-dovi.py" "$OUT/$source" "$OUT/$name" "$@" >"$log" 2>&1; then
+    echo "  $name"
+  else
+    echo "FAILED $name, log: $log" >&2
+    return 1
+  fi
+}
+has_dovi() { # has_dovi <name> <profile> <compatibility>: ffprobe sees the record
+  local report
+  report="$("$FFPROBE" -v error -select_streams v:0 -show_streams -of json "$OUT/$1")" || return 1
+  grep -Eq "\"dv_profile\": $2(,|\$)" <<<"$report" && grep -Eq "\"dv_bl_signal_compatibility_id\": $3(,|\$)" <<<"$report"
+}
+if [ "$FAILED" = 0 ]; then
+  make_dovi hdr/dv81.mp4 hdr/pq_ramp_hevc.mp4 --profile 8 --level 6 --compatibility 1 || FAILED=1
+  make_dovi hdr/dv84.mp4 hdr/hlg_ramp_hevc.mp4 --profile 8 --level 6 --compatibility 4 || FAILED=1
+  make_dovi hdr/dv5.mp4 hdr/pq_ramp_hevc.mp4 --profile 5 --level 6 --compatibility 0 --sample-entry dvh1 || FAILED=1
+fi
+if [ "$FAILED" = 0 ]; then
+  if [ -s "$OUT/hdr/dv81.mkv" ]; then
+    echo "  hdr/dv81.mkv (kept)"
+  else
+    encode hdr/dv81.mkv -i "$OUT/hdr/dv81.mp4" -map 0 -c copy || FAILED=1
+  fi
+fi
+if [ "$FAILED" = 0 ]; then
+  for check in "dv81.mp4 8 1" "dv81.mkv 8 1" "dv84.mp4 8 4" "dv5.mp4 5 0"; do
+    read -r name profile compatibility <<<"$check"
+    if ! has_dovi "hdr/$name" "$profile" "$compatibility"; then
+      echo "FAILED hdr/$name: ffprobe does not report Dolby Vision profile $profile compatibility $compatibility" >&2
+      rm -f "${OUT:?}/hdr/${name:?}"
+      FAILED=1
+    fi
+  done
+fi
+
+# Every ramp decodes (with Homebrew ffmpeg) to the codes make-ramp.py wrote: exact for the lossless
+# HEVC and VP9 files, within 4 for AV1 and 2 for the SDR H.264.
+verify_ramp() { # verify_ramp <name> <pq|hlg|sdr> <tolerance>
+  local pixel_format=yuv420p10le
+  if [ "$2" = sdr ]; then pixel_format=yuv420p; fi
+  local frame="$SRC/verify-frame.yuv"
+  if ff -i "$OUT/$1" -frames:v 1 -f rawvideo -pix_fmt "$pixel_format" "$frame" >"$LOGS/verify-ramp.log" 2>&1 \
+      && python3 -I "$ROOT/scripts/make-ramp.py" verify "$2" "$frame" "$LOGS/ramps.json" "$3" >>"$LOGS/verify-ramp.log" 2>&1; then
+    return 0
+  fi
+  echo "FAILED $1: decoded patch codes differ from logs/ramps.json" >&2
+  cat "$LOGS/verify-ramp.log" >&2
+  return 1
+}
+if [ "$FAILED" = 0 ]; then
+  for check in "pq_ramp_hevc.mkv pq 0" "pq_ramp_hevc.mp4 pq 0" "hlg_ramp_hevc.mkv hlg 0" "hlg_ramp_hevc.mp4 hlg 0" \
+      "pq_ramp_av1.mkv pq 4" "pq_ramp_vp9.webm pq 0" "sdr_ramp_h264.mp4 sdr 2" "dv81.mp4 pq 0" "dv81.mkv pq 0" "dv84.mp4 hlg 0"; do
+    read -r name transfer tolerance <<<"$check"
+    verify_ramp "hdr/$name" "$transfer" "$tolerance" || FAILED=1
+  done
+fi
+
+# Corpus copies and manifest, written last by make-corpus.py.
+if [ "$FAILED" = 0 ] && ! [ -s "$OUT/corpus/manifest.json" ]; then
+  corpus_paths=()
+  for base in "${CORPUS_BASES[@]}"; do corpus_paths+=("$OUT/corpus/$base"); done
+  if python3 -I "$ROOT/scripts/make-corpus.py" --ffprobe "$FFPROBE" "$OUT/corpus" "${corpus_paths[@]}" >"$LOGS/make-corpus.log" 2>&1; then
+    echo "  corpus/ ($(python3 -I -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["files"]))' "$OUT/corpus/manifest.json") files)"
+  else
+    echo "FAILED make-corpus.py, log: $LOGS/make-corpus.log" >&2
+    tail -20 "$LOGS/make-corpus.log" >&2
+    FAILED=1
+  fi
+fi
+if [ "$FAILED" = 0 ]; then
+  corpus_kb="$(du -sk "$OUT/corpus" | cut -f1)"
+  if [ "$corpus_kb" -gt 153600 ]; then
+    echo "corpus/ is $((corpus_kb / 1024)) MB, over the 150 MB budget" >&2
+    FAILED=1
+  fi
+fi
+# <<< m3
+
+# >>> m3-color
+# ---- SDR colour bars (AC-M3-8) ----
+# One RGB colour per patch: 75% bars, greys, 100% primaries and secondaries, six Macbeth patches.
+BAR_COLOURS=(
+  BFBFBF BFBF00 00BFBF 00BF00 BF00BF BF0000
+  0000BF 000000 202020 404040 808080 FFFFFF
+  FF0000 00FF00 0000FF 00FFFF FF00FF FFFF00
+  C29682 735244 627A9D 576C43 8580B1 67BDAA
+)
+bars_graph() { # bars_graph <width> <height> <matrix>: 6 x 4 flat RGB patches scaled to exactly <width> x <height>, converted to 4:2:0
+  local cell_w=$(($1 / 6)) cell_h=$(($2 / 4)) graph="" row column index
+  for index in "${!BAR_COLOURS[@]}"; do
+    graph+="color=c=0x${BAR_COLOURS[$index]}:s=${cell_w}x${cell_h}:r=24:d=2,format=rgb24[c$index];"
+  done
+  for row in 0 1 2 3; do
+    for column in 0 1 2 3 4 5; do graph+="[c$((row * 6 + column))]"; done
+    graph+="hstack=inputs=6[r$row];"
+  done
+  graph+="[r0][r1][r2][r3]vstack=inputs=4,scale=w=$1:h=$2:out_color_matrix=$3:out_range=tv:flags=accurate_rnd+full_chroma_int,format=yuv420p"
+  printf '%s' "$graph"
+}
+BARS_X264=(-c:v libx264 -preset veryfast -crf 1 -profile:v high -g 24 -pix_fmt yuv420p)
+mkdir -p "$OUT/sdr"
+start sdr/bars709_h264.mp4 -filter_complex \
+  "$(bars_graph 1920 1080 bt709),setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv" \
+  "${BARS_X264[@]}" -x264-params "colorprim=bt709:transfer=bt709:colormatrix=bt709"
+start sdr/bars709_untagged_h264.mp4 -filter_complex \
+  "$(bars_graph 1920 1080 bt709),setparams=color_primaries=unknown:color_trc=unknown:colorspace=unknown:range=tv" \
+  "${BARS_X264[@]}"
+start sdr/bars601_sd_h264.mp4 -filter_complex \
+  "$(bars_graph 704 480 bt601),setparams=color_primaries=unknown:color_trc=unknown:colorspace=unknown:range=tv" \
+  "${BARS_X264[@]}"
+await_all
+# The untagged files must carry no colour description in the stream or the container.
+for name in sdr/bars709_untagged_h264.mp4 sdr/bars601_sd_h264.mp4; do
+  [ -s "$OUT/$name" ] || continue
+  if "$FFPROBE" -v error -select_streams v:0 -show_entries stream=color_space,color_primaries,color_transfer \
+      -of default=noprint_wrappers=1 "$OUT/$name" | grep -Ev '=(unknown)?$' | grep -q .; then
+    echo "FAILED $name: it carries a colour description" >&2
+    rm -f "${OUT:?}/${name:?}"
+    FAILED=1
+  fi
+done
+# <<< m3-color
+
+# >>> m3-dovi
+# ---- Dolby Vision with real RPUs (AC-M3-3 support, section 7.8) ----
+# A generator only: compiled against Homebrew's FFmpeg headers and libraries into .src, never
+# linked into Reel. libx265 requires VBV settings for Dolby Vision.
+make_dovi_rpu() { # make_dovi_rpu <name> <source> <81|84|5> <x265-params>
+  local name="$1" log="$LOGS/${1//\//_}.log" tmp="$OUT/hdr/.partial-$(basename "$1")"
+  if [ -s "$OUT/$name" ]; then echo "  $name (kept)"; return 0; fi
+  rm -f "${tmp:?}"
+  if "$SRC/make-dovi-rpu" "$OUT/$2" "$tmp" "$3" "$4" >"$log" 2>&1; then
+    mv "$tmp" "$OUT/$name"
+    echo "  $name"
+  else
+    rm -f "${tmp:?}"
+    echo "FAILED $name, log: $log" >&2
+    return 1
+  fi
+}
+if [ "$FAILED" = 0 ]; then
+  BREW_PREFIX="$(cd "$(dirname "$FFMPEG")/.." && pwd)"
+  DOVI_X265="$X265_LOSSLESS:vbv-maxrate=160000:vbv-bufsize=160000"
+  if ! xcrun clang -O1 -Wall -I"$BREW_PREFIX/include" "$ROOT/scripts/make-dovi-rpu.c" -o "$SRC/make-dovi-rpu" \
+      -L"$BREW_PREFIX/lib" -lavformat -lavcodec -lavutil >"$LOGS/make-dovi-rpu-build.log" 2>&1; then
+    echo "FAILED make-dovi-rpu build, log: $LOGS/make-dovi-rpu-build.log" >&2
+    FAILED=1
+  else
+    make_dovi_rpu hdr/dv81_rpu.mp4 hdr/pq_ramp_hevc.mkv 81 "$DOVI_X265:$PQ_X265" || FAILED=1
+    make_dovi_rpu hdr/dv84_rpu.mp4 hdr/hlg_ramp_hevc.mkv 84 "$DOVI_X265:$HLG_X265" || FAILED=1
+    make_dovi_rpu hdr/dv5_rpu.mp4 hdr/pq_ramp_hevc.mkv 5 "$DOVI_X265:range=full" || FAILED=1
+  fi
+fi
+if [ "$FAILED" = 0 ]; then
+  for check in "dv81_rpu.mp4 8 1" "dv84_rpu.mp4 8 4" "dv5_rpu.mp4 5 0"; do
+    read -r name profile compatibility <<<"$check"
+    if ! has_dovi "hdr/$name" "$profile" "$compatibility"; then
+      echo "FAILED hdr/$name: ffprobe does not report Dolby Vision profile $profile compatibility $compatibility" >&2
+      FAILED=1
+    elif ! grep -q '"Dolby Vision RPU Data"' <<<"$("$FFPROBE" -v error -select_streams v:0 -show_frames \
+        -read_intervals '%+#1' -of json "$OUT/hdr/$name")"; then
+      echo "FAILED hdr/$name: no RPU on the first frame" >&2
+      FAILED=1
+    fi
+  done
+  for check in "dv81_rpu.mp4 pq 0" "dv84_rpu.mp4 hlg 0"; do
+    read -r name transfer tolerance <<<"$check"
+    verify_ramp "hdr/$name" "$transfer" "$tolerance" || FAILED=1
+  done
+fi
+# <<< m3-dovi
 
 if [ "$FAILED" != 0 ]; then
   echo "fixture generation failed" >&2

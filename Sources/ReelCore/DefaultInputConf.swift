@@ -93,6 +93,10 @@ public enum DefaultInputConf {
     Meta+L cycle-values loop "inf" "no"
     Ctrl+Meta+p toggle-pip
 
+    # Video Info and Add Subtitle File (M3)
+    Meta+i script-message reel-video-info
+    Meta+O script-message reel-add-subtitle-file
+
     # App
     Meta+o script-message reel-open
     Meta+w script-message reel-close

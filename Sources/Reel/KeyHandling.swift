@@ -58,8 +58,8 @@ enum KeyHandling {
     }
 
     /// Runs the bound action. Returns false when the key is unbound, so AppKit can beep or pass it on.
-    /// An open panel takes Up, Down, Return and Esc first, then the next-episode card takes Return
-    /// and Esc (design 9.7, 9.8).
+    /// An open panel takes Up, Down, Return and Esc first, then the Dolby Vision note and Video
+    /// Info take Esc, then the next-episode card takes Return and Esc (design 9.7, 9.8, 9.13).
     @discardableResult
     static func handle(_ event: NSEvent, map: InputMap, model: PlayerModel, target: PlayerCommandTarget) -> Bool {
         guard let chord = chord(for: event) else { return false }
@@ -69,8 +69,9 @@ enum KeyHandling {
         return true
     }
 
-    /// Keys for the open panel or the next-episode card. Only plain keys (Alt is allowed for the
-    /// arrows, which panels ignore anyway).
+    /// Keys for the open panel, the Dolby Vision note and Video Info (Esc closes them, design
+    /// 9.13) or the next-episode card. Only plain keys (Alt is allowed for the arrows, which
+    /// panels ignore anyway).
     static func handleOverlayKey(_ chord: KeyChord, model: PlayerModel) -> Bool {
         guard case .named(let key) = chord.key, chord.modifiers.subtracting(.option).isEmpty else { return false }
         if model.activePanel != nil {
@@ -81,6 +82,9 @@ enum KeyHandling {
             case .escape: return model.handlePanelKey(.escape)
             default: return false
             }
+        }
+        if key == .escape, chord.modifiers.isEmpty, model.dismissTransient() {
+            return true
         }
         if model.autoAdvance.isActive {
             switch key {
@@ -169,6 +173,11 @@ enum KeyHandling {
             model.toggleFileLoop()
         case .togglePictureInPicture:
             model.togglePictureInPicture()
+        // The M3 rows of section 10.
+        case .addSubtitleFile:
+            model.addSubtitleFile()
+        case .videoInfo:
+            model.toggleVideoInfo()
         }
     }
 

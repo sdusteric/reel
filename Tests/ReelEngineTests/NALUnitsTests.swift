@@ -86,6 +86,34 @@ import Testing
         }
     }
 
+    /// Section 7.8: the Dolby Vision RPU (62) and enhancement layer (63) are never taken for
+    /// droppable VCL units, so the non-reference skipping of 7.5 cannot drop them as pictures.
+    @Test func dolbyVisionRPUAndEnhancementLayerUnitsAreNeverSkippable() {
+        #expect(NALUnits.isDolbyVisionUnit(62) && NALUnits.isDolbyVisionUnit(63))
+        #expect(!(0...61).contains(where: NALUnits.isDolbyVisionUnit))
+        for layers in [0, 1, 2] {
+            for units in [[62], [63], [62, 63], [63, 62]] {
+                let data = Self.lengthPrefixed(units.map { Self.hevcHeader($0) + [0x01, 0x02] })
+                let flags = NALUnits.pictureFlags(data, lengthSize: 4, codec: .hevc, hevcTemporalLayers: layers)
+                #expect(!flags.isDisposable, "types \(units), \(layers) layers")
+                #expect(!flags.hasPicture, "types \(units) are not base layer pictures")
+                #expect(!flags.isRASL && !flags.isIDR && !flags.isCRA)
+            }
+        }
+        // A reference picture with its RPU stays a reference picture.
+        let withRPU = NALUnits.pictureFlags(Self.lengthPrefixed([Self.hevcHeader(1) + [0x80], Self.hevcHeader(62) + [0x01]]), lengthSize: 4, codec: .hevc, hevcTemporalLayers: 1)
+        #expect(withRPU.hasPicture && !withRPU.isDisposable)
+        // An enhancement layer unit keeps even a non-reference base picture's packet.
+        let withEL = NALUnits.pictureFlags(Self.lengthPrefixed([Self.hevcHeader(0) + [0x80], Self.hevcHeader(63) + [0x01]]), lengthSize: 4, codec: .hevc, hevcTemporalLayers: 1)
+        #expect(withEL.hasPicture && !withEL.isDisposable)
+        // The RPU does not change how its base picture is classified.
+        let nonReference = NALUnits.pictureFlags(Self.lengthPrefixed([Self.hevcHeader(0) + [0x80], Self.hevcHeader(62) + [0x01]]), lengthSize: 4, codec: .hevc, hevcTemporalLayers: 1)
+        let alone = NALUnits.pictureFlags(Self.lengthPrefixed([Self.hevcHeader(0) + [0x80]]), lengthSize: 4, codec: .hevc, hevcTemporalLayers: 1)
+        #expect(nonReference == alone)
+        // Neither type is in the sub-layer non-reference set.
+        #expect(!NALUnits.isHEVCSubLayerNonReference(62) && !NALUnits.isHEVCSubLayerNonReference(63))
+    }
+
     @Test func hevcSkippingNeedsExactlyOneTemporalLayer() {
         let trailN = Self.lengthPrefixed([Self.hevcHeader(0) + [0x80]])
         #expect(NALUnits.pictureFlags(trailN, lengthSize: 4, codec: .hevc, hevcTemporalLayers: 1).isDisposable)

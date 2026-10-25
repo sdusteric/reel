@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import QuartzCore
 import SwiftUI
 
 /// The shared `chromeVisible` state of the traffic lights, title and controller (design 9.2).
@@ -11,7 +12,9 @@ import SwiftUI
 public final class ChromeVisibility {
     public static let autoHideDelay: TimeInterval = 2.5
     public static let pointerThreshold: CGFloat = 2
-    public static let fadeInDuration: TimeInterval = 0.22
+    /// The reveal runs on the app's ease-out token over 0.16 s: at 60 ms it is above 90% opaque,
+    /// so the time label shows at once after a key press (design 15.2).
+    public static let fadeInDuration: TimeInterval = 0.16
     public static let fadeOutDuration: TimeInterval = 0.35
     public static let reducedMotionDuration: TimeInterval = 0.1
 
@@ -129,16 +132,33 @@ public final class ChromeVisibility {
 
     // MARK: Animation
 
-    /// The fade for a change to `visible`: 0.22 s ease-out in, 0.35 s ease-in out, or 0.1 s
+    /// The fade for a change to `visible`: 0.16 s ease-out in, 0.35 s ease-in out, or 0.1 s
     /// opacity only with Reduce Motion.
     public static func animation(visible: Bool, reduceMotion: Bool) -> Animation {
         if reduceMotion { return .linear(duration: reducedMotionDuration) }
-        return visible ? .easeOut(duration: fadeInDuration) : .easeIn(duration: fadeOutDuration)
+        return curve(visible: visible).animation(duration: visible ? fadeInDuration : fadeOutDuration)
     }
 
     public static func duration(visible: Bool, reduceMotion: Bool) -> TimeInterval {
         if reduceMotion { return reducedMotionDuration }
         return visible ? fadeInDuration : fadeOutDuration
+    }
+
+    /// The curve of the fade, for Core Animation (the traffic lights) as well as SwiftUI.
+    public static func curve(visible: Bool) -> MotionCurve {
+        visible ? .easeOut : .easeIn
+    }
+
+    /// The timing function of the traffic lights' fade: the same curve as the SwiftUI chrome.
+    public static func timingFunction(visible: Bool, reduceMotion: Bool) -> CAMediaTimingFunction {
+        reduceMotion ? CAMediaTimingFunction(name: .linear) : curve(visible: visible).timingFunction
+    }
+
+    /// How opaque the chrome is `elapsed` seconds into a fade-in that started from transparent.
+    public static func revealOpacity(elapsed: TimeInterval, reduceMotion: Bool) -> Double {
+        let total = duration(visible: true, reduceMotion: reduceMotion)
+        let fraction = elapsed / total
+        return reduceMotion ? min(max(fraction, 0), 1) : curve(visible: true).progress(at: fraction)
     }
 
     // MARK: Private

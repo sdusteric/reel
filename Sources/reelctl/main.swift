@@ -16,6 +16,14 @@ let usage = """
                         [--frames N] [--out png] [--dump-text] [--json]
            reelctl thumbs <file> [--runs N] [--fresh-cache] [--cold] [--out-dir dir] [--decoder hw|sw|auto] [--json]
            reelctl episodes <file> [--json]
+           reelctl hdr <file> [--decoder hw|sw] [--display sdr|xdr|external|headroom=X] [--display-headroom X]
+                       [--setting full|limited|off] [--screenshot png] [--thumbnail] [--pip-check] [--json]
+           reelctl energy-bench <file> --mode play|paused|occluded [--seconds N] [--warmup N] [--decoder hw|sw|auto]
+                            [--no-tile-check] [--json]
+           reelctl soak <file|dir> [--seed S] [--ops N] [--seconds N] [--asan-expected] [--json]
+           reelctl soak --list <file>... [--seed S] [--ops N] [--seconds N] [--asan-expected] [--json]
+           reelctl devices [--json]
+           reelctl color <file> --frame N [--decoder hw|sw|auto] [--screenshot png] [--json]
     """
 
 /// Parsed command line: positional arguments, boolean flags and `--name value` options.
@@ -23,6 +31,9 @@ struct CommandArguments {
     static let valueOptions: Set<String> = [
         "--decoder", "--runs", "--seed", "--psnr-samples", "--seeks", "--rate",
         "--track", "--external", "--at", "--size", "--frames", "--out", "--out-dir",
+        // M3
+        "--display", "--display-headroom", "--setting", "--screenshot", "--mode", "--seconds", "--warmup", "--ops",
+        "--frame", "--jobs",
     ]
 
     var positional: [String] = []
@@ -97,6 +108,13 @@ func printJSON(_ value: some Encodable) throws {
     print(String(decoding: try encoder.encode(value), as: UTF8.self))
 }
 
+/// What a command that is not built yet prints: its parsed flags and `"implemented": false`.
+struct NotImplementedReport<Parameters: Encodable>: Encodable {
+    var command: String
+    var implemented = false
+    var parameters: Parameters
+}
+
 /// Configuration for engines made by benches: silent, no display sleep assertion, and the
 /// decoder forced when `--decoder` asks for one.
 func headlessConfiguration(decoder: VideoDecoderKind?) -> PlaybackEngine.Configuration {
@@ -130,6 +148,18 @@ do {
         status = try await ThumbsCommand.run(parsed)
     case "episodes":
         status = try EpisodesCommand.run(parsed)
+    case "hdr":
+        status = try HdrCommand.run(parsed)
+    case "energy-bench":
+        status = try EnergyBenchCommand.run(parsed)
+    case "soak":
+        status = try SoakCommand.run(parsed)
+    case "soak-one":
+        status = try SoakCommand.runOne(parsed)
+    case "devices":
+        status = try DevicesCommand.run(parsed)
+    case "color":
+        status = try ColorCommand.run(parsed)
     case "-h", "--help", "help":
         print(usage)
         status = 0

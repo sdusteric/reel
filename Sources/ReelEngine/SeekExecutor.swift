@@ -196,6 +196,34 @@ final class PipelineShared: Sendable {
     /// Applied to every frame before enqueue (subtitles composited while Picture in Picture runs).
     let frameTransform = Mutex<FrameTransform?>(nil)
 
+    // M3 robustness (section 7.10).
+    /// Damaged frames and packets, and the rate-limited `.damaged` events.
+    let damage = DamageTracker()
+    /// Frames the video decoders returned since open. Failures before the first good frame are a
+    /// decoder that cannot handle the stream (the software fallback's case), not damage.
+    let goodFrames = Atomic<Int>(0)
+    /// A frame failed during playback: the feeder skips to the next keyframe (section 7.10).
+    let videoAwaitsKeyframe = Atomic<Bool>(false)
+    /// The `.dataEnd` event of the open file has been sent.
+    let dataEndReported = Atomic<Bool>(false)
+    /// The open file's data end, once known. Frames that fail just before it reference frames
+    /// the cut removed: that is the end of the data, not damage.
+    let dataEnd = Mutex<MediaTime?>(nil)
+    static let cutReferenceWindow = MediaTime.milliseconds(500)
+
+    /// True when a frame at `time` failing is damage rather than the end of the data.
+    func isDamage(at time: MediaTime?) -> Bool {
+        guard let time, let end = dataEnd.withLock({ $0 }) else { return true }
+        return time < end - PipelineShared.cutReferenceWindow
+    }
+    /// Decoders for GOPs in another format than the stream's at open (MPEG-TS resolution
+    /// changes); nil when the stream needs none.
+    let formatDecoders = Mutex<FormatDecoders?>(nil)
+    /// Uptime when the feeder of the current generation reached the end of the video stream.
+    let videoEndedNanos = Atomic<UInt64>(0)
+    /// The VP9 tile check beside VideoToolbox (section 7.10); nil for other streams.
+    let tileCheck = Mutex<VP9TileCheck?>(nil)
+
     var currentGeneration: UInt64 { generation.load(ordering: .acquiring) }
 
     func isCurrent(_ value: UInt64) -> Bool { value == currentGeneration }
@@ -263,10 +291,17 @@ struct VideoFeedState: Sendable {
     var reachedEnd = false
     /// The decoder holding the reference state (the hybrid's software decoder until it hands over).
     var active: VideoDecoderKind?
+    /// Packets were skipped after damage; the decoder holds no usable references until the next
+    /// keyframe, so a seek must restart rather than continue.
+    var skippedDamage = false
+    /// The decoder for a GOP in another format than the stream's at open, and that format's
+    /// configuration record; nil while the open format plays.
+    var formatDecoder: (any VideoDecoding)?
+    var formatRecord: Data?
 
     /// The live decoder position for the planner, when continuing is possible.
     func decoderPosition(storeEpoch: UInt64) -> DecoderPosition? {
-        guard let cursor, cursor.epoch == storeEpoch, !reachedEnd, let lastSubmittedPTS else { return nil }
+        guard let cursor, cursor.epoch == storeEpoch, !reachedEnd, !skippedDamage, let lastSubmittedPTS else { return nil }
         return DecoderPosition(lastSubmittedPTS: lastSubmittedPTS, decoder: active)
     }
 }
@@ -331,7 +366,9 @@ struct VideoFeeder: Sendable {
         let generation = spec.generation
         if spec.keyframe != nil { state.active = spec.decoder }
         if software == nil || state.active == nil { state.active = decoder.kind }
+        let tileCheck = shared.tileCheck.withLock { $0 }
         if let keyframe = spec.keyframe {
+            tileCheck?.pause()
             guard let resolved = await resolveStart(keyframe: keyframe, spec: spec) else { return state }
             state = VideoFeedState(cursor: resolved.cursor, startKeyframe: resolved.key, active: state.active)
             shared.updateRun(generation: generation) { run in
@@ -396,13 +433,19 @@ struct VideoFeeder: Sendable {
             }
 
             state.lookahead.removeFirst()
+            if head.isKeyframe, let pts = head.pts, store.videoFormat(atKeyframe: pts)?.convertedConfigurationRecord != state.formatRecord {
+                guard await switchFormat(&state, at: pts, generation: generation) else {
+                    state.lookahead.insert(head, at: 0)
+                    return state
+                }
+            }
             if decision.targetSubmitted, !spec.scrubOnly, head.isKeyframe, head.pts != state.startKeyframe,
                let software, state.active == .software, decoder.kind == .hardware {
                 // Hand-off: the frames before this keyframe come out of software first. Counted
                 // before the drain, which pushes out a software landing whose report must include it.
                 shared.decoderHandoffs.add(1, ordering: .releasing)
                 await software.drain()
-                if isStale(generation) {
+                if !shared.isCurrent(generation) {
                     // Superseded during the drain: the hand-off did not happen.
                     shared.decoderHandoffs.subtract(1, ordering: .releasing)
                     state.lookahead.insert(head, at: 0)
@@ -411,11 +454,49 @@ struct VideoFeeder: Sendable {
                 }
                 state.active = .hardware
                 trace("hybrid hand-off to VideoToolbox at \(head.pts?.description ?? "-")")
+                if Task.isCancelled {
+                    // Parked while paused (section 7.9), same generation: the drain already put
+                    // out the landing, so the hand-off stands; the keyframe waits for play.
+                    state.lookahead.insert(head, at: 0)
+                    return state
+                }
+            }
+            if decision.targetSubmitted, !spec.scrubOnly, shared.videoAwaitsKeyframe.load(ordering: .acquiring) {
+                if !head.isKeyframe {
+                    // Damaged video: nothing decodes cleanly until the next keyframe (section 7.10).
+                    tileCheck?.pause()
+                    orderer.fail(head.cmPTS).forEach { frames.yield($0) }
+                    shared.damage.record(.video, at: head.pts)
+                    state.skippedDamage = true
+                    continue
+                }
+                // The keyframe after the damage: flush the decoder's error state, then go on.
+                await current(state).drain()
+                if isStale(generation) {
+                    state.lookahead.insert(head, at: 0)
+                    return state
+                }
+                shared.videoAwaitsKeyframe.store(false, ordering: .releasing)
+                state.skippedDamage = false
+                // The resume keyframe starts a new decode run, as a seek restart does: the RASL
+                // pictures of an HEVC CRA reference the GOP that was skipped, would fail with
+                // "reference missing" and send the feeder back to waiting, GOP after GOP.
+                if let pts = head.pts {
+                    state.startKeyframe = pts
+                    decision.startKeyframe = pts
+                    state.lookahead.removeAll { packet in
+                        guard let leading = packet.pts, isUndecodableLeading(packet, pts: leading, decision: decision) else { return false }
+                        orderer.fail(packet.cmPTS).forEach { frames.yield($0) }
+                        return true
+                    }
+                }
+                trace("video resumes after damage at \(head.pts?.description ?? "-")")
             }
             let action = quick ? Action.submit(output: true) : decide(head, decision: &decision)
             firstPacket = false
             switch action {
             case .skip:
+                tileCheck?.pause()
                 shared.updateRun(generation: generation) { $0.framesSkipped += 1 }
                 continue
             case .submit(let output):
@@ -424,6 +505,18 @@ struct VideoFeeder: Sendable {
                         state.lookahead.insert(head, at: 0)
                         return state
                     }
+                }
+                if let tileCheck, checkTiles(head, with: tileCheck, output: output, state: state, decision: decision, generation: generation) == .damaged {
+                    // Damage VideoToolbox would decode without an error: skip to the next
+                    // keyframe as for a failed frame (section 7.10).
+                    shared.damage.record(.video, at: head.pts)
+                    shared.videoAwaitsKeyframe.store(true, ordering: .releasing)
+                    state.skippedDamage = true
+                    if output {
+                        credits.release(generation: generation)
+                        orderer.fail(head.cmPTS).forEach { frames.yield($0) }
+                    }
+                    continue
                 }
                 // Before the decode: the presenter tells a preview from the target by this pts.
                 if decision.justSubmittedTarget { shared.updateRun(generation: generation) { $0.targetPTS = head.pts } }
@@ -434,6 +527,8 @@ struct VideoFeeder: Sendable {
                         credits.release(generation: generation)
                         orderer.fail(head.cmPTS).forEach { frames.yield($0) }
                     }
+                    // A packet the decoder refuses outright (empty, malformed) is damage too.
+                    if shared.goodFrames.load(ordering: .relaxed) > 0, shared.isDamage(at: head.pts) { shared.damage.record(.video, at: head.pts) }
                 }
                 if let pts = head.pts { state.lastSubmittedPTS = max(state.lastSubmittedPTS ?? pts, pts) }
                 let isTarget = decision.justSubmittedTarget
@@ -447,16 +542,55 @@ struct VideoFeeder: Sendable {
                 }
                 if spec.scrubOnly {
                     shared.updateRun(generation: generation) { $0.targetSubmitted = true }
+                    if let threaded = current(state) as? SoftwareVideoDecoder, threaded.outputDelay > 0 {
+                        // Frame threads hold the keyframe until more packets come; the drain lets
+                        // it out now. The decoder keeps no references, so the next run restarts.
+                        await threaded.drain()
+                        state.reachedEnd = true
+                    }
                     return state
                 }
             }
         }
     }
 
+    /// Runs the VP9 tile check on a packet about to go to VideoToolbox. Returns `.damaged` only
+    /// when the packet should be skipped: the seek target itself, and damage at the end of a cut
+    /// file, still go to the decoder (`.unchecked`).
+    private func checkTiles(_ packet: Packet, with check: VP9TileCheck, output: Bool, state: VideoFeedState, decision: Decision, generation: UInt64) -> VP9TileCheck.Verdict {
+        guard current(state).kind == .hardware, state.formatDecoder == nil else {
+            check.pause()
+            return .unchecked
+        }
+        let verdict = check.inspect(packet, mayStart: output && decision.targetSubmitted)
+        guard verdict == .damaged else { return verdict }
+        if decision.justSubmittedTarget || !shared.isDamage(at: packet.pts) || !shared.isCurrent(generation) {
+            return .unchecked
+        }
+        return .damaged
+    }
+
     /// The decoder the state's reference frames live in.
     private func current(_ state: VideoFeedState) -> any VideoDecoding {
+        if let formatDecoder = state.formatDecoder { return formatDecoder }
         if state.active == .software, decoder.kind == .hardware, let software { return software }
         return decoder
+    }
+
+    /// A keyframe in another format than the one decoding (section 7.10): the frames before it
+    /// come out of the old decoder, then a decoder for its format takes over. Returns false
+    /// when the run went stale meanwhile.
+    private func switchFormat(_ state: inout VideoFeedState, at pts: MediaTime, generation: UInt64) async -> Bool {
+        let wanted = store.videoFormat(atKeyframe: pts)
+        let next: (any VideoDecoding)? = wanted.flatMap { format in shared.formatDecoders.withLock { $0 }?.decoder(for: format) }
+        if wanted != nil, next == nil { return true } // No decoder for it: the open one tries.
+        await current(state).drain()
+        if isStale(generation) { return false }
+        next?.reset(generation: generation)
+        state.formatDecoder = next
+        state.formatRecord = wanted?.convertedConfigurationRecord
+        trace("video format \(wanted.map { "\($0.width)x\($0.height)" } ?? "of the stream") from \(pts)")
+        return true
     }
 
     // MARK: Start
@@ -578,56 +712,93 @@ struct VideoFeeder: Sendable {
         state.reachedEnd = true
         guard shared.isCurrent(generation) else { return }
         orderer.flush().forEach { frames.yield($0) }
+        shared.videoEndedNanos.store(monotonicNanos(), ordering: .releasing)
         shared.videoEnded.store(true, ordering: .releasing)
     }
 }
 
-/// Feeds audio packets from the store to the audio decode thread for one generation (design
-/// section 7.5 step 6): from the target minus the codec preroll, paced to about one second ahead
-/// of the clock so a headless engine does not decode the whole file at once.
-struct AudioFeeder: Sendable {
-    static let readAhead = MediaTime.seconds(1)
-    static let pacingInterval: Duration = .milliseconds(20)
+/// Damaged data counts and the `.damaged` events (section 7.10, D62): every damaged frame or
+/// packet is counted, and an event goes out at most once per `eventInterval` per kind, so one
+/// damaged region gives one OSD.
+final class DamageTracker: Sendable {
+    static let eventInterval: UInt64 = 10_000_000_000
 
-    let demuxer: Demuxer
-    let streamIndex: Int
-    let thread: AudioDecodeThread
-    let shared: PipelineShared
-    let clock: @Sendable () -> MediaTime
+    private struct State {
+        var videoFrames = 0
+        var audioPackets = 0
+        var lastEvent: [DamageKind: UInt64] = [:]
+    }
 
-    func run(generation: UInt64, from target: MediaTime, awaitDemuxerSeek: Bool) async {
-        let store = demuxer.store
-        func stale() -> Bool { Task.isCancelled || !shared.isCurrent(generation) }
-        if awaitDemuxerSeek {
-            while demuxer.completedSeekGeneration < generation {
-                if stale() { return }
-                try? await Task.sleep(for: .microseconds(500))
+    private let state = Mutex(State())
+    private let sink = Mutex<SendableCallback<(time: MediaTime?, kind: DamageKind)>?>(nil)
+
+    /// Receives the rate-limited events; a nil time means "now on the clock".
+    func setEventSink(_ handler: (@Sendable (MediaTime?, DamageKind) -> Void)?) {
+        sink.withLock { $0 = handler.map { handler in SendableCallback { handler($0.time, $0.kind) } } }
+    }
+
+    func reset() {
+        state.withLock { $0 = State() }
+    }
+
+    var videoFrames: Int { state.withLock { $0.videoFrames } }
+    var audioPackets: Int { state.withLock { $0.audioPackets } }
+
+    /// Counts `count` damaged frames (video) or packets (audio) at `time`. Damage found while
+    /// probing at open has no place in time and is counted without an event.
+    func record(_ kind: DamageKind, at time: MediaTime?, count: Int = 1, emitsEvent: Bool = true, now: UInt64 = monotonicNanos()) {
+        let emit = state.withLock { state -> Bool in
+            switch kind {
+            case .video: state.videoFrames += count
+            case .audio: state.audioPackets += count
             }
+            guard emitsEvent else { return false }
+            if let last = state.lastEvent[kind], now &- last < DamageTracker.eventInterval { return false }
+            state.lastEvent[kind] = now
+            return true
         }
-        let start = target - thread.preroll
-        var cursor = store.audioCursor(streamIndex: streamIndex, at: start)
-        while !stale() {
-            let change = store.changeCount
-            switch store.next(&cursor) {
-            case .packet(let packet):
-                if let time = packet.time, time + packet.duration < start { continue }
-                if let time = packet.time {
-                    while time > max(clock(), target) + AudioFeeder.readAhead {
-                        try? await Task.sleep(for: AudioFeeder.pacingInterval)
-                        if stale() { return }
-                    }
-                }
-                let hold = shared.audioSubmitHoldForTesting.exchange(0, ordering: .relaxed)
-                if hold > 0 { await Task.detached { try? await Task.sleep(for: .milliseconds(hold)) }.value }
-                thread.submit(packet, generation: generation)
-            case .needMore:
-                await store.waitForChange(since: change)
-            case .endOfStream:
-                thread.finish(generation: generation)
-                return
-            case .invalidated:
-                return
-            }
+        if emit {
+            trace("damaged \(kind.rawValue) at \(time?.description ?? "-")")
+            sink.withLock { $0 }?.call((time, kind))
         }
+    }
+}
+
+/// Hardware decoders for GOPs whose in-band parameter sets differ from the stream's at open (an
+/// SPS change in MPEG-TS, section 7.10), one per format, made on first use with the same frame
+/// handler as the main decoder.
+final class FormatDecoders: Sendable {
+    private let handler: DecodeHandler
+    private let parameters: CodecParameters
+    private let decoders = Mutex<[Data: any VideoDecoding]>([:])
+
+    init(handler: @escaping DecodeHandler, parameters: CodecParameters) {
+        self.handler = handler
+        self.parameters = parameters
+    }
+
+    /// A decoder for `format`: VideoToolbox, or libavcodec when VideoToolbox refuses it.
+    func decoder(for format: VideoFormat) -> (any VideoDecoding)? {
+        guard let record = format.convertedConfigurationRecord else { return nil }
+        return decoders.withLock { decoders -> (any VideoDecoding)? in
+            if let known = decoders[record] { return known }
+            let made: (any VideoDecoding)? = (try? VTVideoDecoder(format: format, handler: handler))
+                ?? (try? SoftwareVideoDecoder(parameters: parameters, format: format, handler: handler))
+            decoders[record] = made
+            return made
+        }
+    }
+
+    /// Frames of older generations are dropped, as for the main decoder.
+    func cancel(olderThan generation: UInt64) {
+        for decoder in decoders.withLock({ Array($0.values) }) { decoder.cancel(olderThan: generation) }
+    }
+
+    func invalidateAll() {
+        let all = decoders.withLock { decoders -> [any VideoDecoding] in
+            defer { decoders.removeAll() }
+            return Array(decoders.values)
+        }
+        for decoder in all { decoder.invalidate() }
     }
 }

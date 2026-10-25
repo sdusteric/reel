@@ -104,6 +104,21 @@ import Testing
         #expect(report.completions.allSatisfy { $0.finishedNanos > $0.startedNanos })
     }
 
+    /// Low Power Mode's option (section 7.9): only the coarse pass, every 8th slot, and the pack
+    /// is stored as partial so a later full run continues it.
+    @Test func coarseOnlyStopsAfterEveryEighthSlot() async throws {
+        let url = try Fixture.syncH264.url()
+        let (generator, report) = await ThumbnailTests.generate(url, options: ThumbnailGenerator.Options(coarseOnly: true))
+        #expect(report.planned > 8)
+        let slots = report.completions.map(\.slot)
+        #expect(!slots.isEmpty)
+        #expect(slots.allSatisfy { $0 % 8 == 0 }, "\(slots)")
+        #expect(Set(slots).count == (report.planned + 7) / 8)
+        #expect(report.generated == (report.planned + 7) / 8)
+        let pack = try #require(generator.pack())
+        #expect(pack.count == report.generated, "the pack holds the coarse thumbnails only")
+    }
+
     @Test func openingWindowStaysCoarseAndTheReportTimesTheWholeRun() async throws {
         let url = try Fixture.h264.url()
         let (_, report) = await ThumbnailTests.generate(url)

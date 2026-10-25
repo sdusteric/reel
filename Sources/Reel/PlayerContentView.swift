@@ -12,6 +12,8 @@ final class PlayerContentView: DropAcceptingView {
     let videoView: VideoSurfaceView
     private var hostingView: NSHostingView<PlayerSceneView<VideoSurface>>?
     private weak var commandTarget: (any PlayerCommandTarget)?
+    /// The pointer moved in the window (the paused thumbnail rule, section 7.9).
+    var onPointerActivity: (() -> Void)?
 
     init(model: PlayerModel, actions: SceneActions, commandTarget: any PlayerCommandTarget) {
         self.model = model
@@ -27,8 +29,10 @@ final class PlayerContentView: DropAcceptingView {
         hosting.sizingOptions = []
         hosting.frame = bounds
         hosting.autoresizingMask = [.width, .height]
+        hosting.wantsLayer = true
         addSubview(hosting)
         hostingView = hosting
+        apply(plan: model.dynamicRangePlan)
         enableDrops()
         videoView.enableDrops()
         let hasMedia: () -> Bool = { [weak model] in model?.hasMedia == true }
@@ -56,10 +60,27 @@ final class PlayerContentView: DropAcceptingView {
 
     override func mouseMoved(with event: NSEvent) {
         model.chrome.pointerMoved(to: convert(event.locationInWindow, from: nil))
+        onPointerActivity?()
     }
 
     override func mouseEntered(with event: NSEvent) {
         model.chrome.pointerMoved(to: convert(event.locationInWindow, from: nil))
+        onPointerActivity?()
+    }
+
+    // MARK: Dynamic range (section 7.7, D52)
+
+    /// The display layer gets the plan's `layer`; the subtitle layer and the SwiftUI chrome get
+    /// its `overlay`, which is always `.standard`, set explicitly so a future default change
+    /// cannot raise them above SDR white.
+    func apply(plan: DynamicRangePlan) {
+        videoView.apply(video: plan.layer, overlay: plan.overlay)
+        hostingView?.layer?.preferredDynamicRange = plan.overlay.caValue
+    }
+
+    /// What the three layers ask for now (DynamicRangeLayerTests).
+    var layerDynamicRanges: (display: CALayer.DynamicRange, subtitles: CALayer.DynamicRange, chrome: CALayer.DynamicRange?) {
+        (videoView.displayLayer.preferredDynamicRange, videoView.subtitleLayer.preferredDynamicRange, hostingView?.layer?.preferredDynamicRange)
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -117,6 +138,9 @@ final class VideoSurfaceView: DropAcceptingView {
     weak var commandTarget: (any PlayerCommandTarget)?
 
     private var pendingClick: Task<Void, Never>?
+    /// The plan's ranges, reapplied to the fresh layers of each engine.
+    private var videoRange = LayerDynamicRange.standard
+    private var overlayRange = LayerDynamicRange.standard
     private var scrollAxis: ScrollAxis?
     private var scrollAccumulator: CGFloat = 0
     private var scrubTarget: MediaTime?
@@ -152,7 +176,16 @@ final class VideoSurfaceView: DropAcceptingView {
         return (display, subtitles)
     }
 
+    func apply(video: LayerDynamicRange, overlay: LayerDynamicRange) {
+        videoRange = video
+        overlayRange = overlay
+        displayLayer.preferredDynamicRange = video.caValue
+        subtitleLayer.preferredDynamicRange = overlay.caValue
+        layer?.preferredDynamicRange = overlay.caValue
+    }
+
     private func configure(_ layer: AVSampleBufferDisplayLayer) {
+        layer.preferredDynamicRange = videoRange.caValue
         layer.videoGravity = .resizeAspect
         layer.backgroundColor = NSColor.black.cgColor
         layer.frame = bounds
@@ -160,6 +193,7 @@ final class VideoSurfaceView: DropAcceptingView {
     }
 
     private func configure(_ layer: CALayer) {
+        layer.preferredDynamicRange = overlayRange.caValue
         layer.frame = bounds
         layer.contentsScale = backingScale
         layer.masksToBounds = true
@@ -297,6 +331,17 @@ final class VideoSurfaceView: DropAcceptingView {
             model.adjustVolume(by: Double(steps.rounded(.awayFromZero)))
         } else if deltaX != 0, model.hasMedia {
             model.seek(by: deltaX < 0 ? 1 : -1, source: .pointer)
+        }
+    }
+}
+
+extension LayerDynamicRange {
+    /// The Core Animation value (`CALayer.DynamicRange`, macOS 26 and later).
+    var caValue: CALayer.DynamicRange {
+        switch self {
+        case .high: .high
+        case .constrainedHigh: .constrainedHigh
+        case .standard: .standard
         }
     }
 }

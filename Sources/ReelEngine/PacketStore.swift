@@ -18,6 +18,8 @@ public final class Packet: @unchecked Sendable {
     public let rawDuration: Int64
     public let timeBase: Rational
     public let isKeyframe: Bool
+    /// The container flagged the payload as damaged (`AV_PKT_FLAG_CORRUPT`, section 7.10).
+    public let isCorrupt: Bool
     /// Byte position in the file, when known.
     public let position: Int64?
 
@@ -34,6 +36,7 @@ public final class Packet: @unchecked Sendable {
         rawDuration = owned.pointee.duration
         self.timeBase = Rational(timeBase.num, timeBase.den)
         isKeyframe = (owned.pointee.flags & AV_PKT_FLAG_KEY) != 0
+        isCorrupt = (owned.pointee.flags & AV_PKT_FLAG_CORRUPT) != 0
         position = owned.pointee.pos >= 0 ? owned.pointee.pos : nil
     }
 
@@ -56,6 +59,7 @@ public final class Packet: @unchecked Sendable {
         rawDuration = source.rawDuration
         timeBase = source.timeBase
         isKeyframe = source.isKeyframe
+        isCorrupt = source.isCorrupt
         position = source.position
     }
 
@@ -209,6 +213,9 @@ public final class PacketStore: Sendable {
         var packets: [Packet] = []
         var bytes = 0
         var lastTime: MediaTime
+        /// The format of a GOP whose parameter sets differ from the stream's at open (an SPS
+        /// change in MPEG-TS, section 7.10); nil for the open format.
+        var format: VideoFormat?
     }
 
     struct StreamPackets {
@@ -226,6 +233,9 @@ public final class PacketStore: Sendable {
         var playhead: MediaTime = .zero
         /// Read at least this far past the playhead limits (an exact seek's target).
         var readThrough: MediaTime?
+        /// End (pts plus duration) of the latest video packet appended in this epoch, kept when
+        /// its GOP is evicted.
+        var videoEnd: MediaTime?
         var waiters: [UInt64: CheckedContinuation<Void, Never>] = [:]
         var nextWaiter: UInt64 = 0
         var changeCount: UInt64 = 0
@@ -262,6 +272,7 @@ public final class PacketStore: Sendable {
                 state.audio[key] = StreamPackets(base: base)
             }
             state.endOfFile = false
+            state.videoEnd = nil
             state.playhead = playhead
             return takeWaiters(&state)
         }
@@ -269,13 +280,18 @@ public final class PacketStore: Sendable {
         return epoch
     }
 
-    /// Appends a packet. Video packets before the first keyframe of an epoch are dropped.
-    func append(_ packet: Packet) {
+    /// Appends a packet. Video packets before the first keyframe of an epoch are dropped. A
+    /// keyframe that starts a GOP in another format than the stream's at open carries `format`.
+    func append(_ packet: Packet, format: VideoFormat? = nil) {
         let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
             if packet.streamIndex == videoStreamIndex {
                 let time = packet.time ?? state.gops.last?.lastTime ?? .zero
+                if packet.time != nil {
+                    let end = time + packet.duration
+                    state.videoEnd = max(state.videoEnd ?? end, end)
+                }
                 if packet.isKeyframe, let pts = packet.pts ?? packet.dts {
-                    state.gops.append(GOP(keyPTS: pts, packets: [packet], bytes: packet.size, lastTime: time))
+                    state.gops.append(GOP(keyPTS: pts, packets: [packet], bytes: packet.size, lastTime: time, format: format))
                 } else if !state.gops.isEmpty {
                     let last = state.gops.count - 1
                     state.gops[last].packets.append(packet)
@@ -340,6 +356,10 @@ public final class PacketStore: Sendable {
     public var readThrough: MediaTime? { state.withLock { $0.readThrough } }
     public var epoch: UInt64 { state.withLock { $0.epoch } }
     public var isAtEndOfFile: Bool { state.withLock { $0.endOfFile } }
+    /// Where the video stream's data ends, once the demuxer has read to the end of the file in
+    /// this epoch: the latest video packet's pts plus duration. Nil before the end of the file
+    /// or when no video packet was read since the last seek.
+    public var videoEndOfFile: MediaTime? { state.withLock { $0.endOfFile ? $0.videoEnd : nil } }
 
     /// True while less than the read-ahead limit is buffered past the playhead, or the stored
     /// packets do not reach the read-through time yet.
@@ -483,6 +503,12 @@ public final class PacketStore: Sendable {
             }
             return best
         }
+    }
+
+    /// The format of the stored GOP starting at `keyframe` when it differs from the stream's at
+    /// open (section 7.10); nil for the open format or a GOP that is not stored.
+    public func videoFormat(atKeyframe keyframe: MediaTime) -> VideoFormat? {
+        state.withLock { state in state.gops.last { $0.keyPTS == keyframe }?.format }
     }
 
     /// Video packets of the GOP starting at `keyframe`, in decode order (nil when not stored).

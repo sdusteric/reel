@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreGraphics
 import CoreMedia
 import CoreVideo
@@ -40,15 +41,147 @@ public enum FrameGrabber {
         try image(from: grab(url: url, at: time, decoder: decoder).frame.pixelBuffer)
     }
 
+    /// The frame as an image. HDR frames (PQ or HLG attachments) are tone-mapped to 8-bit sRGB
+    /// by `HDRToneMapper`; SDR frames keep the colour space their attachments describe, so
+    /// drawing or saving them converts through ColorSync as QuickTime does.
     public static func image(from pixelBuffer: CVReadOnlyPixelBuffer) throws -> CGImage {
-        try pixelBuffer.withUnsafeBuffer { buffer in
-            var image: CGImage?
-            let status = VTCreateCGImageFromCVPixelBuffer(buffer, options: nil, imageOut: &image)
-            guard status == noErr, let image else {
-                throw MediaStatusError(status: status, operation: "VTCreateCGImageFromCVPixelBuffer")
-            }
-            return image
+        try pixelBuffer.withUnsafeBuffer { try image(from: $0) }
+    }
+
+    public static func image(from buffer: CVPixelBuffer) throws -> CGImage {
+        if HDRToneMapper.isHDR(buffer) { return try HDRToneMapper.sdrImage(buffer) }
+        var image: CGImage?
+        let status = VTCreateCGImageFromCVPixelBuffer(buffer, options: nil, imageOut: &image)
+        guard status == noErr, let image else {
+            throw MediaStatusError(status: status, operation: "VTCreateCGImageFromCVPixelBuffer")
         }
+        return image
+    }
+
+    /// The frame at `time` as AVFoundation renders it (`AVAssetImageGenerator`, exact time): the
+    /// QuickTime pipeline Reel's colour is checked against (`reelctl color`, ColorPipelineTests).
+    /// Only for files AVFoundation opens (mp4, mov); nothing is played and no audio is touched.
+    ///
+    /// `time` is on AVFoundation's timeline, which applies the edit list; FFmpeg's packet times can
+    /// be offset from it (a B-frame mp4 starts at 2 frames), so match frames by index with
+    /// `videoFrameTimes` and `referenceFrameTime` rather than by time.
+    ///
+    /// Throws `ReferenceError.dolbyVisionRecord` for a track whose sample description carries a
+    /// Dolby Vision record (`dvcC`, `dvvC`, `dvwC`): AVFoundation then fails every frame (-12704 on
+    /// the test fixtures, which carry no RPU), while Reel decodes the base layer from `hvcC` alone.
+    /// No AVFoundation reference exists for such a file, and none is faked.
+    public static func referenceImage(url: URL, at time: MediaTime) async throws -> CGImage {
+        let asset = AVURLAsset(url: url)
+        if let track = try await asset.loadTracks(withMediaType: .video).first {
+            let descriptions = try await track.load(.formatDescriptions)
+            if descriptions.contains(where: carriesDolbyVisionRecord) { throw ReferenceError.dolbyVisionRecord }
+        }
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        generator.appliesPreferredTrackTransform = false
+        return try await generator.image(at: CMTime(value: time.microseconds, timescale: 1_000_000)).image
+    }
+
+    public enum ReferenceError: LocalizedError, CustomStringConvertible {
+        case dolbyVisionRecord
+        case noVideoTrack
+
+        public var description: String {
+            switch self {
+            case .dolbyVisionRecord:
+                "AVFoundation rejects this track's Dolby Vision record; there is no QuickTime reference for it"
+            case .noVideoTrack:
+                "AVFoundation finds no video track"
+            }
+        }
+
+        public var errorDescription: String? { description }
+    }
+
+    /// True when the format description's sample description extension atoms hold a Dolby Vision
+    /// configuration record.
+    static func carriesDolbyVisionRecord(_ description: CMFormatDescription) -> Bool {
+        guard let atoms = CMFormatDescriptionGetExtension(
+            description, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms
+        ) as? [String: Any] else { return false }
+        return atoms.keys.contains { ["dvcC", "dvvC", "dvwC"].contains($0) }
+    }
+
+    /// Presentation times of the first `count` video frames in display order, as Reel's demuxer
+    /// reports them (packets only, nothing is decoded).
+    public static func videoFrameTimes(url: URL, count: Int) throws -> [MediaTime] {
+        let source = try MediaSource(url: url)
+        guard let index = source.videoStreamIndex else { throw EngineError.noPlayableStream }
+        var times: [MediaTime] = []
+        // A reorder window beyond `count`, so every frame among the first `count` in display order is read.
+        while times.count < count + 32, let packet = try source.readPacket() {
+            guard packet.streamIndex == index, let pts = packet.pts else { continue }
+            times.append(pts)
+        }
+        return Array(times.sorted().prefix(count))
+    }
+
+    /// The start of video frame `index` on AVFoundation's movie timeline, the one
+    /// `AVAssetImageGenerator` takes: the track's start plus `index` nominal frame durations.
+    /// AVFoundation's decoded frames start there (0 for an ffmpeg mp4 with B-frames, whose edit
+    /// list removes the 2-frame delay), while its passthrough samples carry media times before
+    /// the edit list. Constant frame rate files only.
+    public static func referenceFrameTime(url: URL, index: Int) async throws -> MediaTime {
+        let asset = AVURLAsset(url: url)
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw ReferenceError.noVideoTrack }
+        let (range, rate) = try await track.load(.timeRange, .nominalFrameRate)
+        guard rate > 0 else { throw ReferenceError.noVideoTrack }
+        return MediaTime(seconds: range.start.seconds + Double(index) / Double(rate))
+    }
+
+    // MARK: Measurement
+
+    /// Mean Y, Cb and Cr codes of a block of a 4:2:0 bi-planar buffer, in the stream's own code
+    /// values (0 to 255 for 8-bit, 0 to 1023 for 10-bit). `size` luma pixels square around the
+    /// centre; chroma is the matching `size / 2` block. Nil for other pixel formats.
+    public static func meanCodes(_ buffer: CVPixelBuffer, centerX: Int, centerY: Int, size: Int = 16) -> YCbCrCodes? {
+        let format = CVPixelBufferGetPixelFormatType(buffer)
+        let tenBit: Bool
+        switch format {
+        case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr10BiPlanarFullRange: tenBit = true
+        case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange: tenBit = false
+        default: return nil
+        }
+        guard CVPixelBufferGetPlaneCount(buffer) == 2, CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        func sample(_ plane: Int, _ x: Int, _ y: Int) -> Double {
+            guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, plane) else { return 0 }
+            let row = base.advanced(by: y * CVPixelBufferGetBytesPerRowOfPlane(buffer, plane))
+            if tenBit { return Double(row.assumingMemoryBound(to: UInt16.self)[x] >> 6) }
+            return Double(row.assumingMemoryBound(to: UInt8.self)[x])
+        }
+        func block(_ plane: Int, centerX: Int, centerY: Int, size: Int, components: Int, offset: Int) -> Double {
+            let width = CVPixelBufferGetWidthOfPlane(buffer, plane)
+            let height = CVPixelBufferGetHeightOfPlane(buffer, plane)
+            let half = max(1, size / 2)
+            let xs = max(0, centerX - half)..<min(width, max(0, centerX - half) + max(1, size))
+            let ys = max(0, centerY - half)..<min(height, max(0, centerY - half) + max(1, size))
+            var total = 0.0
+            var count = 0.0
+            for y in ys {
+                for x in xs {
+                    total += sample(plane, x * components + offset, y)
+                    count += 1
+                }
+            }
+            return count > 0 ? total / count : 0
+        }
+        let chroma = max(1, size / 2)
+        return YCbCrCodes(
+            y: block(0, centerX: centerX, centerY: centerY, size: size, components: 1, offset: 0),
+            cb: block(1, centerX: centerX / 2, centerY: centerY / 2, size: chroma, components: 2, offset: 0),
+            cr: block(1, centerX: centerX / 2, centerY: centerY / 2, size: chroma, components: 2, offset: 1)
+        )
+    }
+
+    public static func meanCodes(_ buffer: CVReadOnlyPixelBuffer, centerX: Int, centerY: Int, size: Int = 16) -> YCbCrCodes? {
+        buffer.withUnsafeBuffer { meanCodes($0, centerX: centerX, centerY: centerY, size: size) }
     }
 
     // MARK: PSNR
@@ -251,4 +384,105 @@ public enum FrameGrabber {
         }
         return Grab(frame: frame, format: opened.format, startKeyframe: startKeyframe ?? startPTS, packetsSubmitted: submitted)
     }
+}
+
+/// Mean code values of a block of a YCbCr buffer.
+public struct YCbCrCodes: Sendable, Codable, Hashable {
+    public var y: Double
+    public var cb: Double
+    public var cr: Double
+
+    public init(y: Double, cb: Double, cr: Double) {
+        self.y = y
+        self.cb = cb
+        self.cr = cr
+    }
+}
+
+/// An image drawn into an 8-bit sRGB bitmap, so reading it back goes through the same ColorSync
+/// conversion any viewer applies. Top-left origin.
+public struct SRGBRaster: Sendable {
+    public let width: Int
+    public let height: Int
+    /// RGBA, premultiplied (opaque images are unaffected), row after row.
+    public let bytes: [UInt8]
+
+    public init?(_ image: CGImage) {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0, let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = bytes.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = CGContext(
+                data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+        self.width = width
+        self.height = height
+        self.bytes = bytes
+    }
+
+    /// Largest minus smallest green value in a `size` square: 0 on a flat patch.
+    public func range(centerX: Int, centerY: Int, size: Int = 16) -> Int {
+        let half = max(1, size / 2)
+        let x0 = min(max(0, centerX - half), width - 1)
+        let y0 = min(max(0, centerY - half), height - 1)
+        var low = UInt8.max
+        var high = UInt8.min
+        for y in y0..<min(height, y0 + max(1, size)) {
+            for x in x0..<min(width, x0 + max(1, size)) {
+                let value = bytes[(y * width + x) * 4 + 1]
+                low = min(low, value)
+                high = max(high, value)
+            }
+        }
+        return high >= low ? Int(high - low) : 0
+    }
+
+    /// Mean sRGB value of a `size` square around a point (image pixels, top-left origin).
+    public func mean(centerX: Int, centerY: Int, size: Int = 16) -> SRGBValue {
+        let half = max(1, size / 2)
+        let x0 = min(max(0, centerX - half), width - 1)
+        let y0 = min(max(0, centerY - half), height - 1)
+        let x1 = min(width, x0 + max(1, size))
+        let y1 = min(height, y0 + max(1, size))
+        var sums = (0.0, 0.0, 0.0)
+        var count = 0.0
+        for y in y0..<y1 {
+            for x in x0..<x1 {
+                let index = (y * width + x) * 4
+                sums.0 += Double(bytes[index])
+                sums.1 += Double(bytes[index + 1])
+                sums.2 += Double(bytes[index + 2])
+                count += 1
+            }
+        }
+        guard count > 0 else { return SRGBValue(r: 0, g: 0, b: 0) }
+        return SRGBValue(r: sums.0 / count, g: sums.1 / count, b: sums.2 / count)
+    }
+}
+
+/// An 8-bit sRGB colour, as means (so fractional).
+public struct SRGBValue: Sendable, Codable, Hashable {
+    public var r: Double
+    public var g: Double
+    public var b: Double
+
+    public init(r: Double, g: Double, b: Double) {
+        self.r = r
+        self.g = g
+        self.b = b
+    }
+
+    /// BT.709 luma of the 8-bit values.
+    public var luma: Double { 0.2126 * r + 0.7152 * g + 0.0722 * b }
+
+    /// Largest of |r - g| and |g - b|.
+    public var neutralSpread: Double { max(abs(r - g), abs(g - b)) }
+
+    public var rounded: SRGBValue { SRGBValue(r: r.rounded(), g: g.rounded(), b: b.rounded()) }
 }

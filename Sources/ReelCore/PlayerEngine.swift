@@ -55,6 +55,20 @@ public protocol PlayerEngine: AnyObject, Sendable {
     /// Start and end of every known event of the selected subtitle track, sorted, for next and
     /// previous line. Empty with no text track selected.
     func subtitleEvents() async -> [SubtitleEventTime]
+
+    // MARK: M3 (sections 7.9 and 7.11). Each has a no-op default below.
+
+    /// The window became hidden (and PiP is off). Called as soon as the occlusion state changes:
+    /// the engine itself waits `EnergyPolicy.occlusionDelay` before it stops video decode (audio
+    /// goes on). False resyncs with an exact seek to the clock time.
+    func setOccluded(_ occluded: Bool) async
+    /// The pointer moved in the window within `EnergyPolicy.pointerRecentSeconds`; paused
+    /// thumbnail generation runs only while true.
+    func setPointerRecent(_ recent: Bool) async
+    /// An `AudioDeviceUID` for the audio renderer, or nil for the system default.
+    func setOutputDevice(_ uid: String?) async
+    /// Work counted since open, for the energy bench.
+    func energyCounters() async -> EnergyCounters
 }
 
 extension PlayerEngine {
@@ -72,6 +86,10 @@ extension PlayerEngine {
     public func setLoop(_ loop: LoopState) async {}
     public func thumbnail(at time: MediaTime) async -> ThumbnailImage? { nil }
     public func subtitleEvents() async -> [SubtitleEventTime] { [] }
+    public func setOccluded(_ occluded: Bool) async {}
+    public func setPointerRecent(_ recent: Bool) async {}
+    public func setOutputDevice(_ uid: String?) async {}
+    public func energyCounters() async -> EnergyCounters { .zero }
 }
 
 /// The cubic volume curve mpv uses, so a level matches IINA's (design section 7.4).

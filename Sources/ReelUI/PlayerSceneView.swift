@@ -15,6 +15,8 @@ public struct PlayerSceneView<Surface: View>: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var dragOrigin: CGRect?
+    /// The tag's centre in the scene, where Video Info grows from.
+    @State private var tagMidX: CGFloat?
 
     /// `subtitle` is for screenshots only: in the app the engine's layer draws the subtitles.
     public init(
@@ -30,8 +32,11 @@ public struct PlayerSceneView<Surface: View>: View {
     }
 
     private var showsEmptyState: Bool {
-        !model.hasMedia && model.playbackState != .opening
+        !model.hasMedia && model.playbackState != .opening && model.problem == nil
     }
+
+    /// A problem with a file open (the drive went away): the frame stays, dimmed (design 9.14).
+    private var dimsFrame: Bool { model.problem != nil && model.hasMedia }
 
     public var body: some View {
         GeometryReader { proxy in
@@ -46,21 +51,28 @@ public struct PlayerSceneView<Surface: View>: View {
                 Color.black
                 surface
                     .frame(width: size.width, height: size.height)
+                    .saturation(dimsFrame ? FailureDim.saturation : 1)
+                Color.black
+                    .opacity(dimsFrame ? 1 - FailureDim.brightness : 0)
+                    .frame(width: size.width, height: size.height)
+                    .allowsHitTesting(false)
+                    .animation(Motion.driveGoneDimAnimation(reduceMotion: reduceMotion), value: dimsFrame)
                 SubtitleOverlay(model: model, windowSize: size, controllerFrame: showsEmptyState ? nil : frame, shot: subtitle)
                     .frame(width: size.width, height: size.height)
                 if model.isPictureInPictureActive {
                     PiPPlaceholder(snapshot: model.pictureInPictureSnapshot) { model.togglePictureInPicture() }
                         .frame(width: size.width, height: size.height)
-                        .transition(.asymmetric(
-                            insertion: .opacity.animation(Motion.easeOut(0.2)),
-                            removal: .opacity.animation(Motion.easeIn(0.15))
-                        ))
+                        .transition(Motion.pipPlaceholderTransition(reduceMotion: reduceMotion))
                 }
                 if showsEmptyState {
                     // Clicks fall through to the video surface, which moves the window on drag.
-                    EmptyStateView(errorMessage: model.errorMessage)
+                    EmptyStateView(dropTarget: actions.dropTarget, hasMedia: model.hasMedia)
                         .frame(width: size.width, height: size.height)
                         .allowsHitTesting(false)
+                }
+                if model.problem != nil, !model.hasMedia {
+                    TitleBar(title: model.title ?? "")
+                        .frame(width: size.width, height: PlayerSceneView.titleBarHeight)
                 }
                 if model.activePanel != nil {
                     // A click anywhere else closes the panel and does nothing more.
@@ -69,25 +81,84 @@ public struct PlayerSceneView<Surface: View>: View {
                         .onTapGesture { model.closePanel() }
                         .frame(width: size.width, height: size.height)
                 }
-                if !showsEmptyState {
+                if model.videoInfoVisible {
+                    // A click anywhere else closes Video Info and does nothing more.
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { model.closeVideoInfo() }
+                        .frame(width: size.width, height: size.height)
+                }
+                if !showsEmptyState, model.problem == nil || model.hasMedia {
                     chrome(in: size, frame: frame)
                 }
+                videoInfo(in: size)
+                failureCard(in: size)
                 OSDView(model: model)
                     .padding(.leading, OSDView.edgeInset)
                     .padding(.top, OSDView.edgeInset + (model.chrome.isVisible ? 28 : 0))
-                    .animation(.easeOut(duration: 0.12), value: model.chrome.isVisible)
+                    .animation(
+                        ChromeVisibility.animation(visible: model.chrome.isVisible, reduceMotion: reduceMotion),
+                        value: model.chrome.isVisible
+                    )
             }
             .frame(width: size.width, height: size.height)
             .clipped()
+            .coordinateSpace(name: ChromeStyle.sceneSpace)
+            .onPreferenceChange(TagMidXKey.self) { tagMidX = $0 }
         }
         .background(Color.black)
+    }
+
+    /// Video Info at the top right, 20 pt from the edge and 48 pt from the top (design 9.13).
+    private func videoInfo(in size: CGSize) -> some View {
+        ZStack(alignment: .topTrailing) {
+            if model.videoInfoVisible {
+                VideoInfoPanel(model: model)
+                    .padding(.top, VideoInfoPanel.topInset)
+                    .padding(.trailing, VideoInfoPanel.rightInset)
+                    .transition(Motion.panelTransition(
+                        reduceMotion: reduceMotion,
+                        anchor: PanelAnchor.videoInfo(tagMidX: tagMidX, windowWidth: size.width)
+                    ))
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topTrailing)
+        .animation(reduceMotion ? Motion.reduced : Motion.easeOut(0.16), value: model.videoInfoVisible)
+    }
+
+    private func failureCard(in size: CGSize) -> some View {
+        ZStack {
+            if let problem = model.problem {
+                FailureCard(
+                    content: FailureCardContent(
+                        problem: problem,
+                        fileName: model.title,
+                        detail: model.problemDetail,
+                        savedPosition: TimeFormat.clock(model.position, duration: model.duration)
+                    ),
+                    action: { button in Task { await model.performProblemAction(button) } }
+                )
+                .transition(model.hasMedia
+                    ? Motion.driveGoneCardTransition(reduceMotion: reduceMotion)
+                    : Motion.failureTransition(reduceMotion: reduceMotion))
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .animation(reduceMotion ? Motion.reduced : Motion.easeOut(0.2), value: model.problem)
     }
 
     @ViewBuilder
     private func chrome(in size: CGSize, frame: CGRect) -> some View {
         let visible = model.chrome.isVisible
+        let plan = model.dynamicRangePlan
         ZStack(alignment: .topLeading) {
-            TitleBar(title: model.title ?? "", endsAt: model.isFullscreen ? model.endsAtLabel : nil)
+            TitleBar(
+                title: model.title ?? "",
+                endsAt: model.isFullscreen ? model.endsAtLabel : nil,
+                tag: DynamicRangeTagContent(plan: plan),
+                showsTooltip: model.showsTagTooltip,
+                onTag: { model.toggleVideoInfo() }
+            )
                 .frame(width: size.width, height: PlayerSceneView.titleBarHeight)
             ControllerView(
                 model: model,
@@ -134,13 +205,32 @@ public struct PlayerSceneView<Surface: View>: View {
     }
 }
 
-/// The title, centred in the title bar area over a soft scrim that fades into the picture. The
-/// text is white in both appearances: it always sits on video.
+/// The tag's horizontal centre in the scene's coordinate space.
+nonisolated struct TagMidXKey: PreferenceKey {
+    static var defaultValue: CGFloat? { nil }
+
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        value = nextValue() ?? value
+    }
+}
+
+/// The dimmed last frame of a disconnected drive (design 15.3): brightness 38%, saturation 70%.
+enum FailureDim {
+    static let brightness = 0.38
+    static let saturation = 0.7
+}
+
+/// The title, centred in the title bar area over a soft scrim that fades into the picture, with
+/// the dynamic range tag after it. The text is white in both appearances: it always sits on video.
 struct TitleBar: View {
     static let height: CGFloat = 28
     let title: String
     /// "Ends at 22:47", fullscreen only (design 9.1, D41).
     var endsAt: String?
+    var tag: DynamicRangeTagContent?
+    /// Draw the tag's tooltip (shots only; the app uses the system tooltip).
+    var showsTooltip = false
+    var onTag: () -> Void = {}
 
     var body: some View {
         ZStack {
@@ -156,13 +246,39 @@ struct TitleBar: View {
             )
             .frame(height: TitleBar.height + 40)
             .frame(height: TitleBar.height, alignment: .top)
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.88))
-                .shadow(color: .black.opacity(0.45), radius: 2, y: 0.5)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .padding(.horizontal, 80)
+            .allowsHitTesting(false)
+            // The title gives way (middle truncation) before the tag shrinks.
+            HStack(spacing: DynamicRangeTag.gap) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.88))
+                    .shadow(color: .black.opacity(0.45), radius: 2, y: 0.5)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .allowsHitTesting(false)
+                if let tag {
+                    DynamicRangeTag(content: tag, action: onTag)
+                        .fixedSize()
+                        .layoutPriority(1)
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: TagMidXKey.self,
+                                    value: proxy.frame(in: .named(ChromeStyle.sceneSpace)).midX
+                                )
+                            }
+                        }
+                        .overlay(alignment: .top) {
+                            if showsTooltip {
+                                TagTooltip(text: tag.tooltip)
+                                    .fixedSize()
+                                    .offset(y: DynamicRangeTag.height + 8)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                }
+            }
+            .padding(.horizontal, 80)
             if let endsAt {
                 Text(endsAt)
                     .font(.system(size: 12, weight: .medium).monospacedDigit())
@@ -170,8 +286,8 @@ struct TitleBar: View {
                     .shadow(color: .black.opacity(0.45), radius: 2, y: 0.5)
                     .padding(.trailing, 24)
                     .frame(maxWidth: .infinity, alignment: .trailing)
+                    .allowsHitTesting(false)
             }
         }
-        .allowsHitTesting(false)
     }
 }

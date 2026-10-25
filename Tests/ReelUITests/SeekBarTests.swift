@@ -85,4 +85,28 @@ import Testing
         model.setSeekHover(nil)
         #expect(model.seekHoverFraction == nil)
     }
+
+    @Test func theMissingTailShowsNoDataAfterTheEndOfTheData() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let model = try await openModel(scratch, engine: FakeEngine())
+        #expect(model.missingTailText(atFraction: 0.9) == nil)
+        model.handle(.dataEnd(.seconds(380)))
+        #expect(model.missingTailText(atFraction: 0.5) == nil, "over the data the pill is the plain time")
+        #expect(model.missingTailText(atFraction: 0.9) == "No data after 06:20")
+        #expect(abs((model.dataEndFraction ?? 0) - 380.0 / 600.0) < 0.0001)
+    }
+
+    @Test func aClickInTheTailSeeksToTheLastFrame() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let engine = FakeEngine()
+        let model = try await openModel(scratch, engine: engine)
+        model.handle(.dataEnd(.seconds(380)))
+        let interaction = SeekBarInteraction(model: model)
+        interaction.dragEnded(x: 380, width: width)
+        await model.waitForEngineCommands()
+        #expect(engine.seeks == [.exact(.seconds(380))])
+        #expect(model.osd?.text == "No data after 06:20")
+    }
 }

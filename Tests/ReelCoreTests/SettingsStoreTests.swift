@@ -59,6 +59,49 @@ import Testing
         #expect(try scratch.names().isEmpty)
     }
 
+    @Test func highDynamicRangeDefaultsToFull() {
+        #expect(Settings().highDynamicRange == .full)
+        #expect(HDRSetting.default == .full)
+        #expect(HDRSetting.allCases.map(\.title) == ["Full", "Limited", "Off"])
+    }
+
+    @Test(arguments: HDRSetting.allCases)
+    func highDynamicRangeRoundTripsThroughTheFile(_ setting: HDRSetting) throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.remove() }
+        let store = SettingsStore(fileURL: scratch.file("settings.json"))
+        try store.update { $0.highDynamicRange = setting }
+        try store.update { $0.hardwareDecoding = false }
+        let reopened = SettingsStore(fileURL: scratch.file("settings.json"))
+        #expect(try reopened.load() == .loaded)
+        #expect(reopened.settings.highDynamicRange == setting)
+        #expect(reopened.settings.hardwareDecoding == false)
+        let text = try String(contentsOf: scratch.file("settings.json"), encoding: .utf8)
+        #expect(text.contains("\"highDynamicRange\""))
+    }
+
+    @Test func m1FileWithoutTheHDRKeyLoadsAsFull() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.remove() }
+        try #"{"version": 1, "resumePlayback": false, "showRemainingTime": true, "keyframePreview": true, "hardwareDecoding": true}"#
+            .write(to: scratch.file("settings.json"), atomically: true, encoding: .utf8)
+        let store = SettingsStore(fileURL: scratch.file("settings.json"))
+        #expect(try store.load() == .loaded)
+        #expect(store.settings.highDynamicRange == .full)
+        #expect(store.settings.resumePlayback == false)
+    }
+
+    @Test func unknownHDRValueFallsBackToFullAndKeepsTheOtherSettings() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.remove() }
+        try #"{"version": 1, "hardwareDecoding": false, "highDynamicRange": "dazzling"}"#
+            .write(to: scratch.file("settings.json"), atomically: true, encoding: .utf8)
+        let store = SettingsStore(fileURL: scratch.file("settings.json"))
+        #expect(try store.load() == .loaded)
+        #expect(store.settings.highDynamicRange == .full)
+        #expect(store.settings.hardwareDecoding == false)
+    }
+
     @Test func pathsInitializerUsesSettingsJSON() throws {
         let scratch = try ScratchDirectory()
         defer { scratch.remove() }
