@@ -110,6 +110,30 @@ public struct DecoderPolicy: Sendable, Hashable {
         }
     }
 
+    // MARK: VP9 hybrid (design section 7.3, D46)
+
+    /// An exact seek that must decode more than this many frames goes to software when the
+    /// stream allows the hybrid.
+    public static let hybridSeekFrameThreshold = 30
+
+    /// Codecs whose software decoder beats VideoToolbox on a long decode burst (VP9 4K: 576 fps
+    /// in libavcodec against 249 fps in the supplemental hardware decoder).
+    public static let hybridCodecs: Set<String> = ["vp9"]
+
+    /// True when exact seeks of this stream may decode in software while playback and scrubs stay
+    /// on hardware. Never with a forced decoder, so benches measure what they asked for.
+    public func allowsHybridSeeks(for stream: VideoStreamTraits) -> Bool {
+        guard forced == nil, DecoderPolicy.hybridCodecs.contains(stream.codec) else { return false }
+        return decide(for: stream).kind == .hardware
+    }
+
+    /// The decoder for an exact seek that restarts at a keyframe and decodes `frames` frames.
+    /// Playback (`frames` of 0) and keyframe scrubs (1 frame) always use `primary`.
+    public static func seekDecoder(frames: Int, primary: VideoDecoderKind, hybrid: Bool) -> VideoDecoderKind {
+        guard hybrid, primary == .hardware, frames > hybridSeekFrameThreshold else { return primary }
+        return .software
+    }
+
     private func hardware(_ supported: Bool) -> DecoderDecision {
         supported
             ? DecoderDecision(kind: .hardware, reason: .hardwareSupported)

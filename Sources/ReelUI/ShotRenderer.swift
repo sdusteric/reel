@@ -6,7 +6,7 @@ import ReelCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The four background screenshot scenarios (design 14).
+/// The background screenshot scenarios (design 14 and 15.2): the M1 four and the M2 surfaces.
 nonisolated public enum ShotScenario: String, CaseIterable, Sendable {
     case empty
     /// Controller and title visible while playing.
@@ -15,6 +15,43 @@ nonisolated public enum ShotScenario: String, CaseIterable, Sendable {
     case pausedOSD = "paused-osd"
     /// Dragging the seek bar: hover pill and grown track.
     case scrubbing
+    /// The subtitle panel open with seven tracks (mockup png/02).
+    case subtitlePanel = "subtitle-panel"
+    /// The audio panel open with four tracks (png/03).
+    case audioPanel = "audio-panel"
+    /// The speed panel open at 1.5x (png/04).
+    case speedPanel = "speed-panel"
+    /// The hover container with a thumbnail above the seek bar (png/05).
+    case thumbnail
+    /// Subtitles with the controller moved to the top, so they sit at the default position (png/07).
+    case subtitles
+    /// Subtitles lifted above a visible controller (png/09).
+    case subtitlesLifted = "subtitles-lifted"
+    /// The speed OSD with the changed speed label (png/10).
+    case osdSpeed = "osd-speed"
+    /// The A-B loop OSD with marks on the seek bar (png/12).
+    case osdLoop = "osd-loop"
+    /// The end of an episode: Replay, the lit next button and the countdown card (png/14).
+    case nextEpisode = "next-episode"
+    /// The main window while Picture in Picture is active (png/16).
+    case pip
+    /// Fullscreen layout: controller 56 pt from the bottom, "Ends at" time (png/15).
+    case fullscreen
+    /// A file alone in its folder with no subtitles: no previous or next, empty subtitle panel (png/18).
+    case edgeStates = "edge-states"
+
+    /// Where the controller sits (centre x, bottom y as fractions); nil keeps the remembered default.
+    var controllerPosition: (centerX: Double, bottomY: Double)? {
+        switch self {
+        case .subtitles: (0.5, 0.82)
+        default: nil
+        }
+    }
+
+    /// Scenarios that draw subtitles.
+    var drawsSubtitles: Bool { self == .subtitles || self == .subtitlesLifted }
+
+    var isFullscreen: Bool { self == .fullscreen }
 }
 
 nonisolated public enum ShotAppearance: String, CaseIterable, Sendable {
@@ -128,38 +165,111 @@ nonisolated public struct ShotOptions: Equatable, Sendable {
 /// (design 14, D15, D16). The video surface is a SwiftUI `Image` of a decoded frame.
 public enum ShotRenderer {
     public static let scale: CGFloat = 2
-    public static let demoTitle = "Reel Demo.mkv"
+    public static let demoTitle = "Northern.Line.S02E05.1080p.BluRay.x265.10bit-RLS.mkv"
 
     /// A model in the state the scenario shows. It has no engine and never opens a file.
+    /// `thumbnail` is the seek-bar and card picture, `snapshot` the frame behind the PiP placeholder.
     public static func makeModel(
         scenario: ShotScenario,
         title: String,
         position: MediaTime,
-        duration: MediaTime
+        duration: MediaTime,
+        thumbnail: CGImage? = nil,
+        snapshot: CGImage? = nil
     ) -> PlayerModel {
-        let model = PlayerModel(dependencies: PlayerModel.Dependencies(makeEngine: { _ in StillEngine() }))
+        let clock = ShotClock()
+        let model = PlayerModel(dependencies: PlayerModel.Dependencies(
+            makeEngine: { _ in StillEngine() },
+            wallClock: { Date(timeIntervalSinceReferenceDate: 800_000_000) },
+            now: { clock.now },
+            sleep: { _ in try? await Task.sleep(for: .seconds(3_600)) }
+        ))
         guard scenario != .empty else { return model }
-        model.media = MediaInfo(url: URL(filePath: "/\(title)"), formatName: "matroska,webm", duration: duration)
+        let url = URL(filePath: "/Show/\(title)")
+        model.media = MediaInfo(url: url, formatName: "matroska,webm", duration: duration)
         model.title = title
         model.position = min(position, duration)
         model.storedRange = max(.zero, model.position - .seconds(8))...min(duration, model.position + .seconds(20))
         model.volume = 52
+        model.tracks = scenario == .edgeStates ? demoTracks(subtitles: false) : demoTracks(subtitles: true)
+        if scenario != .edgeStates {
+            model.episodes = demoEpisodes(current: url)
+        }
+        if let position = scenario.controllerPosition {
+            model.controllerCenterX = position.centerX
+            model.controllerBottomY = position.bottomY
+        }
+        model.isFullscreen = scenario.isFullscreen
+        model.playbackState = .playing
+        model.isPlaying = true
         switch scenario {
-        case .empty:
+        case .empty, .playing, .fullscreen, .subtitles, .subtitlesLifted:
             break
-        case .playing:
-            model.playbackState = .playing
-            model.isPlaying = true
+        case .edgeStates:
+            model.activePanel = .subtitles
         case .pausedOSD:
             model.playbackState = .paused
+            model.isPlaying = false
             model.osd = OSDMessage(kind: .volume, text: "Volume 52")
         case .scrubbing:
             model.playbackState = .seeking
-            model.isPlaying = true
             model.isScrubbing = true
             model.seekHoverFraction = model.fraction(of: model.position)
+        case .subtitlePanel:
+            model.activePanel = .subtitles
+            model.panelHighlight = 4
+        case .audioPanel:
+            model.activePanel = .audio
+            model.panelHighlight = 1
+        case .speedPanel:
+            model.rate = 1.5
+            model.activePanel = .speed
+        case .thumbnail:
+            model.seekHoverFraction = 0.38
+            model.hoverThumbnail = thumbnail ?? placeholderFrame(width: 384, height: 216)
+        case .osdSpeed:
+            model.rate = 1.5
+            model.osd = OSDMessage(kind: .speed, text: PlaybackSpeed.osdText(1.5))
+        case .osdLoop:
+            var loop = LoopState()
+            loop.start = MediaTime(microseconds: Int64(Double(duration.microseconds) * 0.715))
+            loop.end = MediaTime(microseconds: Int64(Double(duration.microseconds) * 0.74))
+            model.loop = loop
+            if let start = loop.start, let end = loop.end {
+                model.position = MediaTime(microseconds: (start.microseconds + end.microseconds) / 2)
+            }
+            model.osd = OSDMessage(kind: .loop, text: loop.abOSDText(duration: duration))
+        case .nextEpisode:
+            model.playbackState = .ended
+            model.isPlaying = false
+            model.position = duration
+            model.storedRange = nil
+            if let next = model.episodes?.next {
+                model.autoAdvance.begin(next: next)
+                clock.now = 2
+                model.autoAdvance.tick()
+                model.autoAdvance.thumbnail = thumbnail ?? placeholderFrame(width: 384, height: 216)
+            }
+        case .pip:
+            model.isPictureInPictureActive = true
+            model.pictureInPictureSnapshot = snapshot
         }
+        model.chrome.setPlaying(model.isPlaying)
+        if model.activePanel != nil { model.chrome.setPanelOpen(true) }
         return model
+    }
+
+    /// The bottom inset the lifted-subtitle shot uses for a window of `size`, from the default
+    /// style and the controller's frame. Nil outside that scenario. The app's shot mode passes
+    /// this to the libass renderer so the real subtitles sit where the sample ones do.
+    public static func subtitleLift(scenario: ShotScenario, size: CGSize) -> Double? {
+        guard scenario == .subtitlesLifted else { return nil }
+        let frame = ControllerLayout.frame(
+            in: size,
+            centerX: RememberedState.defaultControllerCenterX,
+            bottomY: RememberedState.defaultControllerBottomY
+        )
+        return SubtitleAvoidance.inset(style: SubtitleStyle(), windowSize: size, controllerFrame: frame)
     }
 
     public static func render(
@@ -169,10 +279,28 @@ public enum ShotRenderer {
         frame: CGImage?,
         title: String = demoTitle,
         position: MediaTime = .seconds(ShotOptions.defaultAt),
-        duration: MediaTime = .seconds(ShotOptions.defaultDuration)
+        duration: MediaTime = .seconds(ShotOptions.defaultDuration),
+        subtitleImage: CGImage? = nil,
+        subtitleRect: CGRect? = nil,
+        thumbnail: CGImage? = nil
     ) -> CGImage? {
-        let model = makeModel(scenario: scenario, title: title, position: position, duration: duration)
-        let scene = PlayerSceneView(model: model) {
+        let model = makeModel(
+            scenario: scenario,
+            title: title,
+            position: position,
+            duration: duration,
+            thumbnail: thumbnail,
+            snapshot: frame
+        )
+        var subtitle: ShotSubtitle?
+        if scenario.drawsSubtitles || subtitleImage != nil {
+            subtitle = ShotSubtitle(
+                image: subtitleImage,
+                rect: subtitleRect,
+                liftInset: subtitleLift(scenario: scenario, size: size)
+            )
+        }
+        let scene = PlayerSceneView(model: model, subtitle: subtitle) {
             if scenario != .empty, let frame {
                 Image(decorative: frame, scale: 1)
                     .resizable()
@@ -194,6 +322,67 @@ public enum ShotRenderer {
             image = renderer.cgImage
         }
         return image
+    }
+
+    // MARK: Demo content
+
+    /// Subtitles, audio and video of the mockup's "Northern Line" file. `subtitles: false` gives
+    /// a file with none (png/18).
+    static func demoTracks(subtitles: Bool) -> TrackState {
+        let base = Rational(1, 1_000)
+        var streams = [
+            StreamInfo(index: 0, kind: .video, codec: "hevc", timeBase: base, video: VideoParameters(width: 1920, height: 1080)),
+            StreamInfo(
+                index: 1, kind: .audio, codec: "eac3", timeBase: base, language: "eng", isDefault: true,
+                audio: AudioParameters(sampleRate: 48_000, channels: 6, channelLayout: "5.1(side)")
+            ),
+            StreamInfo(
+                index: 2, kind: .audio, codec: "aac", timeBase: base, language: "jpn",
+                audio: AudioParameters(sampleRate: 48_000, channels: 6, channelLayout: "5.1")
+            ),
+            StreamInfo(
+                index: 3, kind: .audio, codec: "aac", timeBase: base, language: "cmn",
+                audio: AudioParameters(sampleRate: 48_000, channels: 2, channelLayout: "stereo")
+            ),
+            StreamInfo(
+                index: 4, kind: .audio, codec: "aac", timeBase: base, language: "eng", title: "Commentary",
+                audio: AudioParameters(sampleRate: 48_000, channels: 2, channelLayout: "stereo")
+            ),
+        ]
+        var external: [SubtitleTrack] = []
+        if subtitles {
+            streams += [
+                StreamInfo(index: 5, kind: .subtitle, codec: "ass", timeBase: base, language: "zho", title: "\u{7B80}\u{82F1}\u{53CC}\u{8BED}", isDefault: true),
+                StreamInfo(index: 6, kind: .subtitle, codec: "ass", timeBase: base, language: "zh-Hant", title: "\u{7E41}\u{82F1}\u{96D9}\u{8A9E}"),
+                StreamInfo(index: 7, kind: .subtitle, codec: "subrip", timeBase: base, language: "eng"),
+                StreamInfo(index: 8, kind: .subtitle, codec: "subrip", timeBase: base, language: "eng", title: "SDH", isHearingImpaired: true),
+                StreamInfo(index: 9, kind: .subtitle, codec: "hdmv_pgs_subtitle", timeBase: base, language: "jpn"),
+            ]
+            external = [SubtitleTrack(
+                id: .external(URL(filePath: "/Show/Northern.Line.S02E05.zh-Hans.srt")),
+                language: "zh-Hans",
+                format: .srt
+            )]
+        }
+        let info = MediaInfo(
+            url: URL(filePath: "/Show/\(demoTitle)"),
+            formatName: "matroska,webm",
+            streams: streams,
+            videoStreamIndex: 0,
+            audioStreamIndex: 1
+        )
+        var tracks = TrackState(info: info, external: external)
+        if subtitles { tracks.selectedSubtitle = .embedded(streamIndex: 5) }
+        return tracks
+    }
+
+    /// Three files in one folder, so previous and next show and the card has a next name.
+    static func demoEpisodes(current: URL) -> EpisodeList {
+        let folder = current.deletingLastPathComponent()
+        let siblings = ["Northern.Line.S02E04.mkv", "Northern.Line.S02E06.mkv"].map {
+            folder.appending(path: $0, directoryHint: .notDirectory)
+        }
+        return EpisodeList(current: current, folderContents: siblings)
     }
 
     /// A stand-in frame when no decoder is available: a diagonal colour gradient.
@@ -239,10 +428,22 @@ public enum ShotRenderer {
     public static func controllerPixelRect(
         size: CGSize,
         centerX: Double = RememberedState.defaultControllerCenterX,
-        bottomY: Double = RememberedState.defaultControllerBottomY
+        bottomY: Double = RememberedState.defaultControllerBottomY,
+        fullscreen: Bool = false
     ) -> CGRect {
-        let frame = ControllerLayout.frame(in: size, centerX: centerX, bottomY: bottomY)
+        let frame = ControllerLayout.frame(in: size, centerX: centerX, bottomY: bottomY, fullscreen: fullscreen)
         return CGRect(x: frame.minX * scale, y: frame.minY * scale, width: frame.width * scale, height: frame.height * scale)
+    }
+
+    /// The controller's frame in image pixels where `scenario` puts it.
+    public static func controllerPixelRect(size: CGSize, scenario: ShotScenario) -> CGRect {
+        let position = scenario.controllerPosition
+        return controllerPixelRect(
+            size: size,
+            centerX: position?.centerX ?? RememberedState.defaultControllerCenterX,
+            bottomY: position?.bottomY ?? RememberedState.defaultControllerBottomY,
+            fullscreen: scenario.isFullscreen
+        )
     }
 
     public struct LuminanceStats: Sendable, Equatable {
@@ -297,6 +498,11 @@ public enum ShotRenderer {
             maximum: maximum
         )
     }
+}
+
+/// A clock the shot moves by hand, so the countdown card shows a fixed "in 3 s".
+private final class ShotClock {
+    var now: TimeInterval = 0
 }
 
 /// The engine behind a screenshot model: it never opens anything.

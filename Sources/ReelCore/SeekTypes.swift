@@ -64,6 +64,11 @@ public struct SeekReport: Sendable, Hashable, Codable {
     public var storeHit: Bool
     /// A newer request superseded this one before it landed.
     public var cancelled: Bool
+    /// The decoder the run started on: software for a long VP9 exact seek (D46).
+    public var decoder: VideoDecoderKind?
+    /// The VP9 hybrid's software to hardware hand-offs since the file opened, when the report
+    /// was made (a hand-off happens after a software landing, at the next keyframe).
+    public var decoderHandoffs: Int?
 
     public init(
         kind: SeekRequest.Kind,
@@ -79,7 +84,9 @@ public struct SeekReport: Sendable, Hashable, Codable {
         framesSkipped: Int = 0,
         bytesRead: Int64 = 0,
         storeHit: Bool = false,
-        cancelled: Bool = false
+        cancelled: Bool = false,
+        decoder: VideoDecoderKind? = nil,
+        decoderHandoffs: Int? = nil
     ) {
         self.kind = kind
         self.target = target
@@ -95,5 +102,7 @@ public struct SeekReport: Sendable, Hashable, Codable {
         self.bytesRead = bytesRead
         self.storeHit = storeHit
         self.cancelled = cancelled
+        self.decoder = decoder
+        self.decoderHandoffs = decoderHandoffs
     }
 }

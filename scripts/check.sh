@@ -2,7 +2,8 @@
 # All gates (design section 14). Exits 0 only when every gate passes.
 #   deps (stamp) -> fixtures (stamp) -> swift build -c release -> swift test -> swiftlint --strict
 #   -> license check via reelctl probe --build-info -> scripts/bundle.sh -> codesign --verify --strict
-#   -> plutil -lint -> designated requirement names dev.sdusteric.reel -> no em or en dashes
+#   -> plutil -lint (bundle id, document types, folder usage string) -> designated requirement names
+#   dev.sdusteric.reel -> no em or en dashes
 #
 # Env: REEL_SCRATCH  SwiftPM scratch path (default <repo>/.build). Agents building in parallel
 #                    pass their own, e.g. REEL_SCRATCH=$TMPDIR/reel-check.
@@ -75,6 +76,28 @@ plist_check() {
   local id
   id="$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist")"
   [ "$id" = dev.sdusteric.reel ] || { echo "bundle id is $id"; return 1; }
+  # M2: Reel is listed as a viewer for the container formats, and the folder-access prompt for
+  # next and previous episode has its usage string.
+  local types="$LOGDIR/document-types.json"
+  plutil -extract CFBundleDocumentTypes json -o "$types" "$APP/Contents/Info.plist" \
+    || { echo "CFBundleDocumentTypes missing"; return 1; }
+  python3 -I -c '
+import json, sys
+types = json.load(open(sys.argv[1]))
+bad = []
+for ext in ("mkv", "webm", "mp4", "mov", "avi", "flv"):
+    ranks = [t.get("LSHandlerRank") for t in types if ext in [e.lower() for e in t.get("CFBundleTypeExtensions", [])]]
+    print(ext, ",".join(str(x) for x in ranks) or "missing")
+    if not ranks or any(x != "Default" for x in ranks):
+        bad.append(ext)
+if bad:
+    print("document types lack LSHandlerRank Default for: " + " ".join(bad))
+    sys.exit(1)
+' "$types" || return 1
+  local usage
+  usage="$(plutil -extract NSDocumentsFolderUsageDescription raw -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
+  [ -n "$usage" ] || { echo "NSDocumentsFolderUsageDescription missing"; return 1; }
+  echo "NSDocumentsFolderUsageDescription: $usage"
 }
 
 requirement_check() {

@@ -163,7 +163,7 @@ import Testing
         #expect(try scratch.names() == ["resume.json"])
         let data = try Data(contentsOf: scratch.file("resume.json"))
         let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(json["version"] as? Int == 1)
+        #expect(json["version"] as? Int == 2)
         let entries = try #require(json["entries"] as? [String: Any])
         #expect(entries[key.hex] != nil)
     }
@@ -300,5 +300,101 @@ import Testing
         let store = ResumeStore(paths: ReelPaths(home: scratch.url))
         #expect(store.fileURL.lastPathComponent == "resume.json")
         #expect(store.fileURL.deletingLastPathComponent().standardizedFileURL == scratch.url.standardizedFileURL)
+    }
+
+    // MARK: Schema 2
+
+    private var sampleChoices: ResumeChoices {
+        ResumeChoices(
+            subtitle: .track(TrackIdentity(streamIndex: 3, language: "zho", title: "简英双语", codec: "ass")),
+            subtitleDelay: 0.5,
+            audioDelay: -0.1,
+            subtitleSize: 50,
+            subtitlePosition: 98,
+            loop: LoopState(start: .seconds(10), end: .seconds(20))
+        )
+    }
+
+    @Test func choicesAreSavedAndReadBack() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.remove() }
+        let clock = ManualClock()
+        let store = makeStore(scratch, clock: clock)
+        try store.record(key: key, position: .seconds(100), duration: duration, choices: sampleChoices, path: "/v/a.mkv")
+        try store.flush()
+        let reopened = makeStore(scratch, clock: clock)
+        #expect(try reopened.load() == .loaded)
+        #expect(reopened.entry(for: key)?.choices == sampleChoices)
+    }
+
+    @Test func recordWithoutChoicesKeepsTheSavedOnes() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.remove() }
+        let store = makeStore(scratch)
+        try store.record(key: key, position: .seconds(100), duration: duration, choices: sampleChoices, path: "/v/a.mkv")
+        try store.record(key: key, position: .seconds(160), duration: duration, path: "/v/a.mkv")
+        #expect(store.entry(for: key)?.position == .seconds(160))
+        #expect(store.entry(for: key)?.choices == sampleChoices)
+        try store.record(key: key, position: .seconds(170), duration: duration, choices: .empty, path: "/v/a.mkv")
+        #expect(store.entry(for: key)?.choices.isEmpty == true)
+    }
+
+    @Test func offSubtitleChoiceRoundTrips() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.remove() }
+        let clock = ManualClock()
+        let store = makeStore(scratch, clock: clock)
+        let choices = ResumeChoices(subtitle: .off)
+        try store.record(key: key, position: .seconds(100), duration: duration, choices: choices, path: "/v/a.mkv")
+        try store.flush()
+        let reopened = makeStore(scratch, clock: clock)
+        try reopened.load()
+        #expect(reopened.entry(for: key)?.subtitle == .off)
+    }
+
+    @Test func updateChoicesNeedsAnExistingEntry() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.remove() }
+        let store = makeStore(scratch)
+        #expect(try !store.updateChoices(key: key, choices: sampleChoices))
+        try store.record(key: key, position: .seconds(100), duration: duration, path: "/v/a.mkv")
+        #expect(try store.updateChoices(key: key, choices: sampleChoices))
+        #expect(store.entry(for: key)?.subtitleDelay == 0.5)
+        #expect(store.entry(for: key)?.position == .seconds(100))
+    }
+
+    @Test func versionOneFileLoadsWithEmptyChoicesAndIsWrittenAsVersionTwo() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.remove() }
+        let v1 = """
+            {
+              "entries" : {
+                "\(key.hex)" : {
+                  "audioStreamIndex" : 1,
+                  "duration" : 3600000000,
+                  "lastPath" : "/v/a.mkv",
+                  "position" : 754500000,
+                  "updatedAt" : "2026-10-01T10:00:00Z"
+                }
+              },
+              "version" : 1
+            }
+            """
+        try v1.write(to: scratch.file("resume.json"), atomically: true, encoding: .utf8)
+        let clock = ManualClock()
+        let store = makeStore(scratch, clock: clock)
+        #expect(try store.load() == .loaded)
+        let entry = try #require(store.entry(for: key))
+        #expect(entry.position == .seconds(754.5))
+        #expect(entry.audioStreamIndex == 1)
+        #expect(entry.choices.isEmpty)
+        try store.record(key: otherKey, position: .seconds(50), duration: duration, path: "/v/b.mkv")
+        try store.flush()
+        let data = try Data(contentsOf: scratch.file("resume.json"))
+        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["version"] as? Int == 2)
+        let reopened = makeStore(scratch, clock: clock)
+        try reopened.load()
+        #expect(reopened.entry(for: key)?.position == .seconds(754.5))
     }
 }

@@ -59,6 +59,8 @@ let package = Package(
         .testTarget(name: "ReelCoreTests", dependencies: ["ReelCore"]),
         .testTarget(name: "ReelEngineTests", dependencies: ["ReelEngine", "ReelCore", "CReelDeps"]),
         .testTarget(name: "ReelUITests", dependencies: ["ReelUI", "ReelCore"]),
+        // The app's own wiring (Now Playing, media keys, Picture in Picture) through fakes only.
+        .testTarget(name: "ReelTests", dependencies: ["Reel", "ReelUI", "ReelCore"], swiftSettings: mainActorByDefault),
     ],
     swiftLanguageModes: [.v6]
 )

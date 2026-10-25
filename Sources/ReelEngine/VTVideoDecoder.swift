@@ -82,8 +82,16 @@ public final class VTVideoDecoder: VideoDecoding {
     public var usesHardware: Bool {
         session.withLock { session in
             guard let session else { return false }
+            // The copy is returned at +1 into `value`, which then owns it.
             var value: CFTypeRef?
-            VTSessionCopyProperty(session, key: kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder, allocator: nil, valueOut: &value)
+            withUnsafeMutablePointer(to: &value) { pointer in
+                _ = VTSessionCopyProperty(
+                    session,
+                    key: kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
+                    allocator: nil,
+                    valueOut: UnsafeMutableRawPointer(pointer)
+                )
+            }
             return (value as? Bool) ?? false
         }
     }

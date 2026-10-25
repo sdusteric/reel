@@ -24,6 +24,9 @@ import Testing
     private static let vp9 = DecodeProfile(
         codec: "vp9", decoder: .hardware, width: 3840, height: 2160, frameDuration: frame60
     )
+    private static let vp9Hybrid = DecodeProfile(
+        codec: "vp9", decoder: .hardware, width: 3840, height: 2160, frameDuration: frame60, hybridSoftwareSeeks: true
+    )
 
     @Test func withoutALiveDecoderTheSeekStartsAtTheKeyframe() {
         let plan = SeekPlanner().planExact(
@@ -312,5 +315,68 @@ import Testing
         #expect(afterCancel == nil)
         let restarted = coalescer.request(.seconds(9))
         #expect(restarted == .seconds(9))
+    }
+
+}
+
+extension SeekPlannerTests {
+    // MARK: VP9 hybrid (D46)
+
+    @Test func aHybridWorstCaseRestartsInSoftwareAndPredictsTheSoftwareRate() {
+        let plan = SeekPlanner().planExact(
+            target: .seconds(4.98), index: Self.index(gop: 5), decoder: nil, profile: Self.vp9Hybrid
+        )
+        #expect(plan.start == .keyframe)
+        #expect(plan.decoder == .software)
+        // 300 frames at 576 fps.
+        #expect(plan.predictedMilliseconds > 450 && plan.predictedMilliseconds < 600)
+        #expect(plan.showsKeyframePreview)
+    }
+
+    @Test func aShortHybridSeekStaysOnHardware() {
+        let plan = SeekPlanner().planExact(
+            target: .seconds(5.3), index: Self.index(gop: 5), decoder: nil, profile: Self.vp9Hybrid
+        )
+        #expect(plan.framesToDecode <= DecoderPolicy.hybridSeekFrameThreshold)
+        #expect(plan.decoder == .hardware)
+    }
+
+    @Test func withoutTheHybridEveryRestartUsesThePrimaryDecoder() {
+        let plan = SeekPlanner().planExact(
+            target: .seconds(4.98), index: Self.index(gop: 5), decoder: nil, profile: Self.vp9
+        )
+        #expect(plan.decoder == .hardware)
+        let hevc = SeekPlanner().planExact(
+            target: .seconds(10.3), index: Self.index(gop: 10.4), decoder: nil, profile: Self.hevc
+        )
+        #expect(hevc.decoder == .hardware)
+    }
+
+    @Test func continuingKeepsTheLiveDecoderAndItsRate() {
+        // A software landing at 5.5 s, then a step forward of 1 s: 60 frames on the live software decoder.
+        let live = DecoderPosition(lastSubmittedPTS: .seconds(5.5), decoder: .software)
+        let plan = SeekPlanner().planExact(
+            target: .seconds(6.5), index: Self.index(gop: 5), decoder: live, profile: Self.vp9Hybrid
+        )
+        #expect(plan.start == .continueDecoder)
+        #expect(plan.decoder == .software)
+        #expect(plan.predictedMilliseconds < 150)
+        let onHardware = SeekPlanner().planExact(
+            target: .seconds(6.5), index: Self.index(gop: 5), decoder: DecoderPosition(lastSubmittedPTS: .seconds(5.5)), profile: Self.vp9Hybrid
+        )
+        // 60 frames on the live hardware decoder (249 fps) cost more than 91 from the keyframe in
+        // software (576 fps), so the planner restarts there.
+        #expect(onHardware.start == .keyframe)
+        #expect(onHardware.decoder == .software)
+    }
+
+    @Test func aMeasuredSoftwareRateMovesTheHybridPrediction() {
+        var planner = SeekPlanner()
+        // Software measured at half the default rate.
+        planner.rates.record(codec: "vp9", decoder: .software, width: 3840, height: 2160, frames: 288, seconds: 1)
+        planner.rates.record(codec: "vp9", decoder: .software, width: 3840, height: 2160, frames: 288, seconds: 1)
+        let plan = planner.planExact(target: .seconds(4.98), index: Self.index(gop: 5), decoder: nil, profile: Self.vp9Hybrid)
+        #expect(plan.decoder == .software)
+        #expect(plan.predictedMilliseconds > 600)
     }
 }

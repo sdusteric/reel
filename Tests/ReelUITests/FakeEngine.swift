@@ -15,6 +15,20 @@ final class FakeEngine: PlayerEngine {
         case muted(Bool)
         case timeInterval(Double)
         case close
+        // M2
+        case audioTrack(Int)
+        case videoTrack(Int)
+        case subtitle(SubtitleSelection)
+        case subtitleDelay(Double)
+        case audioDelay(Double)
+        case subtitleScale(Double)
+        case subtitlePosition(Double)
+        case subtitlesVisible(Bool)
+        case subtitleAvoidance(Double?)
+        case rate(Double)
+        case loop(LoopState)
+        case thumbnail(MediaTime)
+        case subtitleEvents
     }
 
     struct Options {
@@ -23,6 +37,14 @@ final class FakeEngine: PlayerEngine {
         var openError: EngineError?
         /// Answer each exact seek with a `.seekCompleted` that lands on the target.
         var completesExactSeeks = true
+        /// Extra streams (subtitles, more audio) added after the default video and audio.
+        var extraStreams: [StreamInfo] = []
+        /// Returned by `thumbnail(at:)` (the last at or before the time).
+        var thumbnails: [ThumbnailImage] = []
+        /// Returned by `subtitleEvents()`.
+        var subtitleEvents: [SubtitleEventTime] = []
+        /// Answer track, rate and loop commands with the matching events.
+        var echoesM2Commands = true
     }
 
     let events: AsyncStream<EngineEvent>
@@ -67,7 +89,7 @@ final class FakeEngine: PlayerEngine {
             url: url,
             formatName: "matroska,webm",
             duration: options.duration,
-            streams: [video, audio],
+            streams: [video, audio] + options.extraStreams,
             videoStreamIndex: 0,
             audioStreamIndex: 1,
             videoDecoder: .hardware,
@@ -82,7 +104,10 @@ final class FakeEngine: PlayerEngine {
             throw error
         }
         let info = mediaInfo(for: url)
+        let tracks = TrackState(info: info)
+        trackState.withLock { $0 = tracks }
         continuation.yield(.opened(info))
+        continuation.yield(.tracksChanged(tracks))
         continuation.yield(.stateChanged(.paused))
         return info
     }
@@ -117,6 +142,93 @@ final class FakeEngine: PlayerEngine {
     func close() async {
         record(.close)
         continuation.finish()
+    }
+
+    // MARK: M2
+
+    /// The track state the fake reports; updated by the M2 commands.
+    private let trackState = Mutex<TrackState?>(nil)
+
+    var currentTracks: TrackState? { trackState.withLock { $0 } }
+
+    func selectAudioTrack(_ streamIndex: Int) async {
+        record(.audioTrack(streamIndex))
+        updateTracks { $0.selectedAudio = streamIndex }
+    }
+
+    func selectVideoTrack(_ streamIndex: Int) async {
+        record(.videoTrack(streamIndex))
+        updateTracks { $0.selectedVideo = streamIndex }
+    }
+
+    func selectSubtitle(_ selection: SubtitleSelection) async {
+        record(.subtitle(selection))
+        updateTracks { state in
+            if case .external(let url) = selection, !state.subtitles.contains(where: { $0.id == .external(url) }) {
+                state.subtitles.append(SubtitleTrack(id: .external(url), format: SubtitleFormat(fileExtension: url.pathExtension) ?? .srt))
+            }
+            state.selectedSubtitle = selection
+        }
+    }
+
+    func setSubtitleDelay(_ seconds: Double) async {
+        record(.subtitleDelay(seconds))
+        updateTracks { $0.subtitleDelay = seconds }
+    }
+
+    func setAudioDelay(_ seconds: Double) async {
+        record(.audioDelay(seconds))
+        updateTracks { $0.audioDelay = seconds }
+    }
+
+    func setSubtitleScale(_ factor: Double) async {
+        record(.subtitleScale(factor))
+        updateTracks { $0.subtitleScale = factor }
+    }
+
+    func setSubtitlePosition(_ percent: Double) async {
+        record(.subtitlePosition(percent))
+        updateTracks { $0.subtitlePosition = percent }
+    }
+
+    func setSubtitlesVisible(_ visible: Bool) async {
+        record(.subtitlesVisible(visible))
+        updateTracks { $0.subtitlesVisible = visible }
+    }
+
+    func setSubtitleAvoidance(bottomInsetPoints: Double?) async {
+        record(.subtitleAvoidance(bottomInsetPoints))
+    }
+
+    func setRate(_ rate: Double) async {
+        record(.rate(rate))
+        if options.echoesM2Commands { continuation.yield(.rateChanged(rate)) }
+    }
+
+    func setLoop(_ loop: LoopState) async {
+        record(.loop(loop))
+        if options.echoesM2Commands { continuation.yield(.loopChanged(loop)) }
+    }
+
+    func thumbnail(at time: MediaTime) async -> ThumbnailImage? {
+        record(.thumbnail(time))
+        return options.thumbnails.last { $0.pts <= time }
+    }
+
+    func subtitleEvents() async -> [SubtitleEventTime] {
+        record(.subtitleEvents)
+        return options.subtitleEvents
+    }
+
+    /// Applies `change` to the track state (built from the last opened file) and emits it.
+    private func updateTracks(_ change: (inout TrackState) -> Void) {
+        let state = trackState.withLock { stored -> TrackState? in
+            guard var state = stored else { return nil }
+            change(&state)
+            stored = state
+            return state
+        }
+        if let state, options.echoesM2Commands { continuation.yield(.tracksChanged(state)) }
     }
 
     private func record(_ call: Call) {
@@ -169,14 +281,16 @@ let longSleep: @Sendable (TimeInterval) async -> Void = { _ in
     try? await Task.sleep(for: .seconds(3_600))
 }
 
-/// Polls `condition` on the main actor until it holds or two seconds pass.
+/// Polls `condition` on the main actor until it holds or 20 seconds pass.
 @MainActor
 func waitUntil(
     _ description: String,
     sourceLocation: SourceLocation = #_sourceLocation,
     _ condition: () -> Bool
 ) async {
-    let deadline = ContinuousClock.now + .seconds(2)
+    // Only bounds a hang: the condition is checked every 2 ms, and a loaded test run (4K decode
+    // suites beside this one) can delay the model's detached open steps by more than a second.
+    let deadline = ContinuousClock.now + .seconds(20)
     while !condition() {
         if ContinuousClock.now > deadline {
             Issue.record("timed out waiting for \(description)", sourceLocation: sourceLocation)
@@ -196,18 +310,53 @@ func makeModel(
     settings: Settings = Settings(),
     iinaDirectory: URL? = nil
 ) -> (PlayerModel, ResumeStore, StateStore) {
+    makeModel(engineFactory: { _ in engine }, scratch: scratch, clock: clock, settings: settings, iinaDirectory: iinaDirectory)
+}
+
+/// Like `makeModel(engine:)` with a new engine per opened file, as the app has (a closed fake
+/// engine finishes its event stream), and the folder scan of `EpisodeList.scan` over `scratch`.
+@MainActor
+func makeModel(
+    engineFactory: @escaping @Sendable (URL) -> FakeEngine,
+    scratch: UIScratch,
+    clock: TestClock = TestClock(),
+    settings: Settings = Settings(),
+    iinaDirectory: URL? = nil,
+    sleep: @escaping @Sendable (TimeInterval) async -> Void = longSleep
+) -> (PlayerModel, ResumeStore, StateStore) {
     let resume = ResumeStore(fileURL: scratch.file("resume.json"))
     let state = StateStore(fileURL: scratch.file("state.json"))
     let dependencies = PlayerModel.Dependencies(
-        makeEngine: { _ in engine },
+        makeEngine: { engineFactory($0) },
         settings: { settings },
         resumeStore: resume,
         stateStore: state,
         iina: IINAWatchLater(directory: iinaDirectory),
+        episodeList: { url in try? EpisodeList.scan(current: url) },
         now: { clock.now },
-        sleep: longSleep
+        sleep: sleep
     )
     return (PlayerModel(dependencies: dependencies), resume, state)
+}
+
+/// Hands out one `FakeEngine` per opened file and remembers them in order.
+final class EngineBox: @unchecked Sendable {
+    // Used from the main actor in tests and from the model's open path, one call at a time.
+    private let lock = NSLock()
+    private var engines: [FakeEngine] = []
+    private let options: @Sendable (URL) -> FakeEngine.Options
+
+    init(options: @escaping @Sendable (URL) -> FakeEngine.Options = { _ in FakeEngine.Options() }) {
+        self.options = options
+    }
+
+    func make(_ url: URL) -> FakeEngine {
+        let engine = FakeEngine(options: options(url))
+        lock.withLock { engines.append(engine) }
+        return engine
+    }
+
+    var all: [FakeEngine] { lock.withLock { engines } }
 }
 
 /// Opens `file` and waits until the fake engine's events up to "playing" have been handled, so a

@@ -45,6 +45,28 @@ skip() { record "$1" SKIP "${2:-}"; }
 note() { printf '  %s\n' "$*" >&2; }
 
 # ---------------------------------------------------------------------------------------------
+# JSON reports
+# ---------------------------------------------------------------------------------------------
+
+# py_check <json file> <python code> [args...]: loads the file as `r` and runs the code, which
+# appends to `parts` (what was measured) and `problems` (what is out of bounds); extra arguments
+# arrive as sys.argv[3:]. Prints one summary line and exits 1 when `problems` is not empty, or
+# when the file cannot be read (the traceback is the summary).
+py_check() {
+  local file=$1 code=$2
+  shift 2
+  python3 -I -c '
+import json, sys
+r = json.load(open(sys.argv[1]))
+problems = []
+parts = []
+exec(sys.argv[2])
+print(", ".join(parts) + ("  [" + "; ".join(problems) + "]" if problems else ""))
+sys.exit(1 if problems else 0)
+' "$file" "$code" "$@"
+}
+
+# ---------------------------------------------------------------------------------------------
 # Commands with logs
 # ---------------------------------------------------------------------------------------------
 

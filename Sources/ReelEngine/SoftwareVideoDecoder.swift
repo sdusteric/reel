@@ -41,11 +41,18 @@ public final class SoftwareVideoDecoder: VideoDecoding {
     private let channel = Channel()
     private let handler: DecodeHandler
     public let codecName: String
+    /// libavcodec frame threads.
+    public let threadCount: Int
+
+    /// Frames submitted for output before the first of them comes out: frame threading holds one
+    /// per thread but the decoding one.
+    public var outputDelay: Int { max(0, threadCount - 1) }
 
     public init(parameters: CodecParameters, format: VideoFormat?, threads: Int? = nil, handler: @escaping DecodeHandler) throws {
         self.handler = handler
         // Open once here so an unsupported codec fails at creation, not on the thread.
         let threadCount = threads ?? SoftwareVideoDecoder.performanceCoreCount
+        self.threadCount = threadCount
         let extradata = format?.convertedConfigurationRecord
         var context: UnsafeMutablePointer<AVCodecContext>? = try SoftwareVideoDecoder.openCodecContext(parameters: parameters.pointer, threads: threadCount, extradata: extradata)
         codecName = context.flatMap { $0.pointee.codec }.map { String(cString: $0.pointee.name) } ?? parameters.codecName

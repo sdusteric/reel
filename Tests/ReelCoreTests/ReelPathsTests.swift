@@ -56,6 +56,19 @@ import Testing
         #expect(ReelEnvironment(["REEL_LOG": "debug"]).debugLogging)
     }
 
+    @Test func screenshotsGoToTheVariableThenReelHomeThenPictures() {
+        let user = ["HOME": "/Users/someone"]
+        let explicit = ReelEnvironment(user.merging(["REEL_SCREENSHOTS": "/tmp/shots", "REEL_HOME": "/tmp/reel-home"]) { $1 })
+        #expect(explicit.screenshotsDirectory.path(percentEncoded: false) == "/tmp/shots/")
+        let home = ReelEnvironment(user.merging(["REEL_HOME": "/tmp/reel-home"]) { $1 })
+        #expect(home.screenshotsDirectory.path(percentEncoded: false) == "/tmp/reel-home/Screenshots/")
+        let emptyShots = ReelEnvironment(user.merging(["REEL_SCREENSHOTS": "", "REEL_HOME": "/tmp/reel-home"]) { $1 })
+        #expect(emptyShots.screenshotsDirectory.path(percentEncoded: false) == "/tmp/reel-home/Screenshots/")
+        for environment in [user, user.merging(["REEL_HOME": "", "REEL_SCREENSHOTS": ""]) { $1 }] {
+            #expect(ReelEnvironment(environment).screenshotsDirectory.path(percentEncoded: false) == "/Users/someone/Pictures/Reel/")
+        }
+    }
+
     @Test func fixturesDirectoryPrefersTheVariable() {
         let root = URL(filePath: "/repo", directoryHint: .isDirectory)
         #expect(ReelEnvironment([:]).fixturesDirectory(repoRoot: root)?.path(percentEncoded: false) == "/repo/build/fixtures/")

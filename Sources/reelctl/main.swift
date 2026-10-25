@@ -6,16 +6,24 @@ import ReelEngine
 // created with the `.headless` configuration, which attaches none unless REEL_ALLOW_AUDIO=1).
 
 let usage = """
-    usage: reelctl probe <file> [--json]
+    usage: reelctl probe <file> [--no-external] [--json]
            reelctl probe --build-info [--json]
            reelctl decode-bench <file> [--decoder hw|sw|auto] [--json]
-           reelctl seek-bench <file> [--runs N] [--json] [--decoder hw|sw|auto] [--seed N] [--psnr-samples N]
+           reelctl seek-bench <file> [--runs N] [--with-thumbs] [--json] [--decoder hw|sw|auto] [--seed N]
+                              [--psnr-samples N]
            reelctl av-sync <file> [--json] [--seeks N] [--rate R] [--seed N]
+           reelctl subs <file> [--track T] [--external path] [--no-external] [--at s] [--size WxH]
+                        [--frames N] [--out png] [--dump-text] [--json]
+           reelctl thumbs <file> [--runs N] [--fresh-cache] [--cold] [--out-dir dir] [--decoder hw|sw|auto] [--json]
+           reelctl episodes <file> [--json]
     """
 
 /// Parsed command line: positional arguments, boolean flags and `--name value` options.
 struct CommandArguments {
-    static let valueOptions: Set<String> = ["--decoder", "--runs", "--seed", "--psnr-samples", "--seeks", "--rate"]
+    static let valueOptions: Set<String> = [
+        "--decoder", "--runs", "--seed", "--psnr-samples", "--seeks", "--rate",
+        "--track", "--external", "--at", "--size", "--frames", "--out", "--out-dir",
+    ]
 
     var positional: [String] = []
     var flags: Set<String> = []
@@ -116,6 +124,12 @@ do {
         status = try await SeekBenchCommand.run(parsed)
     case "av-sync":
         status = try await AVSyncCommand.run(parsed)
+    case "subs":
+        status = try await SubsCommand.run(parsed)
+    case "thumbs":
+        status = try await ThumbsCommand.run(parsed)
+    case "episodes":
+        status = try EpisodesCommand.run(parsed)
     case "-h", "--help", "help":
         print(usage)
         status = 0

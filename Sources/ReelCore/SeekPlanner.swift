@@ -82,6 +82,9 @@ public struct DecodeProfile: Sendable, Hashable {
     /// Fraction of frames before the target that need not be submitted (non-reference frames),
     /// 0 when the codec or stream does not allow skipping. Between 0 and 1.
     public var skippableFraction: Double
+    /// The VP9 hybrid (D46): a restart that decodes more than
+    /// `DecoderPolicy.hybridSeekFrameThreshold` frames runs on the software decoder.
+    public var hybridSoftwareSeeks: Bool
 
     public init(
         codec: String,
@@ -89,7 +92,8 @@ public struct DecodeProfile: Sendable, Hashable {
         width: Int,
         height: Int,
         frameDuration: MediaTime,
-        skippableFraction: Double = 0
+        skippableFraction: Double = 0,
+        hybridSoftwareSeeks: Bool = false
     ) {
         self.codec = codec
         self.decoder = decoder
@@ -97,6 +101,7 @@ public struct DecodeProfile: Sendable, Hashable {
         self.height = height
         self.frameDuration = frameDuration.microseconds > 0 ? frameDuration : MediaTime(microseconds: 1)
         self.skippableFraction = min(max(skippableFraction, 0), 0.95)
+        self.hybridSoftwareSeeks = hybridSoftwareSeeks
     }
 }
 
@@ -104,9 +109,13 @@ public struct DecodeProfile: Sendable, Hashable {
 public struct DecoderPosition: Sendable, Hashable {
     /// Presentation time of the last frame submitted to the decoder.
     public var lastSubmittedPTS: MediaTime
+    /// The decoder holding that position when it is not the profile's (a software decode that
+    /// has not handed back to hardware yet). Nil means the profile's decoder.
+    public var decoder: VideoDecoderKind?
 
-    public init(lastSubmittedPTS: MediaTime) {
+    public init(lastSubmittedPTS: MediaTime, decoder: VideoDecoderKind? = nil) {
         self.lastSubmittedPTS = lastSubmittedPTS
+        self.decoder = decoder
     }
 }
 
@@ -125,6 +134,8 @@ public struct SeekPlan: Sendable, Hashable {
     public var showsKeyframePreview: Bool
     /// The old decoder state is discarded (flush both receivers, reset the decoder).
     public var needsFlush: Bool
+    /// The decoder the run uses: the live one when continuing, software for a long VP9 restart.
+    public var decoder: VideoDecoderKind
 }
 
 /// What a scrub will do.
@@ -168,21 +179,23 @@ public struct SeekPlanner: Sendable, Hashable {
         decoder: DecoderPosition?,
         profile: DecodeProfile
     ) -> SeekPlan {
-        let rate = rates.framesPerSecond(
-            codec: profile.codec, decoder: profile.decoder, width: profile.width, height: profile.height
-        )
         let keyframe = index.entry(atOrBefore: target)
         let restartPTS = keyframe?.pts ?? .zero
         let restartFrames = framesInclusive(from: restartPTS, to: target, profile: profile)
         // Both starts skip the same kind of frames, so both costs count only frames submitted.
         let restartEffective = effectiveFrames(restartFrames, profile: profile)
-        let restartMilliseconds = restartOverheadMilliseconds + milliseconds(frames: restartEffective, rate: rate)
+        let restartDecoder = DecoderPolicy.seekDecoder(
+            frames: restartEffective, primary: profile.decoder, hybrid: profile.hybridSoftwareSeeks
+        )
+        let restartMilliseconds = restartOverheadMilliseconds
+            + milliseconds(frames: restartEffective, rate: rate(profile, restartDecoder))
 
         if let decoder {
             let ahead = framesBetween(decoder.lastSubmittedPTS, target, profile: profile)
             if ahead >= 1 {
+                let live = decoder.decoder ?? profile.decoder
                 let effective = effectiveFrames(ahead, profile: profile)
-                let continueMilliseconds = milliseconds(frames: effective, rate: rate)
+                let continueMilliseconds = milliseconds(frames: effective, rate: rate(profile, live))
                 if continueMilliseconds <= restartMilliseconds {
                     return SeekPlan(
                         start: .continueDecoder,
@@ -191,7 +204,8 @@ public struct SeekPlanner: Sendable, Hashable {
                         framesToDecode: effective,
                         predictedMilliseconds: continueMilliseconds,
                         showsKeyframePreview: false,
-                        needsFlush: false
+                        needsFlush: false,
+                        decoder: live
                     )
                 }
             }
@@ -205,8 +219,13 @@ public struct SeekPlanner: Sendable, Hashable {
             predictedMilliseconds: restartMilliseconds,
             showsKeyframePreview: keyframePreviewEnabled && keyframe != nil
                 && restartFrames > 1 && restartMilliseconds > previewThresholdMilliseconds,
-            needsFlush: true
+            needsFlush: true,
+            decoder: restartDecoder
         )
+    }
+
+    private func rate(_ profile: DecodeProfile, _ decoder: VideoDecoderKind) -> Double {
+        rates.framesPerSecond(codec: profile.codec, decoder: decoder, width: profile.width, height: profile.height)
     }
 
     public func planScrub(target: MediaTime, index: KeyframeIndex, displayedKeyframe: MediaTime?) -> ScrubPlan {

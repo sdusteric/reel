@@ -31,6 +31,9 @@ final class PlayerContentView: DropAcceptingView {
         hostingView = hosting
         enableDrops()
         videoView.enableDrops()
+        let hasMedia: () -> Bool = { [weak model] in model?.hasMedia == true }
+        acceptsSubtitles = hasMedia
+        videoView.acceptsSubtitles = hasMedia
     }
 
     @available(*, unavailable)
@@ -70,6 +73,14 @@ final class PlayerContentView: DropAcceptingView {
         }
     }
 
+    /// Mouse back and forward go to the previous and next episode (design 9.6).
+    override func otherMouseDown(with event: NSEvent) {
+        guard let commandTarget, VideoSurfaceView.handleSideButton(event, model: model, target: commandTarget) else {
+            super.otherMouseDown(with: event)
+            return
+        }
+    }
+
     /// True while the pointer is over the picture rather than the controller.
     var isPointerOverVideo: Bool {
         guard let window else { return false }
@@ -97,8 +108,13 @@ final class VideoSurfaceView: DropAcceptingView {
 
     let model: PlayerModel
     private(set) var displayLayer = AVSampleBufferDisplayLayer()
+    /// Above the display layer, sized like it; the engine draws subtitles into a sublayer (8.6).
+    private(set) var subtitleLayer = CALayer()
     var onDoubleClick: (() -> Void)?
     var contextMenuProvider: (() -> NSMenu?)?
+    /// Called after the layers changed size or backing scale (window resize, fullscreen, display).
+    var onLayersResized: (() -> Void)?
+    weak var commandTarget: (any PlayerCommandTarget)?
 
     private var pendingClick: Task<Void, Never>?
     private var scrollAxis: ScrollAxis?
@@ -113,6 +129,7 @@ final class VideoSurfaceView: DropAcceptingView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
         configure(displayLayer)
+        configure(subtitleLayer)
     }
 
     @available(*, unavailable)
@@ -120,21 +137,49 @@ final class VideoSurfaceView: DropAcceptingView {
         nil
     }
 
-    /// A fresh display layer for a new engine, replacing the previous one. A layer's renderer
-    /// can belong to one synchronizer at a time, so layers are not reused across engines.
-    func prepareDisplayLayer() -> AVSampleBufferDisplayLayer {
-        let layer = AVSampleBufferDisplayLayer()
+    /// Fresh display and subtitle layers for a new engine, replacing the previous ones. A layer's
+    /// renderer can belong to one synchronizer at a time, and the old engine's subtitle sublayer
+    /// must not linger, so layers are not reused across engines.
+    func prepareLayers() -> (display: AVSampleBufferDisplayLayer, subtitles: CALayer) {
+        let display = AVSampleBufferDisplayLayer()
         displayLayer.removeFromSuperlayer()
-        displayLayer = layer
-        configure(layer)
-        return layer
+        displayLayer = display
+        configure(display)
+        let subtitles = CALayer()
+        subtitleLayer.removeFromSuperlayer()
+        subtitleLayer = subtitles
+        configure(subtitles)
+        return (display, subtitles)
     }
 
     private func configure(_ layer: AVSampleBufferDisplayLayer) {
         layer.videoGravity = .resizeAspect
         layer.backgroundColor = NSColor.black.cgColor
         layer.frame = bounds
+        self.layer?.insertSublayer(layer, at: 0)
+    }
+
+    private func configure(_ layer: CALayer) {
+        layer.frame = bounds
+        layer.contentsScale = backingScale
+        layer.masksToBounds = true
+        layer.actions = ["bounds": NSNull(), "position": NSNull(), "contents": NSNull()]
         self.layer?.addSublayer(layer)
+    }
+
+    private var backingScale: CGFloat {
+        window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        subtitleLayer.contentsScale = backingScale
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        subtitleLayer.contentsScale = backingScale
+        onLayersResized?()
     }
 
     override var isOpaque: Bool { true }
@@ -142,10 +187,13 @@ final class VideoSurfaceView: DropAcceptingView {
 
     override func layout() {
         super.layout()
+        let resized = subtitleLayer.frame != bounds
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         displayLayer.frame = bounds
+        subtitleLayer.frame = bounds
         CATransaction.commit()
+        if resized { onLayersResized?() }
     }
 
     // MARK: Clicks: single toggles pause after 250 ms, double toggles fullscreen, drag moves the window.
@@ -178,6 +226,21 @@ final class VideoSurfaceView: DropAcceptingView {
     override func rightMouseDown(with event: NSEvent) {
         guard let menu = contextMenuProvider?() else { return }
         NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard let commandTarget, VideoSurfaceView.handleSideButton(event, model: model, target: commandTarget) else {
+            super.otherMouseDown(with: event)
+            return
+        }
+    }
+
+    /// `MBTN_BACK` and `MBTN_FORWARD` through the key table.
+    static func handleSideButton(_ event: NSEvent, model: PlayerModel, target: any PlayerCommandTarget) -> Bool {
+        guard let chord = KeyHandling.chord(forMouseButton: event.buttonNumber),
+              let action = InputMap.standard.action(for: chord) else { return false }
+        KeyHandling.perform(action, model: model, target: target)
+        return true
     }
 
     // MARK: Scroll: horizontal seeks (scrubs, then exact at the end), vertical sets the volume.

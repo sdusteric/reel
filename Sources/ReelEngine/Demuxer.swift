@@ -56,7 +56,8 @@ public final class MediaSource {
     public let audioStreamIndex: Int?
     private(set) public var bytesRead: Int64 = 0
 
-    public init(url: URL) throws {
+    /// - Parameter preferredVideoStream: the video stream to select (Ctrl+Cmd+V), when it exists.
+    public init(url: URL, preferredVideoStream: Int? = nil) throws {
         self.url = url
         var context = try MediaSource.openContext(url: url, limited: true)
         if !MediaSource.hasParameters(context) {
@@ -67,10 +68,12 @@ public final class MediaSource {
         }
         self.context = context
         let streams = MediaSource.streams(context)
-        videoStreamIndex = streams.first { stream in
+        let videos = streams.filter { stream in
             stream.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_VIDEO
                 && (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) == 0
-        }.map { Int($0.pointee.index) }
+        }
+        videoStreamIndex = (videos.first { Int($0.pointee.index) == preferredVideoStream } ?? videos.first)
+            .map { Int($0.pointee.index) }
         let audio = streams.filter { $0.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO }
         audioStreamIndex = (audio.first { ($0.pointee.disposition & AV_DISPOSITION_DEFAULT) != 0 } ?? audio.first)
             .map { Int($0.pointee.index) }
@@ -283,6 +286,7 @@ public final class MediaSource {
             title: metadata("title"),
             isDefault: (stream.pointee.disposition & AV_DISPOSITION_DEFAULT) != 0,
             isForced: (stream.pointee.disposition & AV_DISPOSITION_FORCED) != 0,
+            isHearingImpaired: (stream.pointee.disposition & AV_DISPOSITION_HEARING_IMPAIRED) != 0,
             isAttachedPicture: (stream.pointee.disposition & AV_DISPOSITION_ATTACHED_PIC) != 0
         )
         if kind == .video {
@@ -346,6 +350,11 @@ public final class Demuxer: Sendable {
     public let videoFormat: VideoFormat?
     public let videoParameters: CodecParameters?
     public let audioParameters: CodecParameters?
+    /// Parameters of every audio and subtitle stream, for track switches and subtitle decoders.
+    public let streamParameters: [Int: CodecParameters]
+    /// Every audio and subtitle stream is kept in the store, so a track switch finds the packets
+    /// around the playhead without I/O (design section 9.7).
+    public let activeStreams: Set<Int>
     public let store: PacketStore
 
     private let source: Mutex<MediaSource>
@@ -370,8 +379,8 @@ public final class Demuxer: Sendable {
     /// Opens `url`, selects streams, reads the first video packets (for Annex B parameter sets and
     /// the colour probe) into the store and builds the video format. The read thread starts with
     /// `start()`.
-    public init(url: URL, limits: PacketStore.Limits = .standard) throws {
-        let source = try MediaSource(url: url)
+    public init(url: URL, limits: PacketStore.Limits = .standard, preferredVideoStream: Int? = nil) throws {
+        let source = try MediaSource(url: url, preferredVideoStream: preferredVideoStream)
         self.url = url
 
         var videoFormat: VideoFormat?
@@ -385,6 +394,14 @@ public final class Demuxer: Sendable {
         }
         if source.videoStreamIndex == nil, source.audioStreamIndex == nil { throw EngineError.noPlayableStream }
         audioParameters = try source.audioStreamIndex.flatMap(source.stream).map { try CodecParameters(copying: $0) }
+        var parameters: [Int: CodecParameters] = [:]
+        for index in 0..<source.streamCount {
+            guard let stream = source.stream(index) else { continue }
+            let type = stream.pointee.codecpar.pointee.codec_type
+            guard type == AVMEDIA_TYPE_AUDIO || type == AVMEDIA_TYPE_SUBTITLE else { continue }
+            parameters[index] = try CodecParameters(copying: stream)
+        }
+        streamParameters = parameters
         self.videoFormat = videoFormat
         self.videoParameters = videoParameters
 
@@ -400,7 +417,8 @@ public final class Demuxer: Sendable {
         hasCompleteIndex = Demuxer.isComplete(index: indexed, source: source)
         var keyframes = KeyframeIndex(indexed)
 
-        let active = Set([source.videoStreamIndex, source.audioStreamIndex].compactMap { $0 })
+        let active = Set([source.videoStreamIndex, source.audioStreamIndex].compactMap { $0 }).union(parameters.keys)
+        activeStreams = active
         for packet in initialPackets where active.contains(packet.streamIndex) {
             let prepared = packet.streamIndex == source.videoStreamIndex ? (videoFormat?.prepare(packet) ?? packet) : packet
             if prepared.streamIndex == source.videoStreamIndex, prepared.isKeyframe {

@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import ReelCore
 import Testing
 @testable import ReelUI
@@ -339,5 +341,273 @@ extension PlayerModelTests {
         await model.open(file)
         await model.waitForEngineCommands()
         #expect(engine.seeks.isEmpty)
+    }
+}
+
+// MARK: M2 behaviour
+
+extension PlayerModelTests {
+    @Test func loopsFollowCmdLAndShiftCmdL() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let engine = FakeEngine()
+        let (model, _, _) = makeModel(engine: engine, scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+
+        model.handle(.time(.seconds(60)))
+        model.toggleABLoop()
+        #expect(model.loop.phase == .startSet)
+        #expect(model.osd?.text == "Loop from 01:00")
+        model.handle(.time(.seconds(130)))
+        model.toggleABLoop()
+        #expect(model.loop.range == MediaTime.seconds(60)...MediaTime.seconds(130))
+        #expect(model.osd?.text == "Loop 01:00 to 02:10")
+        model.toggleABLoop()
+        #expect(model.loop == .off)
+        #expect(model.osd?.text == "Loop Off")
+
+        model.toggleFileLoop()
+        #expect(model.osd?.text == "Loop File On")
+        #expect(model.osd?.kind == .fileLoop)
+        await model.waitForEngineCommands()
+        #expect(engine.calls.filter { if case .loop = $0 { true } else { false } }.count == 4)
+        #expect(engine.calls.last == .loop(LoopState(fileLoop: true)))
+    }
+
+    @Test func aLoopPointEqualToAIsIgnored() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        model.handle(.time(.seconds(60)))
+        model.toggleABLoop()
+        model.toggleABLoop()
+        #expect(model.loop.phase == .startSet)
+    }
+
+    @Test func engineEventsFeedTracksRateAndLoop() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let engine = FakeEngine()
+        let (model, _, _) = makeModel(engine: engine, scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        model.handle(.rateChanged(2))
+        #expect(model.rate == 2)
+        model.handle(.loopChanged(LoopState(fileLoop: true)))
+        #expect(model.loop.fileLoop)
+        model.handle(.thumbnailsProgress(done: 12, total: 40))
+        #expect(model.thumbnailProgress == ThumbnailProgress(done: 12, total: 40))
+        let missing = URL(filePath: "/x/y.srt")
+        model.handle(.tracksChanged(TrackState(subtitles: [SubtitleTrack(id: .external(missing), format: .srt)])))
+        model.handle(.subtitleTrackFailed(.external(missing), reason: "Unreadable"))
+        #expect(model.tracks?.subtitles.first?.unsupportedReason == "Unreadable")
+    }
+
+    @Test func speedCarriesToTheNextOpenAndIsClampedForTheEngine() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let first = FakeEngine()
+        let second = FakeEngine()
+        let engines = [first, second]
+        let (model, _, _) = makeModel(engineFactory: { url in url.lastPathComponent == "a.mkv" ? engines[0] : engines[1] }, scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        model.setRate(0.1)
+        #expect(model.rate == 0.25)
+        model.setRate(1.25)
+        await model.open(try scratch.makeMediaFile("b.mkv"))
+        await model.waitForEngineCommands()
+        #expect(second.calls.contains(.rate(1.25)), "the speed carries within a session (D45)")
+    }
+
+    @Test func subtitleSizeIsRememberedAndResentOnTheNextFile() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let engine = FakeEngine()
+        let (model, _, state) = makeModel(engine: engine, scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        model.adjustSubtitleScale(delta: 0.1)
+        #expect(model.osd?.text == "Subtitle Size 50")
+        #expect(state.state.subtitleSize == 50)
+        model.moveSubtitle(by: -1)
+        model.moveSubtitle(by: -1)
+        #expect(model.osd?.text == "Subtitle Position 2%")
+        model.resetSubtitleStyle()
+        #expect(model.subtitleStyle == SubtitleStyle())
+        #expect(state.state.subtitleSize == 45)
+    }
+
+    @Test func delaysShowSignedOSDsAndSurviveResetToZero() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        model.adjustSubtitleDelay(by: 0.5)
+        #expect(model.osd?.text == "Subtitle Delay +0.5 s")
+        model.adjustAudioDelay(by: -0.1)
+        #expect(model.osd?.text == "Audio Delay -0.1 s")
+        model.setSubtitleDelay(0)
+        #expect(model.osd?.text == "Subtitle Delay 0.0 s")
+    }
+
+    @Test func choicesAreSavedWithTheResumePositionAndComeBack() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        var options = FakeEngine.Options()
+        options.extraStreams = [
+            StreamInfo(index: 2, kind: .subtitle, codec: "ass", timeBase: Rational(1, 1_000), language: "zho"),
+            StreamInfo(index: 3, kind: .subtitle, codec: "subrip", timeBase: Rational(1, 1_000), language: "eng"),
+        ]
+        let file = try scratch.makeMediaFile("a.mkv")
+        let first = FakeEngine(options: options)
+        let (model, resume, _) = makeModel(engine: first, scratch: scratch)
+        await openAndSettle(model, file)
+        await waitUntil("tracks") { model.tracks != nil }
+        model.selectSubtitle(.embedded(streamIndex: 3))
+        model.setSubtitleDelay(1.5)
+        model.handle(.time(.seconds(120)))
+        model.saveResume(flush: true)
+        let entry = try #require(resume.entry(for: try ContentKey(contentsOf: file)))
+        #expect(entry.subtitleDelay == 1.5)
+        guard case .track(let identity)? = entry.subtitle else {
+            Issue.record("the subtitle choice was not saved")
+            return
+        }
+        #expect(identity.language == "eng")
+
+        let second = FakeEngine(options: options)
+        let (again, reloaded, _) = makeModel(engine: second, scratch: scratch)
+        try reloaded.load()
+        await again.open(file)
+        await waitUntil("the saved choice is applied") { second.calls.contains(.subtitle(.embedded(streamIndex: 3))) }
+        await again.waitForEngineCommands()
+        #expect(second.calls.contains(.subtitleDelay(1.5)))
+    }
+
+    @Test func episodeButtonsHideForAFileAloneAndDisableAtTheEnds() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let alone = try scratch.makeMediaFile("Only.mkv")
+        let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch)
+        await openAndSettle(model, alone)
+        #expect(!model.showsEpisodeButtons)
+        await model.playNextEpisode()
+        #expect(model.title == "Only.mkv", "next on a lone file does nothing")
+    }
+
+    @Test func episodeButtonsShowForASeasonAndFollowTheEnds() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let first = try scratch.makeMediaFile("Show.S01E01.mkv")
+        _ = try scratch.makeMediaFile("Show.S01E02.mkv")
+        let boxes = EngineBox()
+        let (model, _, _) = makeModel(engineFactory: { boxes.make($0) }, scratch: scratch)
+        await openAndSettle(model, first)
+        #expect(model.showsEpisodeButtons)
+        #expect(!model.hasPreviousEpisode)
+        #expect(model.hasNextEpisode)
+        await model.playPreviousEpisode()
+        #expect(boxes.all.count == 1, "previous on the first episode does nothing")
+        await model.playNextEpisode()
+        #expect(model.osd?.text == "Show S01E02")
+        #expect(!model.hasNextEpisode)
+        #expect(model.hasPreviousEpisode)
+    }
+
+    @Test func hoverLoadsTheThumbnailFromTheEngine() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        var options = FakeEngine.Options()
+        options.thumbnails = [
+            ThumbnailImage(jpeg: try Self.jpeg(width: 384, height: 216), pts: .seconds(300), width: 384, height: 216),
+        ]
+        let engine = FakeEngine(options: options)
+        let (model, _, _) = makeModel(engine: engine, scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+
+        model.setSeekHover(0.6)
+        await waitUntil("the thumbnail arrives") { model.hoverThumbnail != nil }
+        #expect(engine.calls.contains(.thumbnail(.seconds(360))))
+        #expect(model.hoverThumbnail?.width == 384)
+        #expect(ThumbnailPill.imageHeight(width: 384, height: 216) == 108)
+        #expect(ThumbnailPill.imageHeight(width: 100, height: 100) == 144, "clamped to 144")
+        #expect(ThumbnailPill.imageHeight(width: 400, height: 100) == 80, "clamped to 80")
+
+        model.setSeekHover(0.1)
+        await waitUntil("no thumbnail before the first keyframe") { model.hoverThumbnail == nil }
+        model.setSeekHover(0.6)
+        await waitUntil("it comes back") { model.hoverThumbnail != nil }
+        model.setSeekHover(nil)
+        #expect(model.hoverThumbnail == nil)
+    }
+
+    @Test func fullscreenEndsAtUsesTheSpeed() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let engine = FakeEngine()
+        let reference = Date(timeIntervalSinceReferenceDate: 0)
+        let resume = ResumeStore(fileURL: scratch.file("resume.json"))
+        let dependencies = PlayerModel.Dependencies(
+            makeEngine: { _ in engine },
+            resumeStore: resume,
+            wallClock: { reference },
+            sleep: longSleep
+        )
+        let model = PlayerModel(dependencies: dependencies)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        let normal = try #require(model.endsAtLabel)
+        #expect(normal == "Ends at " + reference.addingTimeInterval(600).formatted(date: .omitted, time: .shortened))
+        model.setRate(2)
+        #expect(model.endsAtLabel == "Ends at " + reference.addingTimeInterval(300).formatted(date: .omitted, time: .shortened))
+        model.setFullscreen(true)
+        #expect(model.isFullscreen)
+    }
+
+    @Test func pictureInPictureAndScreenshotHooks() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        var requests: [Bool] = []
+        model.onPictureInPictureRequest = { requests.append($0) }
+        model.togglePictureInPicture()
+        model.setPictureInPicture(active: true, snapshot: ShotRenderer.placeholderFrame(width: 8, height: 8))
+        model.togglePictureInPicture()
+        #expect(requests == [true, false])
+        #expect(model.pictureInPictureSnapshot != nil)
+        model.setPictureInPicture(active: false)
+        #expect(model.pictureInPictureSnapshot == nil)
+
+        var revealed: [URL] = []
+        model.onRevealScreenshot = { revealed.append($0) }
+        let saved = scratch.file("shot.png")
+        model.showScreenshotSaved(at: saved)
+        #expect(model.osd?.text == "Screenshot Saved")
+        #expect(model.osd?.showsReveal == true)
+        model.revealScreenshot()
+        #expect(revealed == [saved])
+    }
+
+    @Test func openingAnotherFileClearsPerFileState() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let (model, _, _) = makeModel(engineFactory: { _ in FakeEngine() }, scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        model.setSubtitleDelay(2)
+        model.toggleFileLoop()
+        model.openPanel(.audio)
+        await model.open(try scratch.makeMediaFile("b.mkv"))
+        #expect(model.subtitleDelay == 0)
+        #expect(model.loop == .off)
+        #expect(model.activePanel == nil)
+        #expect(!model.chrome.isPanelOpen)
+    }
+
+    private static func jpeg(width: Int, height: Int) throws -> Data {
+        let image = try #require(ShotRenderer.placeholderFrame(width: width, height: height))
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        return data as Data
     }
 }

@@ -13,7 +13,24 @@ swift build --scratch-path "$TMPDIR/reel-<task>"
 swift test --scratch-path "$TMPDIR/reel-<task>" --filter <Suite>
 swiftlint lint --strict
 REEL_SCRATCH="$TMPDIR/reel-check" scripts/check.sh   # every gate
+scripts/shots.sh                # 16 scenarios x light/dark background screenshots into build/shots
+REEL_SCRATCH="$TMPDIR/reel-accept" scripts/accept.sh offline   # M1 criteria, then the M2 group
 ```
+
+`reelctl` (headless, always with `REEL_HOME` set to a temp dir; `swift build -c release` puts it in
+`$SCRATCH/release/reelctl`). `probe`, `decode-bench`, `seek-bench` and `av-sync` are the M1 tools;
+the M2 ones:
+
+```sh
+reelctl subs <file> [--no-external] [--at s] [--size WxH] [--frames N] [--dump-text] --json   # track choice, charset, ink, bbox, fonts, render_ms
+reelctl thumbs <file> [--runs N] [--fresh-cache] [--cold] --json   # count, setup_ms, per_thumb_ms, image widths, cache_reload_ms
+reelctl episodes <file> --json                            # folder order, index, next and previous
+reelctl seek-bench <file> [--runs N] [--with-thumbs] --json   # M1 seek thresholds, VP9 hand-offs; --with-thumbs restarts generation before each gated exact seek
+```
+
+`scripts/shots.sh` compiles `scripts/shot-stats.swift` into
+`build/shots/bin`; `shot-stats <png> --ink x y w h` counts white pixels with a dark outline
+(subtitle text).
 
 - Run `scripts/deps.sh` before the first build: it builds the static libraries and syncs their
   headers into `Sources/CReelDeps/include/` (gitignored). Swift must never see Homebrew's FFmpeg

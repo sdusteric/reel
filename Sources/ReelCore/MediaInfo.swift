@@ -114,6 +114,8 @@ public struct StreamInfo: Sendable, Codable, Hashable, Identifiable {
     public var title: String?
     public var isDefault: Bool
     public var isForced: Bool
+    /// `AV_DISPOSITION_HEARING_IMPAIRED` (SDH subtitles).
+    public var isHearingImpaired: Bool
     public var isAttachedPicture: Bool
     public var video: VideoParameters?
     public var audio: AudioParameters?
@@ -133,6 +135,7 @@ public struct StreamInfo: Sendable, Codable, Hashable, Identifiable {
         title: String? = nil,
         isDefault: Bool = false,
         isForced: Bool = false,
+        isHearingImpaired: Bool = false,
         isAttachedPicture: Bool = false,
         video: VideoParameters? = nil,
         audio: AudioParameters? = nil
@@ -149,6 +152,7 @@ public struct StreamInfo: Sendable, Codable, Hashable, Identifiable {
         self.title = title
         self.isDefault = isDefault
         self.isForced = isForced
+        self.isHearingImpaired = isHearingImpaired
         self.isAttachedPicture = isAttachedPicture
         self.video = video
         self.audio = audio
@@ -209,4 +213,8 @@ public struct MediaInfo: Sendable, Codable, Hashable {
     }
 
     public var title: String { url.lastPathComponent }
+
+    public func streams(of kind: StreamKind) -> [StreamInfo] {
+        streams.filter { $0.kind == kind }
+    }
 }

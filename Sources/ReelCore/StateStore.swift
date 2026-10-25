@@ -31,6 +31,10 @@ public struct RememberedState: VersionedDocument {
     public var controllerCenterX: Double
     /// Distance from the window bottom to the controller's bottom edge, as a fraction of the window height.
     public var controllerBottomY: Double
+    /// (M2) Subtitle size for new files on the 45 scale, set when changed from the panel.
+    public var subtitleSize: Double
+    /// (M2) Playback menu "Auto-Advance to Next Episode", on by default.
+    public var autoAdvance: Bool
 
     public init(
         version: Int = RememberedState.currentVersion,
@@ -38,7 +42,9 @@ public struct RememberedState: VersionedDocument {
         showRemainingTime: Bool = true,
         windowFrame: WindowFrame? = nil,
         controllerCenterX: Double = RememberedState.defaultControllerCenterX,
-        controllerBottomY: Double = RememberedState.defaultControllerBottomY
+        controllerBottomY: Double = RememberedState.defaultControllerBottomY,
+        subtitleSize: Double = SubtitleStyle.baseSize,
+        autoAdvance: Bool = true
     ) {
         self.version = version
         self.volume = RememberedState.clampVolume(volume)
@@ -46,6 +52,8 @@ public struct RememberedState: VersionedDocument {
         self.windowFrame = windowFrame
         self.controllerCenterX = RememberedState.clampFraction(controllerCenterX)
         self.controllerBottomY = RememberedState.clampFraction(controllerBottomY)
+        self.subtitleSize = SubtitleStyle(size: subtitleSize).size
+        self.autoAdvance = autoAdvance
     }
 
     public init(from decoder: any Decoder) throws {
@@ -60,7 +68,9 @@ public struct RememberedState: VersionedDocument {
             controllerCenterX: try container.decodeIfPresent(Double.self, forKey: .controllerCenterX)
                 ?? defaults.controllerCenterX,
             controllerBottomY: try container.decodeIfPresent(Double.self, forKey: .controllerBottomY)
-                ?? defaults.controllerBottomY
+                ?? defaults.controllerBottomY,
+            subtitleSize: try container.decodeIfPresent(Double.self, forKey: .subtitleSize) ?? defaults.subtitleSize,
+            autoAdvance: try container.decodeIfPresent(Bool.self, forKey: .autoAdvance) ?? defaults.autoAdvance
         )
     }
 
@@ -113,7 +123,9 @@ public final class StateStore: Sendable {
                 showRemainingTime: state.showRemainingTime,
                 windowFrame: state.windowFrame,
                 controllerCenterX: state.controllerCenterX,
-                controllerBottomY: state.controllerBottomY
+                controllerBottomY: state.controllerBottomY,
+                subtitleSize: state.subtitleSize,
+                autoAdvance: state.autoAdvance
             )
         }
         try store.flushIfDue()

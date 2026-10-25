@@ -1,7 +1,9 @@
 import AVFoundation
+import CoreGraphics
 import CoreMedia
 import CReelDeps
 import Foundation
+import QuartzCore
 import ReelCore
 import Synchronization
 
@@ -18,13 +20,26 @@ public struct PositionUpdate: Sendable, Hashable {
     public var duration: MediaTime?
     public var audioStreamIndex: Int?
     public var reason: Reason
+    /// The track choices and subtitle settings in force, for the resume entry's choices (M2).
+    public var tracks: TrackState?
+    public var loop: LoopState
 
-    public init(url: URL, position: MediaTime, duration: MediaTime?, audioStreamIndex: Int?, reason: Reason) {
+    public init(
+        url: URL,
+        position: MediaTime,
+        duration: MediaTime?,
+        audioStreamIndex: Int?,
+        reason: Reason,
+        tracks: TrackState? = nil,
+        loop: LoopState = .off
+    ) {
         self.url = url
         self.position = position
         self.duration = duration
         self.audioStreamIndex = audioStreamIndex
         self.reason = reason
+        self.tracks = tracks
+        self.loop = loop
     }
 }
 
@@ -47,6 +62,17 @@ public actor PlaybackEngine: PlayerEngine {
         public var backgroundExactDelay: Duration
         /// Read-ahead and keep-behind limits of the packet store.
         public var storeLimits: PacketStore.Limits
+        /// Seek-bar thumbnails in the background after the first frame (design section 9.4).
+        /// `REEL_NO_THUMBNAILS=1` turns them off whatever this says.
+        public var generatesThumbnails: Bool
+        /// Where thumbnail packs go; nil uses `REEL_HOME/Caches/thumbnails` of `environment`.
+        public var thumbnailCacheDirectory: URL?
+        /// List the video's folder (and Subs/, Subtitles/) for sidecar subtitle files.
+        public var discoversExternalSubtitles: Bool
+        /// Read every text subtitle event in the background after open (D34).
+        public var prefetchesSubtitles: Bool
+        /// The VP9 hybrid (D46). Off only for benches that compare against pure hardware.
+        public var hybridDecoding: Bool
 
         public init(
             audioMode: AudioOutput.Mode,
@@ -55,7 +81,12 @@ public actor PlaybackEngine: PlayerEngine {
             keyframePreview: Bool = true,
             preventsDisplaySleep: Bool,
             backgroundExactDelay: Duration = PlaybackEngine.backgroundExactDelay,
-            storeLimits: PacketStore.Limits = .standard
+            storeLimits: PacketStore.Limits = .standard,
+            generatesThumbnails: Bool = false,
+            thumbnailCacheDirectory: URL? = nil,
+            discoversExternalSubtitles: Bool = true,
+            prefetchesSubtitles: Bool = true,
+            hybridDecoding: Bool = true
         ) {
             self.audioMode = audioMode
             self.environment = environment
@@ -64,15 +95,28 @@ public actor PlaybackEngine: PlayerEngine {
             self.preventsDisplaySleep = preventsDisplaySleep
             self.backgroundExactDelay = backgroundExactDelay
             self.storeLimits = storeLimits
+            self.generatesThumbnails = generatesThumbnails
+            self.thumbnailCacheDirectory = thumbnailCacheDirectory
+            self.discoversExternalSubtitles = discoversExternalSubtitles
+            self.prefetchesSubtitles = prefetchesSubtitles
+            self.hybridDecoding = hybridDecoding
         }
 
         /// The app.
-        public static var playback: Configuration { Configuration(audioMode: .playback, preventsDisplaySleep: true) }
-        /// Tests, benches and reelctl: silent, no display sleep assertion.
+        public static var playback: Configuration {
+            Configuration(audioMode: .playback, preventsDisplaySleep: true, generatesThumbnails: true)
+        }
+        /// Tests, benches and reelctl: silent, no display sleep assertion, no thumbnail cache.
         public static var headless: Configuration { Configuration(audioMode: .headless, preventsDisplaySleep: false) }
+
+        var thumbnailsEnabled: Bool { generatesThumbnails && !environment.thumbnailsDisabled }
     }
 
     public static let positionSaveInterval = MediaTime.seconds(5)
+    /// Frame threads of the VP9 hybrid's software decoder: 16 (FFmpeg's recommended maximum)
+    /// decode the 4K60 fixture's 300-frame GOP in about 0.5 s, against 0.75 s with the 6
+    /// performance cores; each thread holds back one more frame before the first comes out.
+    static let hybridThreads = min(max(ProcessInfo.processInfo.activeProcessorCount, 4), 16)
     /// A drag that rests this long starts the exact seek in the background (design section 7.5).
     public static let backgroundExactDelay: Duration = .milliseconds(150)
     /// Playback resumes after a seek once audio is primed, or after this long without it.
@@ -95,6 +139,8 @@ public actor PlaybackEngine: PlayerEngine {
     private struct VideoSession {
         let format: VideoFormat
         var decoder: any VideoDecoding
+        /// The VP9 hybrid's software decoder for long exact seeks (D46); nil for other streams.
+        var hybrid: SoftwareVideoDecoder?
         let orderer: PresentationOrderer
         let credits: FrameCredits
         let sink: AsyncStream<DecodedFrame>.Continuation
@@ -106,6 +152,7 @@ public actor PlaybackEngine: PlayerEngine {
     private struct AudioSession {
         let thread: AudioDecodeThread
         let streamIndex: Int
+        let codec: String
     }
 
     private struct Session {
@@ -113,9 +160,13 @@ public actor PlaybackEngine: PlayerEngine {
         var info: MediaInfo
         let demuxer: Demuxer
         var video: VideoSession?
-        let audio: AudioSession?
+        var audio: AudioSession?
         /// Presentation time of the first frame (mpegts files start later than zero).
         let start: MediaTime
+        var tracks: TrackState
+        let subtitles: SubtitleTrackStore
+        var prefetcher: SubtitlePrefetcher?
+        var thumbnails: ThumbnailGenerator?
     }
 
     private var session: Session?
@@ -123,6 +174,8 @@ public actor PlaybackEngine: PlayerEngine {
     private var generation: UInt64 = 0
     private var planner: SeekPlanner
     private var forceKeyframePreviewForTesting = false
+    /// Tests: the clock time the last in-generation audio restart started at.
+    private(set) var lastAudioRestartTimeForTesting: MediaTime?
     private var coalescer = ScrubCoalescer()
     private var resumeAfterSeek = false
     private var displayedKeyframe: MediaTime?
@@ -152,6 +205,22 @@ public actor PlaybackEngine: PlayerEngine {
     private var audioEventsTask: Task<Void, Never>?
     private var headlessLayer: HeadlessLayer?
 
+    // M2 state (design sections 8, 9.7 to 9.12).
+    /// Subtitle rendering on its own serial queue; the app's layer is attached to it.
+    public nonisolated let subtitlePresenter: SubtitlePresenter
+    private let pipCompositor = PiPFrameCompositor()
+    private var audioDelay = MediaTime.zero
+    private var loop = LoopState.off
+    private var loopBoundaryObserver: Any?
+    private var pictureInPicture = false
+    private var thumbnailsPaused = false
+    private var subtitleFeedTask: Task<Void, Never>?
+    private var subtitleLoadTask: Task<Void, Never>?
+    private var bitmapBackfillTask: Task<Void, Never>?
+    private var bitmapBackfilled: ClosedRange<MediaTime>?
+    private var subtitleEventCount = 0
+    private var reportedCharsets: [TrackID: String] = [:]
+
     private var positionHandler: (@Sendable (PositionUpdate) -> Void)?
     private var reportWaiters: [UInt64: [CheckedContinuation<SeekReport?, Never>]] = [:]
     private var completedReports: [UInt64: SeekReport] = [:]
@@ -164,6 +233,12 @@ public actor PlaybackEngine: PlayerEngine {
         displaySleep = DisplaySleep(enabled: configuration.preventsDisplaySleep)
         planner = SeekPlanner(keyframePreviewEnabled: configuration.keyframePreview)
         timeEvents = TimeEventTimer(interval: 0.1, synchronizer: synchronizer, sink: eventSink)
+        let synchronizer = self.synchronizer
+        subtitlePresenter = SubtitlePresenter(clock: { MediaTime(synchronizer.currentTime()) ?? .zero })
+        let sink = eventSink
+        subtitlePresenter.setFailureHandler { track, reason in
+            sink.yield(.subtitleTrackFailed(track, reason: reason))
+        }
     }
 
     deinit {
@@ -180,6 +255,20 @@ public actor PlaybackEngine: PlayerEngine {
         await installVideoReceiver(receiver, keeping: nil)
     }
 
+    /// Adds the app's subtitle layer: a layer above the display layer, sized like it, with
+    /// `contentsScale` set to the backing scale. The engine draws into a sublayer of it.
+    @MainActor
+    public func attach(subtitleLayer layer: CALayer) {
+        subtitlePresenter.attach(layer)
+    }
+
+    /// Call after the subtitle layer changed size (window resize, fullscreen), so a paused
+    /// subtitle is drawn again at the new size.
+    @MainActor
+    public func subtitleLayerDidLayout() {
+        subtitlePresenter.layerDidLayout()
+    }
+
     @MainActor
     private func attachHeadlessLayer() async {
         let holder = HeadlessLayer()
@@ -188,7 +277,8 @@ public actor PlaybackEngine: PlayerEngine {
     }
 
     private func installVideoReceiver(_ receiver: sending AVSampleBufferVideoRenderer.Receiver, keeping holder: HeadlessLayer?) async {
-        let output = VideoOutput(receiver: receiver)
+        let synchronizer = self.synchronizer
+        let output = VideoOutput(receiver: receiver, clock: { MediaTime(synchronizer.currentTime()) ?? .zero })
         await output.setGeneration(generation)
         shared.videoOutput.withLock { $0 = output }
         headlessLayer = holder
@@ -241,14 +331,24 @@ public actor PlaybackEngine: PlayerEngine {
 
     @discardableResult
     public func open(_ url: URL) async throws -> MediaInfo {
+        try await open(url, preferredVideoStream: nil)
+    }
+
+    private func open(_ url: URL, preferredVideoStream: Int?) async throws -> MediaInfo {
         guard !closed else { throw EngineError.notOpen }
         if session != nil { await closeSession() }
         setState(.opening)
         trace("open \(url.lastPathComponent)")
         let demuxer: Demuxer
+        let discovers = configuration.discoversExternalSubtitles
+        let external: [SubtitleTrack]
         do {
             let limits = configuration.storeLimits
-            demuxer = try await Task.detached(priority: .userInitiated) { try Demuxer(url: url, limits: limits) }.value
+            (demuxer, external) = try await Task.detached(priority: .userInitiated) {
+                let demuxer = try Demuxer(url: url, limits: limits, preferredVideoStream: preferredVideoStream)
+                let external = discovers ? ExternalSubtitles.scan(for: url).map(\.track) : []
+                return (demuxer, external)
+            }.value
         } catch {
             try fail(error)
         }
@@ -264,7 +364,7 @@ public actor PlaybackEngine: PlayerEngine {
             }
             info.videoDecoder = video?.decoder.kind
         }
-        let audio = makeAudioSession(demuxer)
+        let audio = info.audioStreamIndex.flatMap { makeAudioSession(demuxer, streamIndex: $0) }
         if video == nil, audio == nil {
             demuxer.stop()
             try fail(EngineError.noPlayableStream)
@@ -286,16 +386,93 @@ public actor PlaybackEngine: PlayerEngine {
         }
         trace("open: decoders and outputs ready")
         let start = demuxer.keyframeIndex.first?.pts ?? demuxer.store.storedKeyframes.first ?? info.startTime ?? .zero
-        session = Session(url: url, info: info, demuxer: demuxer, video: video, audio: audio, start: start)
+        var tracks = TrackState(info: info, external: external)
+        tracks.selectedAudio = audio?.streamIndex
+        let subtitles = SubtitleTrackStore()
+        session = Session(
+            url: url, info: info, demuxer: demuxer, video: video, audio: audio, start: start,
+            tracks: tracks, subtitles: subtitles, prefetcher: nil, thumbnails: nil
+        )
+        resetPerFileSettings(info: info, store: subtitles)
         demuxer.start()
         startWorkers()
         eventSink.yield(.opened(info))
+        eventSink.yield(.tracksChanged(tracks))
         setState(.ready)
         resumeAfterSeek = false
         if let generation = await beginExact(.exact(start), requestedAt: monotonicNanos(), resume: false) {
             _ = await waitForReport(generation: generation, timeout: .seconds(5))
         }
+        startBackgroundWork()
+        applySubtitleSelection()
         return info
+    }
+
+    /// Per-file settings start from their defaults; the app carries changed ones over (9.8).
+    private func resetPerFileSettings(info: MediaInfo, store: SubtitleTrackStore) {
+        audioDelay = .zero
+        if loop != .off {
+            loop = .off
+            eventSink.yield(.loopChanged(loop))
+        }
+        updateLoopBoundary()
+        bitmapBackfilled = nil
+        subtitleEventCount = 0
+        reportedCharsets = [:]
+        let video = info.videoStream?.video
+        subtitlePresenter.reset(store: store, videoWidth: video?.width ?? 0, videoHeight: video?.height ?? 0)
+    }
+
+    /// After the first frame: the subtitle prefetch and the thumbnails, which must not slow the open.
+    private func startBackgroundWork() {
+        guard var current = session else { return }
+        if current.tracks.subtitles.contains(where: { $0.format.isText }) {
+            // The first launch builds PingFang for libass (about a second); do it before a line is due.
+            SubtitleFonts.prepareInBackground()
+        }
+        if configuration.prefetchesSubtitles, current.tracks.subtitles.contains(where: { !$0.isExternal && $0.format.isText }) {
+            let prefetcher = SubtitlePrefetcher(url: current.url, store: current.subtitles)
+            prefetcher.start()
+            current.prefetcher = prefetcher
+        }
+        if configuration.thumbnailsEnabled, current.video != nil {
+            let cache = configuration.thumbnailCacheDirectory.map { ThumbnailCache(directory: $0) }
+                ?? ThumbnailCache(paths: configuration.environment.paths)
+            current.thumbnails = startThumbnails(url: current.url, cache: cache)
+        }
+        session = current
+    }
+
+    private func startThumbnails(url: URL, cache: ThumbnailCache, beforeStart: ((ThumbnailGenerator) -> Void)? = nil) -> ThumbnailGenerator {
+        // The content key reads 128 KiB; the generator thread computes nothing before start.
+        let key = try? ContentKey(contentsOf: url)
+        let generator = ThumbnailGenerator(url: url, key: key, cache: key == nil ? nil : cache)
+        if thumbnailsPaused { generator.pause() }
+        beforeStart?(generator)
+        let sink = eventSink
+        generator.start { done, total in
+            if done == total || done % 8 == 0 { sink.yield(.thumbnailsProgress(done: done, total: total)) }
+        }
+        return generator
+    }
+
+    /// Benches: replaces the open file's thumbnail generator with a new one writing into
+    /// `cacheDirectory` (an empty folder, so it generates), to make generation overlap a chosen
+    /// phase. It pauses during seeks like the first one. Nil when nothing is open or the file
+    /// has no video.
+    @discardableResult
+    public func restartThumbnails(cacheDirectory: URL) -> ThumbnailGenerator? {
+        restartThumbnails(cacheDirectory: cacheDirectory, beforeStart: nil)
+    }
+
+    /// Tests: `beforeStart` sees the new generator before its thread starts.
+    func restartThumbnails(cacheDirectory: URL, beforeStart: ((ThumbnailGenerator) -> Void)?) -> ThumbnailGenerator? {
+        guard var current = session, current.video != nil else { return nil }
+        current.thumbnails?.close()
+        let generator = startThumbnails(url: current.url, cache: ThumbnailCache(directory: cacheDirectory), beforeStart: beforeStart)
+        current.thumbnails = generator
+        session = current
+        return generator
     }
 
     public func play() async {
@@ -384,6 +561,394 @@ public actor PlaybackEngine: PlayerEngine {
         eventSink.finish()
     }
 
+    // MARK: Tracks, subtitles, speed, loops (design sections 8, 9.7 to 9.12)
+
+    /// The track lists and subtitle settings of the open file.
+    public var trackState: TrackState? { session?.tracks }
+    /// FFmpeg codec name of the audio stream playing.
+    public var audioCodecName: String? { session?.audio?.codec }
+    /// Software to hardware hand-offs of the VP9 hybrid since open (D46).
+    public nonisolated var decoderHandoffs: Int { shared.decoderHandoffs.load(ordering: .relaxed) }
+    /// The rate playback runs at (1 is normal).
+    public var rate: Double { Double(playbackRate) }
+    public var loopState: LoopState { loop }
+    /// The thumbnail generator of the open file, when thumbnails are on.
+    public var thumbnailGenerator: ThumbnailGenerator? { session?.thumbnails }
+    /// The text events of the open file, shared with the prefetcher and the renderer.
+    public var subtitleStore: SubtitleTrackStore? { session?.subtitles }
+
+    public func selectAudioTrack(_ streamIndex: Int) async {
+        guard var current = session, current.audio?.streamIndex != streamIndex,
+              current.tracks.audio.contains(where: { $0.streamIndex == streamIndex }) else { return }
+        let oldConsumer = audioConsumerTask
+        guard let replacement = makeAudioSession(current.demuxer, streamIndex: streamIndex) else {
+            trace("audio stream \(streamIndex) has no decoder")
+            return
+        }
+        let replaced = current.audio
+        // Swapped in before any await, so a seek that starts meanwhile already feeds the new track.
+        current.audio = replacement
+        current.info.audioStreamIndex = streamIndex
+        current.tracks.selectedAudio = streamIndex
+        session = current
+        emitTracks()
+        await restartAudio(replaced: replaced, oldConsumer: oldConsumer)
+    }
+
+    /// Ctrl+Cmd+V: reopens the file on the other video stream at the same position, keeping the
+    /// audio and subtitle choices, the delays and the loop.
+    public func selectVideoTrack(_ streamIndex: Int) async {
+        guard let current = session, current.info.videoStreamIndex != streamIndex,
+              current.tracks.video.contains(where: { $0.streamIndex == streamIndex }) else { return }
+        let position = currentTime
+        let playing = wantsPlayback(nil)
+        let kept = current.tracks
+        let keptDelay = audioDelay
+        let keptLoop = loop
+        do {
+            _ = try await open(current.url, preferredVideoStream: streamIndex)
+        } catch {
+            return
+        }
+        if let audio = kept.selectedAudio { await selectAudioTrack(audio) }
+        if keptDelay != .zero { await setAudioDelay(keptDelay.seconds) }
+        await setSubtitleDelay(kept.subtitleDelay)
+        await setSubtitleScale(kept.subtitleScale)
+        await setSubtitlePosition(kept.subtitlePosition)
+        await setSubtitlesVisible(kept.subtitlesVisible)
+        await selectSubtitle(kept.selectedSubtitle)
+        await setLoop(keptLoop)
+        _ = await beginExact(.exact(position), requestedAt: monotonicNanos(), resume: playing)
+    }
+
+    public func selectSubtitle(_ selection: SubtitleSelection) async {
+        guard var current = session else { return }
+        if case .external(let url) = selection, !current.tracks.subtitles.contains(where: { $0.id == .external(url) }) {
+            current.tracks.subtitles.append(PlaybackEngine.externalTrack(url, video: current.url))
+        }
+        if let id = selection.trackID {
+            guard let track = current.tracks.subtitles.first(where: { $0.id == id }), track.isSupported else {
+                session = current
+                emitTracks()
+                return
+            }
+        }
+        current.tracks.selectedSubtitle = selection
+        session = current
+        applySubtitleSelection()
+        emitTracks()
+    }
+
+    /// A subtitle file the user added: parsed like a sidecar when its name matches the video.
+    static func externalTrack(_ url: URL, video: URL) -> SubtitleTrack {
+        if let parsed = ExternalSubtitles.discover(for: video, candidates: [url]).first { return parsed.track }
+        let format = SubtitleFormat(fileExtension: url.pathExtension)
+        let reason = format?.isText == true ? nil : "Not a supported subtitle file"
+        return SubtitleTrack(id: .external(url), format: format ?? .other, unsupportedReason: reason)
+    }
+
+    public func setSubtitleDelay(_ seconds: Double) async {
+        guard seconds.isFinite, session != nil else { return }
+        session?.tracks.subtitleDelay = seconds
+        subtitlePresenter.update { $0.delay = .seconds(seconds) }
+        backfillBitmapSubtitles(around: currentTime)
+        emitTracks()
+    }
+
+    public func setAudioDelay(_ seconds: Double) async {
+        guard seconds.isFinite, session != nil else { return }
+        let delay = MediaTime.seconds(seconds)
+        session?.tracks.audioDelay = seconds
+        emitTracks()
+        guard delay != audioDelay else { return }
+        audioDelay = delay
+        if session?.audio != nil, state.hasMedia { await restartAudio() }
+    }
+
+    public func setSubtitleScale(_ factor: Double) async {
+        guard factor.isFinite, factor > 0, session != nil else { return }
+        let scale = min(max(factor, SubtitleStyle.minimumSize / SubtitleStyle.baseSize), SubtitleStyle.maximumSize / SubtitleStyle.baseSize)
+        session?.tracks.subtitleScale = scale
+        subtitlePresenter.update { $0.scale = scale }
+        emitTracks()
+    }
+
+    public func setSubtitlePosition(_ percent: Double) async {
+        guard percent.isFinite, session != nil else { return }
+        let position = min(max(percent, SubtitleStyle.positionRange.lowerBound), SubtitleStyle.positionRange.upperBound)
+        session?.tracks.subtitlePosition = position
+        subtitlePresenter.update { $0.position = position }
+        emitTracks()
+    }
+
+    public func setSubtitlesVisible(_ visible: Bool) async {
+        guard session != nil else { return }
+        session?.tracks.subtitlesVisible = visible
+        subtitlePresenter.update { $0.visible = visible }
+        emitTracks()
+    }
+
+    public func setSubtitleAvoidance(bottomInsetPoints: Double?) async {
+        let inset = bottomInsetPoints.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        subtitlePresenter.update { $0.bottomInsetPoints = inset }
+    }
+
+    /// Playback rate 0.25 to 4 (`PlaybackSpeed`); audio keeps its pitch (`.timeDomain`).
+    public func setRate(_ rate: Double) async {
+        let clamped = PlaybackSpeed.clamp(rate)
+        playbackRate = Float(clamped)
+        if state == .playing { synchronizer.rate = playbackRate }
+        eventSink.yield(.rateChanged(clamped))
+    }
+
+    public func setLoop(_ newLoop: LoopState) async {
+        var value = newLoop
+        if let start = value.start, let end = value.end, end < start {
+            value.start = end
+            value.end = start
+        }
+        guard value != loop else { return }
+        loop = value
+        updateLoopBoundary()
+        eventSink.yield(.loopChanged(value))
+    }
+
+    public func thumbnail(at time: MediaTime) async -> ThumbnailImage? {
+        session?.thumbnails?.thumbnail(at: time)
+    }
+
+    /// Event times of the selected text track on the playback clock (shifted by the delay).
+    public func subtitleEvents() async -> [SubtitleEventTime] {
+        guard let current = session, let id = current.tracks.selectedSubtitle.trackID,
+              current.tracks.selectedSubtitleTrack?.format.isText == true else { return [] }
+        let delay = MediaTime.seconds(current.tracks.subtitleDelay)
+        return current.subtitles.eventTimes(id).map { SubtitleEventTime(start: $0.start + delay, end: $0.end + delay) }
+    }
+
+    /// Shift+Right / Shift+Left: an exact seek to the start of the next or previous line.
+    /// Returns the time sought to, or nil when there is no such line.
+    @discardableResult
+    public func seekSubtitleLine(forward: Bool) async -> MediaTime? {
+        let events = await subtitleEvents()
+        let now = currentTime
+        guard let target = forward ? SubtitleLines.next(after: now, in: events) : SubtitleLines.previous(before: now, in: events) else {
+            return nil
+        }
+        await seek(.exact(target))
+        return target
+    }
+
+    /// While Picture in Picture runs, a visible subtitle is composited into each frame before
+    /// enqueue, because the PiP window shows only the display layer (8.6, D37).
+    public func setPictureInPictureActive(_ active: Bool) {
+        guard active != pictureInPicture else { return }
+        pictureInPicture = active
+        subtitlePresenter.update { $0.pictureInPicture = active }
+        guard active else {
+            shared.frameTransform.withLock { $0 = nil }
+            return
+        }
+        let presenter = subtitlePresenter
+        let compositor = pipCompositor
+        shared.frameTransform.withLock { transform in
+            transform = FrameTransform { frame in
+                guard let subtitle = presenter.pictureInPictureSubtitle() else { return frame }
+                return compositor.composite(frame, subtitle: subtitle.bitmap, renderedWidth: subtitle.width, renderedHeight: subtitle.height)
+            }
+        }
+    }
+
+    public var pictureInPictureCompositor: PiPFrameCompositor { pipCompositor }
+
+    /// Cmd+S: the frame on screen at its native size with the subtitle composited, as a PNG in
+    /// `ReelEnvironment.screenshotsDirectory` (design section 9.12). Never waits for a decode.
+    public func takeScreenshot() async throws -> URL {
+        guard let current = session else { throw EngineError.notOpen }
+        let time = currentTime
+        guard let frame = shared.frameShown(at: time) ?? shared.lastLandedFrame.withLock({ $0 }) else {
+            throw EngineError.decoderFailed("no frame is on screen")
+        }
+        let subtitle = await subtitlePresenter.snapshot(width: frame.width, height: frame.height)
+        let directory = configuration.environment.screenshotsDirectory
+        let stem = current.url.deletingPathExtension().lastPathComponent
+        let position = MediaTime(frame.presentationTime) ?? time
+        return try await Task.detached(priority: .userInitiated) {
+            try Screenshot.save(frame: frame.pixelBuffer, subtitle: subtitle, directory: directory, stem: stem, position: position)
+        }.value
+    }
+
+    private func emitTracks() {
+        guard let tracks = session?.tracks else { return }
+        eventSink.yield(.tracksChanged(tracks))
+    }
+
+    /// Starts showing the selected subtitle: an embedded track is fed from the store (and the
+    /// prefetcher for text), an external file is read whole in the background.
+    private func applySubtitleSelection() {
+        subtitleFeedTask?.cancel()
+        subtitleFeedTask = nil
+        subtitleLoadTask?.cancel()
+        subtitleLoadTask = nil
+        bitmapBackfillTask?.cancel()
+        bitmapBackfillTask = nil
+        bitmapBackfilled = nil
+        subtitleEventCount = 0
+        subtitlePresenter.clearTimeline()
+        guard let current = session, let id = current.tracks.selectedSubtitle.trackID,
+              let track = current.tracks.subtitles.first(where: { $0.id == id }) else {
+            subtitlePresenter.select(nil, format: nil)
+            return
+        }
+        subtitlePresenter.update { settings in
+            settings.delay = .seconds(current.tracks.subtitleDelay)
+            settings.scale = current.tracks.subtitleScale
+            settings.position = current.tracks.subtitlePosition
+            settings.visible = current.tracks.subtitlesVisible
+        }
+        switch id {
+        case .external(let url):
+            subtitlePresenter.select(nil, format: nil)
+            let store = current.subtitles
+            let title = track.title
+            subtitleLoadTask = Task.detached(priority: .userInitiated) { [weak self] in
+                do {
+                    let loaded = try ExternalSubtitleLoader.load(url, title: title, into: store)
+                    guard !Task.isCancelled else { return }
+                    await self?.externalSubtitleLoaded(id, format: loaded.format)
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    await self?.subtitleTrackFailed(id, reason: error.localizedDescription)
+                }
+            }
+        case .embedded(let index):
+            guard let parameters = current.demuxer.streamParameters[index], track.format.isText || track.format.isBitmap else {
+                subtitleTrackFailed(id, reason: "\(track.format.tag): no decoder")
+                return
+            }
+            subtitlePresenter.select(id, format: track.format)
+            let feeder = SubtitlePacketFeeder(
+                packets: current.demuxer.store,
+                streamIndex: index,
+                parameters: parameters,
+                fileName: current.url.lastPathComponent,
+                title: track.title,
+                language: track.language,
+                tracks: current.subtitles,
+                presenter: subtitlePresenter
+            )
+            subtitleFeedTask = Task.detached(priority: .utility) { [weak self] in
+                if let failure = await feeder.run() { await self?.subtitleTrackFailed(id, reason: failure) }
+            }
+            backfillBitmapSubtitles(around: currentTime)
+        }
+    }
+
+    private func externalSubtitleLoaded(_ id: TrackID, format: SubtitleFormat) {
+        guard session?.tracks.selectedSubtitle.trackID == id else { return }
+        subtitlePresenter.select(id, format: format)
+        refreshSubtitleCharsets()
+    }
+
+    /// Section 8.7: the track is listed as disabled with the reason, and subtitles go off.
+    private func subtitleTrackFailed(_ id: TrackID, reason: String) {
+        guard var current = session, let index = current.tracks.subtitles.firstIndex(where: { $0.id == id }) else { return }
+        current.tracks.subtitles[index].unsupportedReason = reason
+        if current.tracks.selectedSubtitle.trackID == id {
+            current.tracks.selectedSubtitle = .off
+            subtitlePresenter.select(nil, format: nil)
+        }
+        session = current
+        eventSink.yield(.subtitleTrackFailed(id, reason: reason))
+        emitTracks()
+    }
+
+    /// PGS and DVD tracks are not prefetched: after a seek the display set showing at the target
+    /// is found by reading back up to 10 s on a private demuxer (section 8.1).
+    private func backfillBitmapSubtitles(around time: MediaTime) {
+        guard let current = session, case .embedded(let index)? = current.tracks.selectedSubtitle.trackID,
+              current.tracks.selectedSubtitleTrack?.format.isBitmap == true else { return }
+        let subtitleTime = max(time - .seconds(current.tracks.subtitleDelay), .zero)
+        let from = max(subtitleTime - .seconds(10), .zero)
+        if let done = bitmapBackfilled, done.contains(from), done.contains(subtitleTime) { return }
+        bitmapBackfilled = from...subtitleTime
+        bitmapBackfillTask?.cancel()
+        let url = current.url
+        let presenter = subtitlePresenter
+        bitmapBackfillTask = Task.detached(priority: .utility) {
+            let sets = SubtitlePacketFeeder.readBitmapSets(url: url, streamIndex: index, from: from, through: subtitleTime + .seconds(1))
+            guard !Task.isCancelled else { return }
+            presenter.insert(sets)
+        }
+    }
+
+    /// New events of the selected text track (prefetch or the store) show without waiting for
+    /// the next frame tick while paused.
+    private func refreshSubtitleEvents(session current: Session) {
+        guard let id = current.tracks.selectedSubtitle.trackID else { return }
+        let count = current.subtitles.track(id)?.events.count ?? 0
+        guard count != subtitleEventCount else { return }
+        subtitleEventCount = count
+        subtitlePresenter.requestRender()
+    }
+
+    /// A text track found to be GB18030, Big5 or Latin-1 says so on its second line (8.3).
+    private func refreshSubtitleCharsets() {
+        guard var current = session else { return }
+        var changed = false
+        for index in current.tracks.subtitles.indices {
+            let id = current.tracks.subtitles[index].id
+            guard let charset = current.subtitles.charset(of: id), charset != .utf8,
+                  current.tracks.subtitles[index].charset != charset.rawValue else { continue }
+            current.tracks.subtitles[index].charset = charset.rawValue
+            changed = true
+        }
+        guard changed else { return }
+        session = current
+        emitTracks()
+    }
+
+    // MARK: Loops
+
+    private func updateLoopBoundary() {
+        if let observer = loopBoundaryObserver {
+            synchronizer.removeTimeObserver(observer)
+            loopBoundaryObserver = nil
+        }
+        guard session != nil, let range = loop.range else { return }
+        let target = range.lowerBound
+        loopBoundaryObserver = synchronizer.addBoundaryTimeObserver(forTimes: [NSValue(time: range.upperBound.cmTime)], queue: nil) { [weak self] in
+            Task { await self?.loopBoundaryReached(target: target) }
+        }
+    }
+
+    /// B reached: an exact seek to A, normally a store hit landing in one GOP decode (9.12).
+    private func loopBoundaryReached(target: MediaTime) async {
+        guard state == .playing, let range = loop.range, range.lowerBound == target,
+              currentTime + .milliseconds(50) >= range.upperBound else { return }
+        trace("loop: B \(range.upperBound) reached, back to \(target)")
+        _ = await beginExact(.exact(target), requestedAt: monotonicNanos(), resume: true)
+    }
+
+    private func restartLoop(at target: MediaTime, endedAt end: MediaTime) async {
+        guard state == .playing, !loop.allowsAutoAdvance else { return }
+        trace("loop: end \(end) reached, back to \(target)")
+        _ = await beginExact(.exact(target), requestedAt: monotonicNanos(), resume: true)
+    }
+
+    // MARK: Thumbnails
+
+    private func pauseThumbnails() {
+        guard !thumbnailsPaused else { return }
+        thumbnailsPaused = true
+        session?.thumbnails?.pause()
+    }
+
+    private func resumeThumbnails() {
+        guard thumbnailsPaused else { return }
+        thumbnailsPaused = false
+        session?.thumbnails?.resume()
+    }
+
     // MARK: Setup
 
     private func makeVideoSession(format: VideoFormat, parameters: CodecParameters) throws -> VideoSession {
@@ -416,13 +981,25 @@ public actor PlaybackEngine: PlayerEngine {
         } else {
             decoder = try SoftwareVideoDecoder(parameters: parameters, format: format, handler: handler)
         }
+        // VP9 hybrid (D46): a second, software decoder for long exact seeks, with more threads
+        // than playback needs, since nothing else decodes while a seek is in flight.
+        var hybrid: SoftwareVideoDecoder?
+        if configuration.hybridDecoding, decoder.kind == .hardware, policy.allowsHybridSeeks(for: traits) {
+            hybrid = try? SoftwareVideoDecoder(
+                parameters: parameters,
+                format: format,
+                threads: PlaybackEngine.hybridThreads,
+                handler: handler
+            )
+        }
         let frameDuration = format.frameDuration ?? MediaTime(microseconds: 33_333)
         let profile = DecodeProfile(
             codec: format.codecName,
             decoder: decoder.kind,
             width: format.width,
             height: format.height,
-            frameDuration: frameDuration
+            frameDuration: frameDuration,
+            hybridSoftwareSeeks: hybrid != nil
         )
         presenterTask?.cancel()
         presenterTask = Task.detached(priority: .userInitiated) { [shared, weak self] in
@@ -431,6 +1008,7 @@ public actor PlaybackEngine: PlayerEngine {
         return VideoSession(
             format: format,
             decoder: decoder,
+            hybrid: hybrid,
             orderer: orderer,
             credits: credits,
             sink: sink,
@@ -474,8 +1052,9 @@ public actor PlaybackEngine: PlayerEngine {
         }
     }
 
-    private func makeAudioSession(_ demuxer: Demuxer) -> AudioSession? {
-        guard let parameters = demuxer.audioParameters, let index = demuxer.info.audioStreamIndex else { return nil }
+    private func makeAudioSession(_ demuxer: Demuxer, streamIndex index: Int) -> AudioSession? {
+        guard let parameters = demuxer.streamParameters[index] ?? demuxer.audioParameters.flatMap({ $0.streamIndex == index ? $0 : nil })
+        else { return nil }
         let decoder: AudioDecoder
         do {
             decoder = try AudioDecoder(
@@ -485,12 +1064,14 @@ public actor PlaybackEngine: PlayerEngine {
         } catch {
             return nil
         }
+        let codec = decoder.codecName
+        decoder.timestampOffset = audioDelay
         let thread = AudioDecodeThread(decoder: decoder)
         audioConsumerTask?.cancel()
         audioConsumerTask = Task.detached(priority: .userInitiated) { [shared, weak self] in
             await PlaybackEngine.consumeAudio(thread: thread, shared: shared, engine: self)
         }
-        return AudioSession(thread: thread, streamIndex: index)
+        return AudioSession(thread: thread, streamIndex: index, codec: codec)
     }
 
     private func startWorkers() {
@@ -523,10 +1104,20 @@ public actor PlaybackEngine: PlayerEngine {
         sendPosition(.closed)
         _ = nextGeneration()
         coalescer.cancel()
-        for task in [audioFeedTask, backgroundExactTask, audioResumeTask, scrubWatchdogTask] { task?.cancel() }
+        for task in [audioFeedTask, backgroundExactTask, audioResumeTask, scrubWatchdogTask, subtitleFeedTask, subtitleLoadTask, bitmapBackfillTask] {
+            task?.cancel()
+        }
+        subtitleFeedTask = nil
+        subtitleLoadTask = nil
+        bitmapBackfillTask = nil
+        current.prefetcher?.cancel()
+        current.thumbnails?.close()
+        thumbnailsPaused = false
+        subtitlePresenter.reset(store: nil, videoWidth: 0, videoHeight: 0)
         _ = await stopFeeder()
         parkedFeed = nil
         current.video?.decoder.invalidate()
+        current.video?.hybrid?.invalidate()
         current.video?.sink.finish()
         current.audio?.thread.stop()
         current.demuxer.stop()
@@ -541,7 +1132,10 @@ public actor PlaybackEngine: PlayerEngine {
         displayedKeyframe = nil
         lastScrubTarget = nil
         lastPeriodicSave = nil
+        shared.recentFrames.withLock { $0.removeAll() }
+        shared.lastLandedFrame.withLock { $0 = nil }
         session = nil
+        updateLoopBoundary()
         setState(.idle)
     }
 
@@ -590,7 +1184,7 @@ public actor PlaybackEngine: PlayerEngine {
             return current
         }
         if let superseded {
-            let report = superseded.report(bytesNow: session?.demuxer.bytesRead ?? 0, cancelled: true)
+            let report = superseded.report(bytesNow: session?.demuxer.bytesRead ?? 0, cancelled: true, handoffs: decoderHandoffs)
             complete(report)
         }
         return generation
@@ -630,7 +1224,10 @@ public actor PlaybackEngine: PlayerEngine {
         synchronizer.setRate(0, time: target.cmTime)
         setRealTime(false)
         resetEndTracking()
-        current.audio?.thread.seek(dropBefore: target, generation: generation)
+        pauseThumbnails()
+        // Text and picture change together: the subtitle updates when the target frame lands.
+        subtitlePresenter.update { $0.holding = true }
+        current.audio?.thread.seek(dropBefore: target - audioDelay, generation: generation, timestampOffset: audioDelay)
         audioFeedTask?.cancel()
 
         let demuxer = current.demuxer
@@ -656,6 +1253,7 @@ public actor PlaybackEngine: PlayerEngine {
             }
             estimateSkippable()
             let profile = session?.video?.profile ?? video.profile
+            run.decoder = video.decoder.kind
             let index = demuxer.keyframeIndex
             // Without a complete index the keyframe before the target may not have been read yet;
             // then the demuxer seeks to the target itself and finds it.
@@ -667,14 +1265,19 @@ public actor PlaybackEngine: PlayerEngine {
             trace("exact g\(generation) \(target): \(plan.start) from \(plan.startPTS), \(plan.framesToDecode) frames, preview \(plan.showsKeyframePreview)")
             let feedState: VideoFeedState
             let spec: FeedSpec
+            run.decoder = plan.decoder
             if plan.start == .continueDecoder, let previous {
                 run.start = .continueDecoder
                 feedState = previous
                 // The store reads ahead from its playhead; the decode continues from here to the target.
                 demuxer.store.setPlayhead(target, readThrough: target)
-                spec = FeedSpec(generation: generation, target: target, keyframe: nil, preview: false, scrubOnly: false, awaitDemuxerSeek: false)
+                spec = FeedSpec(
+                    generation: generation, target: target, keyframe: nil, preview: false, scrubOnly: false,
+                    awaitDemuxerSeek: false, decoder: plan.decoder
+                )
             } else {
                 video.decoder.reset(generation: generation)
+                video.hybrid?.reset(generation: generation)
                 let keyframe = known ? (plan.keyframe?.pts ?? current.start) : target
                 let hit = demuxer.seek(toKeyframe: keyframe, readThrough: target, generation: generation)
                 demuxerMiss = !hit
@@ -687,11 +1290,14 @@ public actor PlaybackEngine: PlayerEngine {
                     keyframe: keyframe,
                     preview: plan.showsKeyframePreview || forceKeyframePreviewForTesting,
                     scrubOnly: false,
-                    awaitDemuxerSeek: !hit
+                    awaitDemuxerSeek: !hit,
+                    decoder: plan.decoder
                 )
             }
             video.orderer.reset()
-            video.credits.reset(generation: generation)
+            // A software run of the hybrid needs credits for every frame its threads hold back.
+            let hybridCredits = plan.decoder == .software ? video.hybrid.map { $0.outputDelay + 2 } : nil
+            video.credits.reset(generation: generation, limit: hybridCredits)
             shared.run.withLock { $0 = run }
             await prepareOutputs(generation: generation)
             guard generation == self.generation else { return generation }
@@ -752,6 +1358,12 @@ public actor PlaybackEngine: PlayerEngine {
         setState(.seeking)
         lastScrubTarget = target
         resetEndTracking()
+        pauseThumbnails()
+        // The line shown while scrubbing is the one at the pointer, not at the keyframe (8.6).
+        subtitlePresenter.update { settings in
+            settings.holding = false
+            settings.scrubTime = target
+        }
         current.audio?.thread.seek(dropBefore: nil, generation: generation)
         audioFeedTask?.cancel()
         let demuxer = current.demuxer
@@ -772,7 +1384,7 @@ public actor PlaybackEngine: PlayerEngine {
             run.landedPTS = target
             run.targetLandedNanos = monotonicNanos()
             shared.run.withLock { $0 = run }
-            complete(run.report(bytesNow: demuxer.bytesRead, cancelled: false))
+            complete(run.report(bytesNow: demuxer.bytesRead, cancelled: false, handoffs: decoderHandoffs))
             finishScrub(generation: generation)
             return generation
         }
@@ -789,7 +1401,7 @@ public actor PlaybackEngine: PlayerEngine {
             run.landedPTS = displayedKeyframe
             run.targetLandedNanos = monotonicNanos()
             shared.run.withLock { $0 = run }
-            complete(run.report(bytesNow: demuxer.bytesRead, cancelled: false))
+            complete(run.report(bytesNow: demuxer.bytesRead, cancelled: false, handoffs: decoderHandoffs))
             finishScrub(generation: generation)
             return generation
         case .noKeyframe:
@@ -804,6 +1416,7 @@ public actor PlaybackEngine: PlayerEngine {
         _ = await stopFeeder()
         guard generation == self.generation else { return generation }
         video.decoder.reset(generation: generation)
+        video.hybrid?.reset(generation: generation)
         video.orderer.reset()
         video.credits.reset(generation: generation)
         let hit = demuxer.seek(toKeyframe: keyframe, generation: generation)
@@ -812,7 +1425,10 @@ public actor PlaybackEngine: PlayerEngine {
         shared.run.withLock { $0 = run }
         await prepareOutputs(generation: generation)
         guard generation == self.generation else { return generation }
-        let spec = FeedSpec(generation: generation, target: nil, keyframe: keyframe, preview: false, scrubOnly: true, awaitDemuxerSeek: !hit)
+        let spec = FeedSpec(
+            generation: generation, target: nil, keyframe: keyframe, preview: false, scrubOnly: true,
+            awaitDemuxerSeek: !hit, decoder: video.decoder.kind
+        )
         startFeeder(VideoFeedState(), spec: spec, video: video, demuxer: demuxer)
         scrubWatchdogTask?.cancel()
         scrubWatchdogTask = Task { [weak self] in
@@ -846,6 +1462,10 @@ public actor PlaybackEngine: PlayerEngine {
     func deliverAudioEventForTesting(_ event: AudioOutput.Event) async {
         await handleAudioEvent(event)
     }
+
+    /// Tests: the audio decode thread's restart count. Buffers tagged with it were decoded after
+    /// the latest restart; older ones may still reach the observer just after a restart begins.
+    var audioRestartCountForTesting: UInt64? { session?.audio?.thread.restartCount }
 
     /// Tests: asks for a keyframe preview on every restarting exact seek, whatever the plan says.
     func setForceKeyframePreviewForTesting(_ enabled: Bool) {
@@ -890,6 +1510,7 @@ public actor PlaybackEngine: PlayerEngine {
             demuxer: demuxer,
             format: video.format,
             decoder: video.decoder,
+            software: video.hybrid,
             orderer: video.orderer,
             credits: video.credits,
             shared: shared,
@@ -900,15 +1521,19 @@ public actor PlaybackEngine: PlayerEngine {
         }
     }
 
-    private func startAudioFeed(generation: UInt64, target: MediaTime, awaitDemuxerSeek: Bool) {
+    /// `target` is clock time; the feed starts at the media time that plays then (the audio delay).
+    private func startAudioFeed(generation: UInt64, target clockTarget: MediaTime, awaitDemuxerSeek: Bool) {
         guard let current = session, let audio = current.audio else { return }
+        let delay = audioDelay
+        let target = clockTarget - delay
         let synchronizer = self.synchronizer
         let feeder = AudioFeeder(
             demuxer: current.demuxer,
             streamIndex: audio.streamIndex,
             thread: audio.thread,
             shared: shared,
-            clock: { MediaTime(synchronizer.currentTime()) ?? .zero }
+            // Paced in media time: the packet at media time t plays at clock t + delay.
+            clock: { (MediaTime(synchronizer.currentTime()) ?? .zero) - delay }
         )
         audioFeedTask = Task.detached(priority: .userInitiated) {
             await feeder.run(generation: generation, from: target, awaitDemuxerSeek: awaitDemuxerSeek)
@@ -936,13 +1561,13 @@ public actor PlaybackEngine: PlayerEngine {
     fileprivate func handleLanding(_ landing: Landing) {
         guard case .target(let landed) = landing, landed == generation,
               let run = shared.run.withLock({ $0 }), run.generation == landed, let current = session else { return }
-        let report = run.report(bytesNow: current.demuxer.bytesRead, cancelled: false)
+        let report = run.report(bytesNow: current.demuxer.bytesRead, cancelled: false, handoffs: decoderHandoffs)
         trace("landed g\(landed) \(run.request) at \(run.landedPTS?.description ?? "-") in \(report.targetMilliseconds ?? -1) ms")
         complete(report)
         if run.start == .keyframe, run.framesDecoded > 30, let milliseconds = report.targetMilliseconds, let video = current.video {
             planner.rates.record(
                 codec: video.profile.codec,
-                decoder: video.decoder.kind,
+                decoder: run.decoder,
                 width: video.profile.width,
                 height: video.profile.height,
                 frames: run.framesDecoded,
@@ -959,6 +1584,11 @@ public actor PlaybackEngine: PlayerEngine {
             finishScrub(generation: landed)
         case .exact:
             displayedKeyframe = run.landedPTS.flatMap { pts in run.startKeyframe == pts ? pts : nil }
+            subtitlePresenter.update { settings in
+                settings.holding = false
+                settings.scrubTime = nil
+            }
+            backfillBitmapSubtitles(around: run.clockTime)
             sendPosition(.seekSettled, at: run.clockTime)
             if landed == backgroundExactGeneration {
                 // The pointer is still down: playback resumes only on release.
@@ -1056,20 +1686,46 @@ public actor PlaybackEngine: PlayerEngine {
     /// Unverified on hardware (tests stay silent), so it is traced.
     private func handleAudioEvent(_ event: AudioOutput.Event) async {
         trace("audio renderer event \(event)")
-        guard case .flushSuggested = event, let current = session, let audio = current.audio,
-              state == .playing || state == .paused else { return }
+        guard case .flushSuggested = event, session?.audio != nil, state == .playing || state == .paused else { return }
+        await restartAudio()
+    }
+
+    /// Restarts audio at the clock in the current generation, so video is not disturbed: after a
+    /// device change, an audio track switch (`replaced` is the old session, already swapped out)
+    /// or a new audio delay.
+    private func restartAudio(replaced: AudioSession? = nil, oldConsumer: Task<Void, Never>? = nil) async {
         // The old feeder must be gone before the reset: it shares this generation, so a packet it
         // submits afterwards would reach the decoder out of order.
         let previous = audioFeedTask
-        let flushGeneration = generation
+        let restartGeneration = generation
         previous?.cancel()
+        replaced?.thread.stop()
+        // Stops decoding ahead at once: buffers decoded before this are stale from now on.
+        session?.audio?.thread.seek(dropBefore: nil, generation: generation)
         await previous?.value
-        guard flushGeneration == generation, audioFeedTask == previous else { return }
-        let now = currentTime
-        audio.thread.seek(dropBefore: now, generation: generation)
+        if let oldConsumer {
+            // A buffer of the old track still on its way to the renderer must not land after the flush.
+            if let output = shared.audioOutput.withLock({ $0 }) { await output.flush() }
+            await oldConsumer.value
+        }
+        guard restartGeneration == generation, audioFeedTask == previous, let current = session, let audio = current.audio else {
+            trace("audio restart abandoned: a seek started meanwhile")
+            return
+        }
+        let clockTime = audioRestartTime()
+        lastAudioRestartTimeForTesting = clockTime
+        trace("audio restart at \(clockTime), delay \(audioDelay)")
+        audio.thread.seek(dropBefore: clockTime - audioDelay, generation: generation, timestampOffset: audioDelay)
+        shared.audioEnded.store(false, ordering: .releasing)
         if let output = shared.audioOutput.withLock({ $0 }) { await output.flush() }
-        guard flushGeneration == generation, audioFeedTask == previous else { return }
-        startAudioFeed(generation: generation, target: now, awaitDemuxerSeek: false)
+        guard restartGeneration == generation, audioFeedTask == previous else { return }
+        startAudioFeed(generation: generation, target: clockTime, awaitDemuxerSeek: current.demuxer.hasPendingSeek)
+    }
+
+    /// The clock time audio restarts at: the seek target while a seek is in flight, else the clock.
+    private func audioRestartTime() -> MediaTime {
+        if state == .seeking, let run = shared.run.withLock({ $0 }), run.generation == generation { return run.clockTime }
+        return currentTime
     }
 
     // MARK: Decoder failures
@@ -1083,8 +1739,11 @@ public actor PlaybackEngine: PlayerEngine {
         _ = await stopFeeder()
         parkedFeed = nil
         video.decoder.invalidate()
+        video.hybrid?.invalidate()
+        video.hybrid = nil
         video.decoder = software
         video.profile.decoder = .software
+        video.profile.hybridSoftwareSeeks = false
         current.video = video
         current.info.videoDecoder = .software
         session = current
@@ -1097,6 +1756,8 @@ public actor PlaybackEngine: PlayerEngine {
     // MARK: Reports
 
     private func complete(_ report: SeekReport) {
+        // Thumbnails wait while any seek is in flight and go on after the latest one reports.
+        if report.generation == generation { resumeThumbnails() }
         lastReport = report
         completedReports[report.generation] = report
         if completedReports.count > 16, let oldest = completedReports.keys.min() {
@@ -1135,11 +1796,17 @@ public actor PlaybackEngine: PlayerEngine {
                 lastPeriodicSave = now
                 sendPosition(.periodic, at: now)
             }
+            if let target = loop.loopTarget(at: now) {
+                // The boundary observer normally fires first; this catches a missed one.
+                _ = Task { [weak self] in await self?.loopBoundaryReached(target: target) }
+            }
             checkEnd(now: now, session: current)
             releaseStalledFrames(now: now, session: current)
         }
+        refreshSubtitleEvents(session: current)
         if nanos &- lastStoredRangeNanos > 1_000_000_000 {
             lastStoredRangeNanos = nanos
+            refreshSubtitleCharsets()
             let range = current.demuxer.store.storedRange
             if range != lastStoredRange {
                 lastStoredRange = range
@@ -1168,6 +1835,12 @@ public actor PlaybackEngine: PlayerEngine {
         let ends = [shared.lastVideoEnd.withLock { $0 }, shared.lastAudioEnd.withLock { $0 }].compactMap { $0 }
         let end = ends.max() ?? current.info.duration ?? .zero
         guard now + .milliseconds(20) >= end else { return }
+        // A loop of either kind restarts instead of ending, so auto-advance never sees an end (D49).
+        if let restart = loop.endOfFileTarget.map({ max($0, current.start) }) ?? loop.start {
+            Task { [weak self] in await self?.restartLoop(at: restart, endedAt: end) }
+            resetEndTracking()
+            return
+        }
         synchronizer.rate = 0
         setRealTime(false)
         displaySleep.allowSleep()
@@ -1179,6 +1852,8 @@ public actor PlaybackEngine: PlayerEngine {
     private func setState(_ newState: PlaybackState) {
         guard newState != state else { return }
         state = newState
+        let playing = newState == .playing
+        subtitlePresenter.update { $0.playing = playing }
         eventSink.yield(.stateChanged(newState))
         timeEvents.setActive(newState.hasMedia)
     }
@@ -1190,7 +1865,9 @@ public actor PlaybackEngine: PlayerEngine {
             position: time ?? currentTime,
             duration: current.info.duration,
             audioStreamIndex: current.info.audioStreamIndex,
-            reason: reason
+            reason: reason,
+            tracks: current.tracks,
+            loop: loop
         )
         handler(update)
     }
@@ -1208,7 +1885,10 @@ public actor PlaybackEngine: PlayerEngine {
             guard shared.isCurrent(frame.generation), let output = shared.videoOutput.withLock({ $0 }) else {
                 continue
             }
-            let outcome = await output.enqueue(frame, releasingSlot: false)
+            // Picture in Picture composites the subtitle into a pooled copy; the original is kept
+            // for screenshots and landing checks.
+            let shown = shared.frameTransform.withLock { $0 }?.apply(frame) ?? frame
+            let outcome = await output.enqueue(shown, releasingSlot: false)
             let now = monotonicNanos()
             credits.release(generation: frame.generation)
             guard outcome == .enqueued || outcome == .enqueuedWithDecodeFailures else { continue }
@@ -1223,7 +1903,8 @@ public actor PlaybackEngine: PlayerEngine {
         for await output in thread.outputs {
             switch output {
             case .buffer(let buffer, let generation):
-                guard shared.isCurrent(generation) else { continue }
+                // Decoded before a restart of this generation: it would land after the flush.
+                guard shared.isCurrent(generation), buffer.restart == thread.restartCount else { continue }
                 if let audio = shared.audioOutput.withLock({ $0 }) {
                     let outcome = await audio.enqueue(buffer)
                     if outcome != .enqueued { continue }
@@ -1305,5 +1986,502 @@ final class HeadlessLayer {
     init() {
         layer = AVSampleBufferDisplayLayer()
         layer.frame = CGRect(x: 0, y: 0, width: 640, height: 360)
+    }
+}
+
+// MARK: - Subtitle output
+
+/// The engine's subtitle output (design sections 8.5 and 8.6). Renders on its own serial queue,
+/// at most once per display frame while playing and on demand otherwise; a render still running
+/// when the next frame is due makes the timer skip that frame. The subtitle clock is the
+/// synchronizer's time minus the subtitle delay. Text goes through libass (`SubtitleRenderer`),
+/// PGS and DVD sets through the bitmap timeline. The result is set as the contents of a sublayer
+/// of the app's subtitle layer (on the main actor), and kept for Picture in Picture and tests.
+public final class SubtitlePresenter: Sendable {
+    /// The subtitle layer's size in pixels and its backing scale.
+    public struct Viewport: Sendable, Hashable {
+        public var width: Int
+        public var height: Int
+        public var scale: Double
+
+        public init(width: Int, height: Int, scale: Double) {
+            self.width = width
+            self.height = height
+            self.scale = scale
+        }
+    }
+
+    struct Settings: Sendable {
+        var track: TrackID?
+        var format: SubtitleFormat?
+        var visible = true
+        var delay = MediaTime.zero
+        var scale = 1.0
+        var position = SubtitleStyle.defaultPosition
+        var bottomInsetPoints: Double?
+        var videoWidth = 0
+        var videoHeight = 0
+        var viewport: Viewport?
+        /// An exact seek is in flight: the last image stays until the target frame lands.
+        var holding = false
+        /// A scrub shows the line at the pointer, not at the keyframe on screen.
+        var scrubTime: MediaTime?
+        var playing = false
+        var pictureInPicture = false
+
+        var timerWanted: Bool { playing && track != nil && visible && !holding }
+    }
+
+    /// The last published subtitle, in output pixels of a `frameWidth` x `frameHeight` frame.
+    public struct Output: Sendable {
+        public var bitmap: SubtitleBitmap?
+        public var frameWidth = 0
+        public var frameHeight = 0
+        /// Renders published so far.
+        public var publishCount = 0
+        public var renderCount = 0
+        public var lastRenderMilliseconds: Double?
+    }
+
+    private struct BitmapKey: Hashable {
+        var start: MediaTime
+        var width: Int
+        var height: Int
+        var dy: Int
+    }
+
+    /// Touched only on `queue`.
+    private struct RenderState {
+        var renderer: SubtitleRenderer?
+        var rendererUnavailable = false
+        var bitmapKey: BitmapKey?
+        var bitmapImage: SubtitleBitmap?
+        var published = false
+        var publishedEmpty = false
+    }
+
+    public static let frameInterval = 1.0 / 60
+    /// Bitmap display sets kept around the clock.
+    static let bitmapWindow = MediaTime.seconds(60)
+
+    private let queue = DispatchQueue(label: "reel.subtitles", qos: .userInitiated)
+    private let settings = Mutex(Settings())
+    private let renderState = Mutex(RenderState())
+    private let output = Mutex(Output())
+    private let store = Mutex<SubtitleTrackStore?>(nil)
+    private let timeline = Mutex(BitmapSubtitleTimeline())
+    private let host = Mutex<SubtitleLayerHost?>(nil)
+    private let renderPending = Atomic<Bool>(false)
+    private let timerRunning = Atomic<Bool>(false)
+    private let failure = Mutex<SendableCallback<(TrackID, String)>?>(nil)
+    private let timer: any DispatchSourceTimer
+    private let clock: @Sendable () -> MediaTime
+
+    init(clock: @escaping @Sendable () -> MediaTime) {
+        self.clock = clock
+        timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.setEventHandler { [weak self] in self?.renderNow() }
+        timer.schedule(deadline: .distantFuture)
+        timer.resume()
+    }
+
+    deinit {
+        timer.cancel()
+    }
+
+    func setFailureHandler(_ handler: @escaping @Sendable (TrackID, String) -> Void) {
+        failure.withLock { $0 = SendableCallback(handler) }
+    }
+
+    /// The last published subtitle (tests, PiP).
+    public var current: Output { output.withLock { $0 } }
+
+    var settingsSnapshot: Settings { settings.withLock { $0 } }
+
+    // MARK: Control (from the engine actor)
+
+    func reset(store newStore: SubtitleTrackStore?, videoWidth: Int, videoHeight: Int) {
+        store.withLock { $0 = newStore }
+        timeline.withLock { $0 = BitmapSubtitleTimeline() }
+        update { settings in
+            let viewport = settings.viewport
+            let pictureInPicture = settings.pictureInPicture
+            settings = Settings()
+            settings.viewport = viewport
+            settings.pictureInPicture = pictureInPicture
+            settings.videoWidth = videoWidth
+            settings.videoHeight = videoHeight
+            settings.holding = true
+        }
+    }
+
+    func select(_ track: TrackID?, format: SubtitleFormat?) {
+        update { settings in
+            settings.track = track
+            settings.format = format
+        }
+    }
+
+    func update(_ body: (inout Settings) -> Void) {
+        let wanted = settings.withLock { settings -> Bool in
+            body(&settings)
+            return settings.timerWanted
+        }
+        if timerRunning.exchange(wanted, ordering: .acquiringAndReleasing) != wanted {
+            if wanted {
+                timer.schedule(deadline: .now(), repeating: SubtitlePresenter.frameInterval, leeway: .milliseconds(2))
+            } else {
+                timer.schedule(deadline: .distantFuture)
+            }
+        }
+        requestRender()
+    }
+
+    /// Renders once on the queue soon; requests while one is pending collapse into it.
+    func requestRender() {
+        guard !renderPending.exchange(true, ordering: .acquiringAndReleasing) else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            renderPending.store(false, ordering: .releasing)
+            renderNow()
+        }
+    }
+
+    func clearTimeline() {
+        timeline.withLock { $0 = BitmapSubtitleTimeline() }
+        // Render state belongs to the queue; the next render runs after this.
+        queue.async { [weak self] in self?.renderState.withLock { $0.bitmapKey = nil } }
+    }
+
+    /// Adds decoded bitmap display sets and drops ones far from the clock.
+    func insert(_ sets: [BitmapDisplaySet]) {
+        guard !sets.isEmpty else { return }
+        let now = clock()
+        timeline.withLock { timeline in
+            for set in sets { timeline.insert(set) }
+            timeline.prune(before: now - SubtitlePresenter.bitmapWindow)
+        }
+        requestRender()
+    }
+
+    // MARK: Layer (main actor)
+
+    @MainActor
+    func attach(_ layer: CALayer) {
+        let previous = host.withLock { $0 }
+        previous?.detach()
+        let attached = SubtitleLayerHost(container: layer)
+        host.withLock { $0 = attached }
+        let viewport = attached.viewport
+        update { $0.viewport = viewport }
+    }
+
+    @MainActor
+    func layerDidLayout() {
+        guard let viewport = host.withLock({ $0 })?.viewport else { return }
+        update { $0.viewport = viewport }
+    }
+
+    // MARK: Snapshots
+
+    /// The subtitle at the clock drawn into a `width` x `height` frame (a screenshot at the video's
+    /// native size). Nil when nothing shows.
+    func snapshot(width: Int, height: Int) async -> SubtitleBitmap? {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                let current = settings.withLock { $0 }
+                guard current.visible, let track = current.track, let format = current.format, width > 0, height > 0 else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let time = (current.scrubTime ?? clock()) - current.delay
+                let drawn = draw(track: track, format: format, at: time, settings: current, width: width, height: height, inset: nil)
+                // The live renderer's settings changed; its next render publishes again.
+                renderState.withLock { state in
+                    state.published = false
+                    state.bitmapKey = nil
+                }
+                continuation.resume(returning: drawn.bitmap)
+            }
+        }
+    }
+
+    /// The subtitle for Picture in Picture, drawn at the video's size while PiP is active.
+    func pictureInPictureSubtitle() -> (bitmap: SubtitleBitmap, width: Int, height: Int)? {
+        guard settings.withLock({ $0.pictureInPicture }) else { return nil }
+        let published = output.withLock { $0 }
+        guard let bitmap = published.bitmap, published.frameWidth > 0 else { return nil }
+        return (bitmap, published.frameWidth, published.frameHeight)
+    }
+
+    // MARK: Rendering (queue)
+
+    private func frameSize(_ current: Settings) -> (width: Int, height: Int, scale: Double) {
+        if !current.pictureInPicture, let viewport = current.viewport, viewport.width > 0, viewport.height > 0 {
+            return (viewport.width, viewport.height, viewport.scale)
+        }
+        return (current.videoWidth, current.videoHeight, 1)
+    }
+
+    private func renderNow() {
+        let current = settings.withLock { $0 }
+        if current.holding { return }
+        let size = frameSize(current)
+        guard current.visible, let track = current.track, let format = current.format, size.width > 0, size.height > 0 else {
+            publish(nil, current: current, width: size.width, height: size.height)
+            return
+        }
+        let started = ContinuousClock.now
+        let time = (current.scrubTime ?? clock()) - current.delay
+        let inset = current.pictureInPicture ? nil : current.bottomInsetPoints.map { $0 * size.scale }
+        let drawn = draw(track: track, format: format, at: time, settings: current, width: size.width, height: size.height, inset: inset)
+        let elapsed = ContinuousClock.now - started
+        output.withLock { output in
+            output.renderCount += 1
+            output.lastRenderMilliseconds = Double(elapsed.components.attoseconds) / 1e15 + Double(elapsed.components.seconds) * 1_000
+        }
+        if drawn.unchanged, renderState.withLock({ $0.published }) { return }
+        publish(drawn.bitmap, current: current, width: size.width, height: size.height)
+    }
+
+    private func draw(
+        track: TrackID,
+        format: SubtitleFormat,
+        at time: MediaTime,
+        settings current: Settings,
+        width: Int,
+        height: Int,
+        inset: Double?
+    ) -> (bitmap: SubtitleBitmap?, unchanged: Bool) {
+        if format.isBitmap {
+            return drawBitmap(at: time, settings: current, width: width, height: height, inset: inset)
+        }
+        guard let store = store.withLock({ $0 }) else { return (nil, false) }
+        var failed = false
+        let result = renderState.withLock { state -> (bitmap: SubtitleBitmap?, unchanged: Bool) in
+            if state.renderer == nil, !state.rendererUnavailable {
+                do {
+                    state.renderer = try SubtitleRenderer()
+                } catch {
+                    state.rendererUnavailable = true
+                    failed = true
+                }
+            }
+            guard let renderer = state.renderer else { return (nil, false) }
+            renderer.sync(with: store, track: track)
+            let rendered = renderer.render(at: time, settings: SubtitleRenderSettings(
+                frameWidth: width,
+                frameHeight: height,
+                videoWidth: current.videoWidth,
+                videoHeight: current.videoHeight,
+                scale: current.scale,
+                position: current.position,
+                bottomInset: inset
+            ))
+            return (rendered.bitmap, rendered.changed == 0)
+        }
+        if failed {
+            // Section 8.7: subtitles are off for the session, with one message.
+            failure.withLock { $0 }?.call((track, SubtitleRendererError.unavailable.localizedDescription))
+        }
+        return result
+    }
+
+    private func drawBitmap(at time: MediaTime, settings current: Settings, width: Int, height: Int, inset: Double?) -> (bitmap: SubtitleBitmap?, unchanged: Bool) {
+        guard let set = timeline.withLock({ $0.active(at: time) }), !set.rects.isEmpty else {
+            let unchanged = renderState.withLock { state -> Bool in
+                defer {
+                    state.bitmapKey = nil
+                    state.bitmapImage = nil
+                }
+                return state.bitmapKey == nil
+            }
+            return (nil, unchanged)
+        }
+        let videoRect = PixelRect.aspectFit(width: current.videoWidth, height: current.videoHeight, inWidth: width, height: height)
+        let placed = set.rects.map { rect in
+            (rect.image, BitmapSubtitles.place(rect.rect, canvasWidth: set.canvasWidth, canvasHeight: set.canvasHeight, videoRect: videoRect))
+        }
+        guard var bounds = placed.first?.1 else { return (nil, false) }
+        for (_, rect) in placed.dropFirst() { bounds = bounds.union(rect) }
+        // sub-pos moves bitmaps as one image; the lift moves sets in the bottom third (8.4, 8.5).
+        let raised = -Int(((SubtitleStyle.defaultPosition - current.position) / 100 * Double(videoRect.height)).rounded())
+        let lift = BitmapSubtitles.liftOffset(bounds: bounds.offsetBy(dy: raised), frameHeight: height, bottomInset: inset)
+        let key = BitmapKey(start: set.start, width: width, height: height, dy: raised + lift)
+        if let cached = renderState.withLock({ $0.bitmapKey == key ? $0.bitmapImage : nil }) { return (cached, true) }
+        guard let image = SubtitlePresenter.compose(placed, bounds: bounds) else { return (nil, false) }
+        let bitmap = SubtitleBitmap(image: image, rect: bounds.offsetBy(dy: raised + lift))
+        renderState.withLock { state in
+            state.bitmapKey = key
+            state.bitmapImage = bitmap
+        }
+        return (bitmap, false)
+    }
+
+    /// Draws placed rects into one premultiplied BGRA image covering `bounds`.
+    static func compose(_ pieces: [(CGImage, PixelRect)], bounds: PixelRect) -> CGImage? {
+        guard !bounds.isEmpty, let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                  data: nil,
+                  width: bounds.width,
+                  height: bounds.height,
+                  bitsPerComponent: 8,
+                  bytesPerRow: bounds.width * 4,
+                  space: space,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+              ) else { return nil }
+        context.interpolationQuality = .high
+        for (image, rect) in pieces {
+            // Core Graphics has a bottom-left origin.
+            context.draw(image, in: CGRect(x: rect.x - bounds.x, y: bounds.maxY - rect.maxY, width: rect.width, height: rect.height))
+        }
+        return context.makeImage()
+    }
+
+    private func publish(_ bitmap: SubtitleBitmap?, current: Settings, width: Int, height: Int) {
+        let skip = renderState.withLock { state -> Bool in
+            if bitmap == nil, state.published, state.publishedEmpty { return true }
+            state.published = true
+            state.publishedEmpty = bitmap == nil
+            return false
+        }
+        if skip { return }
+        output.withLock { output in
+            output.bitmap = bitmap
+            output.frameWidth = width
+            output.frameHeight = height
+            output.publishCount += 1
+        }
+        guard let host = host.withLock({ $0 }) else { return }
+        // In Picture in Picture the main window shows a placeholder; the subtitle goes into frames.
+        let shown = current.pictureInPicture ? nil : bitmap
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                let viewport = host.show(shown, frameWidth: width, frameHeight: height)
+                if let self, let viewport, viewport != current.viewport, !current.pictureInPicture {
+                    self.update { $0.viewport = viewport }
+                }
+            }
+        }
+    }
+}
+
+/// The app's subtitle layer and the sublayer the engine draws into.
+@MainActor
+final class SubtitleLayerHost {
+    let container: CALayer
+    let content = CALayer()
+
+    init(container: CALayer) {
+        self.container = container
+        content.anchorPoint = .zero
+        content.isHidden = true
+        content.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull(), "hidden": NSNull()]
+        container.addSublayer(content)
+    }
+
+    var viewport: SubtitlePresenter.Viewport? {
+        let scale = max(container.contentsScale, 1)
+        let size = container.bounds.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        return SubtitlePresenter.Viewport(width: Int((size.width * scale).rounded()), height: Int((size.height * scale).rounded()), scale: scale)
+    }
+
+    /// Shows `bitmap` (rendered for a `frameWidth` x `frameHeight` pixel frame) and returns the
+    /// layer's current viewport, which differs from the rendered one after a resize.
+    func show(_ bitmap: SubtitleBitmap?, frameWidth: Int, frameHeight: Int) -> SubtitlePresenter.Viewport? {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let bounds = container.bounds
+        guard let bitmap, frameWidth > 0, frameHeight > 0, bounds.width > 0 else {
+            content.contents = nil
+            content.isHidden = true
+            return viewport
+        }
+        let sx = bounds.width / CGFloat(frameWidth)
+        let sy = bounds.height / CGFloat(frameHeight)
+        let rect = bitmap.rect
+        let top = CGFloat(rect.y) * sy
+        let height = CGFloat(rect.height) * sy
+        let y = container.isGeometryFlipped ? top : bounds.height - top - height
+        content.contentsScale = max(container.contentsScale, 1)
+        content.frame = CGRect(x: CGFloat(rect.x) * sx, y: y, width: CGFloat(rect.width) * sx, height: height)
+        content.contents = bitmap.image
+        content.isHidden = false
+        return viewport
+    }
+
+    func detach() {
+        content.removeFromSuperlayer()
+    }
+}
+
+/// Feeds the selected embedded subtitle stream from the main demuxer's PacketStore (design
+/// section 8.1): text events into the `SubtitleTrackStore` (deduplicated against the
+/// prefetcher), PGS and DVD display sets into the presenter's timeline. Runs until cancelled.
+struct SubtitlePacketFeeder: Sendable {
+    let packets: PacketStore
+    let streamIndex: Int
+    let parameters: CodecParameters
+    let fileName: String
+    let title: String?
+    let language: String?
+    let tracks: SubtitleTrackStore
+    let presenter: SubtitlePresenter
+
+    /// Returns a reason when the decoder cannot open, else nil once cancelled.
+    func run() async -> String? {
+        let id = TrackID.embedded(streamIndex: streamIndex)
+        let decoder: SubtitleDecoder
+        do {
+            decoder = try SubtitleDecoder(parameters: parameters, fileName: fileName, title: title, language: language, charset: tracks.charset(of: id))
+        } catch {
+            return "\(SubtitleFormat(codec: parameters.codecName).tag): decoder failed"
+        }
+        let text = decoder.isBitmap ? nil : SubtitleTextFeed(decoder: decoder, track: id, store: tracks)
+        // The first stored packet: text duplicates are dropped by the store, bitmap sets replace.
+        var cursor = packets.audioCursor(streamIndex: streamIndex, at: .zero)
+        while !Task.isCancelled {
+            let change = packets.changeCount
+            switch packets.next(&cursor) {
+            case .packet(let packet):
+                if let text {
+                    // A malformed event is skipped; the rest of the track plays (section 8.7).
+                    try? text.feed(packet)
+                    presenter.requestRender()
+                } else if let set = try? decoder.decodeBitmap(packet) {
+                    presenter.insert([set])
+                }
+            case .needMore, .endOfStream:
+                await packets.waitForChange(since: change)
+            case .invalidated:
+                // A demuxer seek reset the store; continue at what it holds now.
+                cursor = packets.audioCursor(streamIndex: streamIndex, at: .zero)
+            }
+        }
+        return nil
+    }
+
+    /// Display sets of a bitmap stream between `from` and `through`, read on a private demuxer
+    /// with every other stream discarded.
+    static func readBitmapSets(url: URL, streamIndex: Int, from: MediaTime, through: MediaTime) -> [BitmapDisplaySet] {
+        guard let source = try? MediaSource(url: url), let stream = source.stream(streamIndex) else { return [] }
+        for index in 0..<source.streamCount where index != streamIndex {
+            source.stream(index)?.pointee.discard = AVDISCARD_ALL
+        }
+        guard let decoder = try? SubtitleDecoder(
+            parameters: stream.pointee.codecpar,
+            streamIndex: streamIndex,
+            timeBase: Rational(stream.pointee.time_base.num, stream.pointee.time_base.den)
+        ), decoder.isBitmap else { return [] }
+        if from > .zero { try? source.seek(toKeyframe: from) }
+        var sets: [BitmapDisplaySet] = []
+        while !Task.isCancelled, let packet = try? source.readPacket() {
+            guard packet.streamIndex == streamIndex else { continue }
+            if let time = packet.time, time > through { break }
+            if let set = try? decoder.decodeBitmap(packet) { sets.append(set) }
+        }
+        return sets
     }
 }

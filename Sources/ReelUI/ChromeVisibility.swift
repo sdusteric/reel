@@ -20,6 +20,8 @@ public final class ChromeVisibility {
     public private(set) var isPlaying = false
     public private(set) var isPointerOverController = false
     public private(set) var isDragging = false
+    /// A track or speed panel is open: the chrome stays up so the panel never loses its anchor.
+    public private(set) var isPanelOpen = false
     /// The last input that keeps the chrome up, on the injected clock.
     public private(set) var lastInputAt: TimeInterval
 
@@ -52,7 +54,7 @@ public final class ChromeVisibility {
         return lastInputAt + ChromeVisibility.autoHideDelay
     }
 
-    private var canAutoHide: Bool { isPlaying && !isPointerOverController && !isDragging }
+    private var canAutoHide: Bool { isPlaying && !isPointerOverController && !isDragging && !isPanelOpen }
 
     // MARK: Inputs
 
@@ -99,6 +101,13 @@ public final class ChromeVisibility {
         guard dragging != isDragging else { return }
         isDragging = dragging
         if dragging { show() } else { lastInputAt = now() }
+        reschedule()
+    }
+
+    public func setPanelOpen(_ open: Bool) {
+        guard open != isPanelOpen else { return }
+        isPanelOpen = open
+        if open { show() } else { lastInputAt = now() }
         reschedule()
     }
 

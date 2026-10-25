@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Generates Reel's test media (design section 14) with Homebrew ffmpeg, used only as a generator.
-# Every file comes from lavfi sources (testsrc2 plus temporal noise, colour, sine, aevalsrc);
-# nothing is read from the user's media.
+# Every file comes from lavfi sources (testsrc2 plus temporal noise, colour, sine, aevalsrc),
+# subtitle text written by this script and a PGS stream from scripts/make-pgs.swift; nothing is
+# read from the user's media.
 #
 # Usage: scripts/fixtures.sh            output: ${REEL_FIXTURES:-<repo>/build/fixtures}
 # Env:   FORCE=1 regenerates everything.
@@ -34,6 +35,10 @@ FIXTURES=(
   hevc10_1080p24.mkv av1_2160p60.mkv h264_1080p30.mp4 vp9_2160p60.webm
   sync_h264_aac.mp4 sync_hevc_opus.mkv
   hdr10_hevc.mkv rot90_h264.mov annexb_h264.ts mpeg4.avi flv1.flv nocues_hevc.mkv
+  subs_tracks.mkv subs_tracks.zh-Hans.srt subs_utf8.srt subs_gbk.srt subs_big5.cht.srt subs_ass_signs.ass
+  pgs_fixture.sup subs_pgs.mkv logs/pgs_rects.json
+  episodes/Northern.Line.S01E01.mkv episodes/Northern.Line.S01E02.mkv episodes/Northern.Line.S01E03.mkv
+  episodes/Northern.Line.S01E10.mkv episodes/._Northern.Line.S01E02.mkv episodes/notes.txt
 )
 
 SCRIPT_HASH="$(shasum -a 256 "${BASH_SOURCE[0]}" | cut -c1-16)"
@@ -76,22 +81,36 @@ echo "$SCRIPT_HASH" >"$VERSION_FILE"
 
 ff() { "$FFMPEG" -hide_banner -loglevel error -nostdin -y "$@"; }
 
-# encode <name> <ffmpeg args...>: writes to a temp name, renames on success.
+# encode <name> <ffmpeg args...>: writes to a temp name, renames on success. <name> may be in a
+# subfolder (episodes/...); the temp file is a hidden sibling so folder scans never list it.
 encode() {
   local name="$1"; shift
   local ext="${name##*.}"
-  local tmp="$OUT/.partial-$name"
+  local dir; dir="$(dirname "$OUT/$name")"
+  local tmp; tmp="$dir/.partial-$(basename "$name")"
+  local log; log="$LOGS/${name//\//_}.log"
+  mkdir -p "$dir"
   rm -f "$tmp"
   local t0; t0=$(date +%s)
-  if ff "$@" -f "$(muxer_for "$ext")" "$tmp" >"$LOGS/$name.log" 2>&1; then
+  if ff "$@" -f "$(muxer_for "$ext")" "$tmp" >"$log" 2>&1; then
     mv "$tmp" "$OUT/$name"
     echo "  $name ($(( $(date +%s) - t0 )) s)"
   else
     rm -f "$tmp"
-    echo "FAILED $name, log: $LOGS/$name.log" >&2
-    tail -20 "$LOGS/$name.log" >&2
+    echo "FAILED $name, log: $log" >&2
+    tail -20 "$log" >&2
     return 1
   fi
+}
+
+# put <name>: writes stdin to <name> through a temp file.
+put() {
+  local name="$1"
+  local dir; dir="$(dirname "$OUT/$name")"
+  mkdir -p "$dir"
+  local tmp; tmp="$dir/.partial-$(basename "$name")"
+  cat >"$tmp"
+  mv "$tmp" "$OUT/$name"
 }
 
 muxer_for() {
@@ -127,8 +146,99 @@ await_all() {
   NAMES=()
 }
 
+
+# ---- M2 subtitle and episode fixtures (design section 14) ----
+# Text sources for embedded tracks live in a hidden folder, so sidecar discovery for
+# subs_tracks.mkv only ever sees subs_tracks.zh-Hans.srt.
+SRC="$OUT/.src"
+mkdir -p "$SRC"
+
+ass_file() { # ass_file <title> <line1> <line2> <sign>: bilingual ASS, Chinese at 45 and English at 27
+  cat <<ASS
+[Script Info]
+ScriptType: v4.00+
+Title: $1
+PlayResX: 1280
+PlayResY: 720
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,PingFang SC,45,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,0,0,0,0,100,100,0,0,1,2.5,1.4,2,40,40,40,1
+Style: EN,PingFang SC,27,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,0,0,0,0,100,100,0,0,1,1.6,1,2,40,40,40,1
+Style: Sign,PingFang SC,36,&H0000E5FF,&H000000FF,&H00202020,&H00000000,1,0,0,0,100,100,0,0,1,2,0,8,40,40,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,$2\N{\rEN}Don't look back. Keep walking.
+Dialogue: 0,0:00:04.00,0:00:06.00,Default,,0,0,0,,$3\N{\rEN}We finally made it to the Northern Line.
+Dialogue: 1,0:00:04.00,0:00:06.00,Sign,,0,0,0,,{\an8\pos(640,40)}$4
+ASS
+}
+
+srt_file() { # srt_file <line1> <line2> [<line1b> <line2b>]: two events, optional second lines
+  printf '1\n00:00:01,000 --> 00:00:03,000\n%s\n' "$1"
+  if [ -n "${3:-}" ]; then printf '%s\n' "$3"; fi
+  printf '\n2\n00:00:04,000 --> 00:00:06,000\n%s\n' "$2"
+  if [ -n "${4:-}" ]; then printf '%s\n' "$4"; fi
+}
+
+EN1="Don't look back. Keep walking."
+EN2="We finally made it to the Northern Line."
+
+make_text_fixtures() {
+  ass_file "简英双语" "别回头，继续往前走。" "我们终于到了北线。" "北线站" >"$SRC/zh_hans.ass"
+  ass_file "繁英雙語" "別回頭，繼續往前走。" "我們終於到了北線。" "北線站" >"$SRC/zh_hant.ass"
+  srt_file "$EN1" "$EN2" >"$SRC/en.srt"
+  srt_file "[FOOTSTEPS] $EN1" "[TRAIN APPROACHING] $EN2" >"$SRC/en_sdh.srt"
+  srt_file "别回头，继续往前走。" "我们终于到了北线。" "$EN1" "$EN2" | put subs_tracks.zh-Hans.srt
+
+  # The charset trio carries the same text. It is Traditional so that Big5 can encode it.
+  srt_file "別回頭，繼續往前走。" "我們終於到了北線。" "$EN1" "$EN2" | put subs_utf8.srt
+  iconv -f UTF-8 -t GB18030 "$OUT/subs_utf8.srt" | put subs_gbk.srt
+  iconv -f UTF-8 -t BIG5 "$OUT/subs_utf8.srt" | put subs_big5.cht.srt
+  iconv -f GB18030 -t UTF-8 "$OUT/subs_gbk.srt" | cmp -s - "$OUT/subs_utf8.srt" || { echo "GB18030 round trip differs" >&2; return 1; }
+  iconv -f BIG5 -t UTF-8 "$OUT/subs_big5.cht.srt" | cmp -s - "$OUT/subs_utf8.srt" || { echo "Big5 round trip differs" >&2; return 1; }
+
+  # A positioned sign at the top and a bottom line, for the lift rule (section 8.5).
+  cat <<'ASS' | put subs_ass_signs.ass
+[Script Info]
+ScriptType: v4.00+
+Title: Signs and a bottom line
+PlayResX: 1280
+PlayResY: 720
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,PingFang SC,45,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,0,0,0,0,100,100,0,0,1,2.5,1.4,2,40,40,40,1
+Style: Sign,PingFang SC,36,&H0000E5FF,&H000000FF,&H00202020,&H00000000,1,0,0,0,100,100,0,0,1,2,0,8,40,40,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:06.00,Default,,0,0,0,,北线站到了。\NThis line sits at the bottom.
+Dialogue: 1,0:00:01.00,0:00:06.00,Sign,,0,0,0,,{\an8\pos(640,60)}NORTHERN LINE 北线
+ASS
+
+  # PGS: two display sets with known rectangles, written by make-pgs.swift.
+  if ! [ -s "$OUT/pgs_fixture.sup" ] || ! [ -s "$LOGS/pgs_rects.json" ]; then
+    swift "$ROOT/scripts/make-pgs.swift" "$OUT/.partial-pgs_fixture.sup" "$LOGS/.partial-pgs_rects.json" \
+      >"$LOGS/make-pgs.log" 2>&1 || { echo "FAILED make-pgs.swift, log: $LOGS/make-pgs.log" >&2; tail -20 "$LOGS/make-pgs.log" >&2; return 1; }
+    mv "$OUT/.partial-pgs_fixture.sup" "$OUT/pgs_fixture.sup"
+    mv "$LOGS/.partial-pgs_rects.json" "$LOGS/pgs_rects.json"
+  fi
+
+  # Episodes: four short files in natural order, an AppleDouble file and a text file.
+  mkdir -p "$OUT/episodes"
+  head -c 4096 /dev/zero | put episodes/._Northern.Line.S01E02.mkv
+  printf 'Northern Line, season 1. Not a video.\n' | put episodes/notes.txt
+}
+
 echo "Generating fixtures into $OUT"
 T0=$(date +%s)
+make_text_fixtures || { echo "text fixtures failed" >&2; exit 1; }
 
 # Seek-speed fixtures: recipes from the spike's hard.sh, realistic bitrates with noise.
 start hevc10_1080p24.mkv \
@@ -193,6 +303,40 @@ make_rot90() {
   return "$status"
 }
 if [ -s "$OUT/rot90_h264.mov" ]; then echo "  rot90_h264.mov (kept)"; else make_rot90 & PIDS+=("$!"); NAMES+=(rot90_h264.mov); fi
+
+# subs_tracks.mkv: 12 s 720p H.264, two 5.1 audio tracks and four subtitle tracks, events at
+# 1 to 3 s and 4 to 6 s. -copyts keeps the subtitle times (ffmpeg would shift each input to 0).
+start subs_tracks.mkv \
+  -copyts \
+  -f lavfi -i "testsrc2=s=1280x720:r=24:d=12" -f lavfi -i "sine=f=440:d=12" -f lavfi -i "sine=f=550:d=12" \
+  -i "$SRC/zh_hans.ass" -i "$SRC/zh_hant.ass" -i "$SRC/en.srt" -i "$SRC/en_sdh.srt" \
+  -map 0:v -map 1:a -map 2:a -map 3:s -map 4:s -map 5:s -map 6:s \
+  -c:v libx264 -preset veryfast -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -b:v 2M \
+  -c:a:0 eac3 -ac:a:0 6 -b:a:0 384k -c:a:1 aac -ac:a:1 6 -b:a:1 256k -c:s copy \
+  -metadata:s:a:0 language=eng -metadata:s:a:1 language=jpn \
+  -metadata:s:s:0 language=zho -metadata:s:s:0 title=简英双语 \
+  -metadata:s:s:1 language=zho -metadata:s:s:1 title=繁英雙語 \
+  -metadata:s:s:2 language=eng -metadata:s:s:3 language=eng -metadata:s:s:3 title=SDH \
+  -disposition:v:0 default -disposition:a:0 default -disposition:a:1 0 \
+  -disposition:s:0 default -disposition:s:1 0 -disposition:s:2 0 -disposition:s:3 hearing_impaired
+
+# subs_pgs.mkv: 8 s 1080p H.264 plus the PGS stream, copied as written.
+start subs_pgs.mkv \
+  -copyts \
+  -f lavfi -i "testsrc2=s=1920x1080:r=24:d=8" -i "$OUT/pgs_fixture.sup" \
+  -map 0:v -map 1:s -c:v libx264 -preset veryfast -g 48 -keyint_min 48 -sc_threshold 0 -pix_fmt yuv420p -b:v 4M \
+  -c:s copy -metadata:s:s:0 language=jpn
+
+# Episodes: 3 s each, a different colour per file.
+episode() { # episode <name> <colour>
+  start "episodes/$1" \
+    -f lavfi -i "color=c=$2:s=640x360:r=24:d=3" -f lavfi -i "sine=f=440:d=3" \
+    -c:v libx264 -preset veryfast -g 24 -pix_fmt yuv420p -b:v 500k -c:a aac -b:a 96k
+}
+episode Northern.Line.S01E01.mkv 0x8B2E2E
+episode Northern.Line.S01E02.mkv 0x2E6B8B
+episode Northern.Line.S01E03.mkv 0x3C8B2E
+episode Northern.Line.S01E10.mkv 0x8B7A2E
 
 await_all
 

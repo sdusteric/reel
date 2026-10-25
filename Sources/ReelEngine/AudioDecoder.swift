@@ -14,6 +14,9 @@ public struct DecodedAudioBuffer: Sendable {
     public let frameCount: Int
     public let sampleRate: Int
     public let channelCount: Int
+    /// The `AudioDecodeThread.restartCount` it was decoded under. A restart in the same
+    /// generation (device change, track switch, audio delay) makes earlier buffers stale.
+    public internal(set) var restart: UInt64 = 0
 
     public var presentationTime: CMTime { CMTime(value: startSample, timescale: CMTimeScale(sampleRate)) }
     public var endTime: CMTime { CMTime(value: startSample + Int64(frameCount), timescale: CMTimeScale(sampleRate)) }
@@ -126,6 +129,9 @@ public final class AudioDecoder {
     public private(set) var formatDescription: CMAudioFormatDescription?
     /// Packets the decoder rejected as corrupt (skipped, not fatal).
     public private(set) var corruptPackets = 0
+    /// Added to every output timestamp: the audio delay (positive plays later), applied against
+    /// the synchronizer without re-decoding (design section 9.7). Trimming still uses media time.
+    public var timestampOffset: MediaTime = .zero
 
     private var codecContext: UnsafeMutablePointer<AVCodecContext>?
     private var frame: UnsafeMutablePointer<AVFrame>?
@@ -359,7 +365,7 @@ public final class AudioDecoder {
         }
         let frames = count - drop
         guard frames > 0 else { return }
-        let first = start + Int64(drop)
+        let first = start + Int64(drop) + timestampOffset.value(timeBaseNum: 1, timeBaseDen: Int32(sampleRate))
         let ready = try pending.withUnsafeBufferPointer { samples in
             try AudioSampleBufferFactory.make(
                 samples: UnsafeBufferPointer(rebasing: samples[(drop * channelCount)...]),
@@ -444,10 +450,14 @@ public final class AudioDecodeThread: Sendable {
     private let continuation: AsyncStream<Output>.Continuation
     private let state: Mutex<State>
     private let wakeup = DispatchSemaphore(value: 0)
+    private let restarts = Atomic<UInt64>(0)
+
+    /// Increments on every `seek`. Buffers tagged with an older value were decoded before it.
+    public var restartCount: UInt64 { restarts.load(ordering: .acquiring) }
 
     private enum Command {
         case packet(Packet)
-        case reset(MediaTime?)
+        case reset(MediaTime?, offset: MediaTime?)
         case finish
     }
 
@@ -456,6 +466,7 @@ public final class AudioDecodeThread: Sendable {
         var queue: [Command] = []
         var head = 0
         var generation: UInt64 = 0
+        var restart: UInt64 = 0
         var stopped = false
 
         mutating func pop() -> Command? {
@@ -497,13 +508,15 @@ public final class AudioDecodeThread: Sendable {
     }
 
     /// Starts a new generation: queued work is dropped, the decoder is flushed, and output from
-    /// the next packets is trimmed to start at `target` (none when nil).
-    public func seek(dropBefore target: MediaTime?, generation: UInt64) {
+    /// the next packets is trimmed to start at `target` (none when nil). A `timestampOffset`
+    /// replaces the decoder's (the audio delay); nil keeps it.
+    public func seek(dropBefore target: MediaTime?, generation: UInt64, timestampOffset: MediaTime? = nil) {
         state.withLock { state in
             guard !state.stopped else { return }
             state.generation = generation
+            state.restart = restarts.add(1, ordering: .acquiringAndReleasing).newValue
             state.clear()
-            state.queue.append(.reset(target))
+            state.queue.append(.reset(target, offset: timestampOffset))
         }
         wakeup.signal()
     }
@@ -534,17 +547,24 @@ public final class AudioDecodeThread: Sendable {
                 if state.stopped { return false }
                 guard let command = state.pop() else { return true }
                 let generation = state.generation
+                let restart = state.restart
+                func tagged(_ buffer: DecodedAudioBuffer) -> DecodedAudioBuffer {
+                    var buffer = buffer
+                    buffer.restart = restart
+                    return buffer
+                }
                 do {
                     switch command {
                     case .packet(let packet):
                         for buffer in try state.decoder.decode(packet) {
-                            continuation.yield(.buffer(buffer, generation: generation))
+                            continuation.yield(.buffer(tagged(buffer), generation: generation))
                         }
-                    case .reset(let target):
+                    case .reset(let target, let offset):
                         state.decoder.reset(dropBefore: target)
+                        if let offset { state.decoder.timestampOffset = offset }
                     case .finish:
                         for buffer in try state.decoder.finish() {
-                            continuation.yield(.buffer(buffer, generation: generation))
+                            continuation.yield(.buffer(tagged(buffer), generation: generation))
                         }
                         continuation.yield(.endOfStream(generation: generation))
                     }

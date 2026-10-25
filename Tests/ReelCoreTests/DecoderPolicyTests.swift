@@ -129,4 +129,31 @@ import Testing
         #expect(!switched)
         #expect(tracker.current == .hardware)
     }
+
+    // MARK: VP9 hybrid (D46)
+
+    @Test func onlyVP9OnHardwareGetsTheHybrid() {
+        #expect(DecoderPolicy().allowsHybridSeeks(for: VideoStreamTraits(codec: "vp9")))
+        #expect(DecoderPolicy().allowsHybridSeeks(for: VideoStreamTraits(codec: "VP9", bitDepth: 10)))
+        for codec in ["hevc", "h264", "av1", "mpeg4"] {
+            #expect(!DecoderPolicy().allowsHybridSeeks(for: VideoStreamTraits(codec: codec)), "\(codec)")
+        }
+        #expect(!DecoderPolicy(support: HardwareDecodeSupport(vp9: false)).allowsHybridSeeks(for: VideoStreamTraits(codec: "vp9")))
+        #expect(!DecoderPolicy(hardwareEnabled: false).allowsHybridSeeks(for: VideoStreamTraits(codec: "vp9")))
+    }
+
+    @Test func aForcedDecoderNeverRunsTheHybrid() {
+        #expect(!DecoderPolicy(forced: .hardware).allowsHybridSeeks(for: VideoStreamTraits(codec: "vp9")))
+        #expect(!DecoderPolicy(forced: .software).allowsHybridSeeks(for: VideoStreamTraits(codec: "vp9")))
+    }
+
+    @Test func exactSeeksOverThirtyFramesGoToSoftware() {
+        let threshold = DecoderPolicy.hybridSeekFrameThreshold
+        #expect(threshold == 30)
+        #expect(DecoderPolicy.seekDecoder(frames: threshold + 1, primary: .hardware, hybrid: true) == .software)
+        #expect(DecoderPolicy.seekDecoder(frames: threshold, primary: .hardware, hybrid: true) == .hardware)
+        #expect(DecoderPolicy.seekDecoder(frames: 1, primary: .hardware, hybrid: true) == .hardware, "keyframe scrubs stay on hardware")
+        #expect(DecoderPolicy.seekDecoder(frames: 300, primary: .hardware, hybrid: false) == .hardware)
+        #expect(DecoderPolicy.seekDecoder(frames: 300, primary: .software, hybrid: true) == .software)
+    }
 }

@@ -4,7 +4,7 @@ import ReelCore
 import ReelEngine
 import Synchronization
 
-/// `reelctl seek-bench <file> [--runs N] [--json]` (design sections 7.6 and 14).
+/// `reelctl seek-bench <file> [--runs N] [--with-thumbs] [--json]` (design sections 7.6, 14 and 16).
 ///
 /// - First frame after open: a fresh engine per run.
 /// - One resident engine for the rest: keyframe (scrub) seeks to random targets, exact seeks to the
@@ -13,24 +13,56 @@ import Synchronization
 ///   layer returns `.enqueued`.
 /// - Every exact seek must land on the expected frame pts, and sampled targets must match a
 ///   sequential software decode with a luma PSNR of at least 35 dB.
+/// - `--with-thumbs` runs background thumbnail generation on the resident engine during the bench
+///   (into a private cache that is removed afterwards, so it always generates);
+///   `REEL_NO_THUMBNAILS=1` turns it off. A file with few keyframes finishes its thumbnails in a
+///   few milliseconds, so before every gated (worst-case) exact seek generation restarts into an
+///   empty folder and the seek is sent once its first keyframes are in flight. The run fails
+///   unless generation was running at the start of every gated seek.
+/// - VP9 runs the hybrid (D46) and must hand off from software to hardware at least once.
 enum SeekBenchCommand {
     static let minimumPSNR = 35.0
     /// Pause between seeks on the resident engine, like a person pressing keys.
     static let pause: Duration = .milliseconds(100)
 
     struct Thresholds: Encodable {
-        var firstFrame: Double
+        /// Nil: not gated (VP9's M2 criterion names only the seeks).
+        var firstFrame: Double?
         var keyframeSeek: Double
         var exactWorst: Double
+        /// VP9 hybrid: at least this many software to hardware hand-offs.
+        var decoderHandoffs: Int?
     }
 
-    /// Acceptance thresholds in milliseconds (design section 7.6). VP9 is reported, not gated.
+    /// Acceptance thresholds in milliseconds (design sections 7.6 and 16, M2 criterion 6).
     static func thresholds(for url: URL) -> Thresholds? {
         switch url.lastPathComponent {
         case "hevc10_1080p24.mkv": Thresholds(firstFrame: 200, keyframeSeek: 50, exactWorst: 250)
         case "h264_1080p30.mp4": Thresholds(firstFrame: 200, keyframeSeek: 50, exactWorst: 350)
         case "av1_2160p60.mkv": Thresholds(firstFrame: 200, keyframeSeek: 80, exactWorst: 550)
+        case "vp9_2160p60.webm": Thresholds(firstFrame: nil, keyframeSeek: 100, exactWorst: 800, decoderHandoffs: 1)
         default: nil
+        }
+    }
+
+    struct ThumbnailRun: Encodable {
+        var outcome: String?
+        var done: Int
+        var total: Int
+        var decoder: String?
+        /// Generation restarts, one before each gated exact seek.
+        var restarts = 0
+        var exactSeeksGated = 0
+        /// Gated exact seeks requested while a generation run had not finished.
+        var exactSeeksWithGenerationRunning = 0
+        /// Thumbnails stored between a gated seek's request and its landing.
+        var thumbnailsDoneDuringExactSeeks = 0
+
+        enum CodingKeys: String, CodingKey {
+            case outcome, done, total, decoder, restarts
+            case exactSeeksGated = "exact_seeks_gated"
+            case exactSeeksWithGenerationRunning = "exact_seeks_with_generation_running"
+            case thumbnailsDoneDuringExactSeeks = "thumbnails_done_during_exact_seeks"
         }
     }
 
@@ -99,8 +131,19 @@ enum SeekBenchCommand {
         var psnr: [PSNRSample]
         var thresholds: Thresholds?
         var failures: [String]
-        /// Nil when the file has no thresholds (VP9 is report only).
+        /// Nil when the file has no thresholds.
         var pass: Bool?
+        /// Software to hardware hand-offs of the VP9 hybrid on the resident engine (D46).
+        var decoderHandoffs: Int
+        /// Thumbnail generation during the bench (`--with-thumbs`).
+        var thumbnails: ThumbnailRun?
+
+        enum CodingKeys: String, CodingKey {
+            case file, codec, decoder, runs, gopSeconds, firstFrame, keyframeSeek, exactWorst, exactWorstPreview
+            case exactRandom, exactCounts, exactChecked, exactLandedCorrect, misses, psnr, thresholds, failures, pass
+            case decoderHandoffs = "decoder_handoffs"
+            case thumbnails
+        }
     }
 
     /// Every video frame's pts and the keyframes, from one read of the file.
@@ -158,7 +201,23 @@ enum SeekBenchCommand {
         let samples = try arguments.int("--psnr-samples", default: 5)
         var random = SplitMix64(seed: UInt64(try arguments.int("--seed", default: 7)))
         let configuration = headlessConfiguration(decoder: try arguments.decoder())
-        let report = try await bench(url, runs: runs, psnrSamples: samples, configuration: configuration, random: &random)
+        var resident = configuration
+        var cacheDirectory: URL?
+        if arguments.flags.contains("--with-thumbs"), !configuration.environment.thumbnailsDisabled {
+            // A private cache: the bench always generates, and nothing lands in the user's caches.
+            let directory = FileManager.default.temporaryDirectory.appending(path: "reelctl-thumbs-\(UUID().uuidString)", directoryHint: .isDirectory)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            cacheDirectory = directory
+            resident.generatesThumbnails = true
+            resident.thumbnailCacheDirectory = directory
+        }
+        defer {
+            if let cacheDirectory { try? FileManager.default.removeItem(at: cacheDirectory) }
+        }
+        let report = try await bench(
+            url, runs: runs, psnrSamples: samples, configuration: configuration, resident: resident,
+            thumbnailFolders: cacheDirectory, random: &random
+        )
         if arguments.json {
             try printJSON(report)
         } else {
@@ -172,6 +231,8 @@ enum SeekBenchCommand {
         runs: Int,
         psnrSamples: Int,
         configuration: PlaybackEngine.Configuration,
+        resident: PlaybackEngine.Configuration? = nil,
+        thumbnailFolders: URL? = nil,
         random: inout SplitMix64
     ) async throws -> Report {
         try warmCache(url)
@@ -195,9 +256,10 @@ enum SeekBenchCommand {
             await engine.close()
         }
 
-        let engine = PlaybackEngine(configuration: configuration)
+        let engine = PlaybackEngine(configuration: resident ?? configuration)
         _ = try await engine.open(url)
         let decoder = await engine.videoDecoderKind
+        let generator = await engine.thumbnailGenerator
         var misses: [Miss] = []
 
         // Keyframe seeks: random targets, each in a different GOP from the one on screen.
@@ -226,8 +288,9 @@ enum SeekBenchCommand {
         var counts = SeekCounts()
         var checked = 0
         var correct = 0
-        func exact(_ target: MediaTime, kind: String) async -> SeekReport? {
+        func exact(_ target: MediaTime, kind: String, beforeSeek: (() async -> Void)? = nil) async -> SeekReport? {
             try? await Task.sleep(for: pause)
+            await beforeSeek?()
             guard let report = await engine.seekAndWait(.exact(target)), report.targetMilliseconds != nil, !report.cancelled else {
                 failures.append("\(kind) exact seek to \(target) did not land")
                 return nil
@@ -262,8 +325,33 @@ enum SeekBenchCommand {
             if round.first == order.last, round.count > 1 { round.swapAt(0, round.count - 1) }
             order.append(contentsOf: round)
         }
-        for target in order.prefix(runs) {
-            guard let report = await exact(target, kind: "worst") else { continue }
+        var overlap = ThumbnailRun(outcome: nil, done: 0, total: 0, decoder: nil)
+        var overlapRuns: [(generator: ThumbnailGenerator, requested: UInt64, landed: UInt64)] = []
+        for (index, target) in order.prefix(runs).enumerated() {
+            var restarted: ThumbnailGenerator?
+            var running = false
+            let report = await exact(target, kind: "worst") {
+                guard let thumbnailFolders else { return }
+                let folder = thumbnailFolders.appending(path: "exact-\(index)", directoryHint: .isDirectory)
+                guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)) != nil,
+                      let generator = await engine.restartThumbnails(cacheDirectory: folder) else { return }
+                overlap.restarts += 1
+                restarted = generator
+                // Seek once the plan is made: the first keyframes are then being submitted.
+                let deadline = ContinuousClock.now + .seconds(2)
+                while generator.progress.total == 0, generator.report == nil, ContinuousClock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(1))
+                }
+                running = generator.report == nil && generator.progress.done < generator.progress.total
+            }
+            if thumbnailFolders != nil {
+                overlap.exactSeeksGated += 1
+                if running { overlap.exactSeeksWithGenerationRunning += 1 }
+            }
+            guard let report else { continue }
+            if let restarted, let milliseconds = report.targetMilliseconds {
+                overlapRuns.append((restarted, report.requestedAtNanos, report.requestedAtNanos + UInt64(milliseconds * 1e6)))
+            }
             if let milliseconds = report.targetMilliseconds { exactWorst.append(milliseconds) }
             if let preview = report.previewMilliseconds { exactWorstPreview.append(preview) }
         }
@@ -286,7 +374,35 @@ enum SeekBenchCommand {
             _ = await exact(target, kind: "psnr")
             landedFrames.append((target, await engine.lastLandedFrame()))
         }
+        // Hand-offs happen in the decode ahead after a software landing; let the last one finish.
+        try await Task.sleep(for: .milliseconds(200))
+        let handoffs = engine.decoderHandoffs
+        var thumbnails = generator.map { generator in
+            let progress = generator.progress
+            return ThumbnailRun(outcome: generator.report?.outcome.rawValue, done: progress.done, total: progress.total, decoder: generator.report?.decoder?.rawValue)
+        }
         await engine.close()
+        if thumbnailFolders != nil {
+            for run in overlapRuns {
+                let report = await run.generator.finished()
+                overlap.thumbnailsDoneDuringExactSeeks += report.completions.filter { $0.finishedNanos >= run.requested && $0.finishedNanos <= run.landed }.count
+            }
+            if let last = overlapRuns.last?.generator.report {
+                overlap.outcome = last.outcome.rawValue
+                overlap.done = last.generated + last.resumed
+                overlap.total = last.planned
+                overlap.decoder = last.decoder?.rawValue
+            } else if let thumbnails {
+                (overlap.outcome, overlap.done, overlap.total, overlap.decoder) = (thumbnails.outcome, thumbnails.done, thumbnails.total, thumbnails.decoder)
+            }
+            thumbnails = overlap
+            if overlap.exactSeeksWithGenerationRunning < overlap.exactSeeksGated {
+                failures.append("thumbnail generation was running at \(overlap.exactSeeksWithGenerationRunning) of \(overlap.exactSeeksGated) gated exact seeks")
+            }
+            if overlap.exactSeeksGated > 0, overlap.thumbnailsDoneDuringExactSeeks == 0 {
+                failures.append("no thumbnail finished while a gated exact seek was in flight")
+            }
+        }
         let references = try await Task.detached(priority: .userInitiated) {
             try sequentialFrames(url, at: sampled)
         }.value
@@ -312,13 +428,20 @@ enum SeekBenchCommand {
         var pass: Bool?
         if let limits {
             var ok = failures.isEmpty
-            for (name, value, limit) in [
+            let gates: [(String, Double?, Double?)] = [
                 ("first frame", firstStats.p95, limits.firstFrame),
                 ("keyframe seek", keyframeStats.p95, limits.keyframeSeek),
                 ("exact worst-case seek", worstStats.p95, limits.exactWorst),
-            ] where (value ?? .infinity) > limit {
+            ]
+            for (name, value, limit) in gates {
+                guard let limit, (value ?? .infinity) > limit else { continue }
                 ok = false
                 failures.append(String(format: "%@ p95 %.1f ms is over %.0f ms", name, value ?? -1, limit))
+            }
+            // Forced decoders run no hybrid, so the hand-off count is only gated by policy.
+            if let wanted = limits.decoderHandoffs, configuration.environment.forcedDecoder == nil, handoffs < wanted {
+                ok = false
+                failures.append("\(handoffs) decoder hand-offs, expected at least \(wanted)")
             }
             pass = ok
         }
@@ -342,7 +465,9 @@ enum SeekBenchCommand {
             psnr: psnr,
             thresholds: limits,
             failures: failures,
-            pass: pass
+            pass: pass,
+            decoderHandoffs: handoffs,
+            thumbnails: thumbnails
         )
     }
 
@@ -405,8 +530,13 @@ enum SeekBenchCommand {
         for sample in report.psnr {
             print(String(format: "  PSNR at %.3f s: %.1f dB", sample.target, sample.decibels ?? 0))
         }
+        print("decoder hand-offs: \(report.decoderHandoffs)")
+        if let thumbnails = report.thumbnails {
+            print("thumbnails during the bench: \(thumbnails.done) of \(thumbnails.total) (\(thumbnails.outcome ?? "running"))")
+        }
         if let thresholds = report.thresholds {
-            print(String(format: "thresholds: first frame %.0f, keyframe %.0f, exact %.0f ms", thresholds.firstFrame, thresholds.keyframeSeek, thresholds.exactWorst))
+            let first = thresholds.firstFrame.map { String(format: "%.0f", $0) } ?? "-"
+            print(String(format: "thresholds: first frame %@, keyframe %.0f, exact %.0f ms", first, thresholds.keyframeSeek, thresholds.exactWorst))
         }
         for failure in report.failures { print("FAIL: \(failure)") }
         print(report.pass.map { $0 ? "PASS" : "FAIL" } ?? (report.failures.isEmpty ? "REPORT ONLY" : "FAIL"))

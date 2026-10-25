@@ -36,26 +36,33 @@ final class SendableCallback<Value>: Sendable {
 final class FrameCredits: Sendable {
     private struct State {
         var generation: UInt64 = 0
+        var limit: Int
         var available: Int
         var waiters: [UInt64: CheckedContinuation<Void, Never>] = [:]
         var nextWaiter: UInt64 = 0
     }
 
-    let limit: Int
+    /// The limit a reset without its own uses.
+    let baseLimit: Int
     private let state: Mutex<State>
 
     init(limit: Int) {
-        self.limit = limit
-        state = Mutex(State(available: limit))
+        baseLimit = limit
+        state = Mutex(State(limit: limit, available: limit))
     }
 
     var available: Int { state.withLock { $0.available } }
+    /// The limit of the current generation.
+    var limit: Int { state.withLock { $0.limit } }
 
-    /// Starts `generation` with every credit free and wakes waiters of older generations.
-    func reset(generation: UInt64) {
+    /// Starts `generation` with every credit free and wakes waiters of older generations. A
+    /// software run of the VP9 hybrid passes a higher `limit`: its frame threads hold that many
+    /// output frames before the first one comes out (`SoftwareVideoDecoder.outputDelay`).
+    func reset(generation: UInt64, limit: Int? = nil) {
         let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
             state.generation = generation
-            state.available = limit
+            state.limit = max(limit ?? baseLimit, baseLimit)
+            state.available = state.limit
             defer { state.waiters.removeAll() }
             return Array(state.waiters.values)
         }
@@ -96,7 +103,7 @@ final class FrameCredits: Sendable {
     func release(generation: UInt64) {
         let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
             guard state.generation == generation else { return [] }
-            state.available = min(limit, state.available + 1)
+            state.available = min(state.limit, state.available + 1)
             defer { state.waiters.removeAll() }
             return Array(state.waiters.values)
         }
@@ -125,8 +132,10 @@ struct SeekRun: Sendable {
     var framesDecoded = 0
     var framesSkipped = 0
     var targetSubmitted = false
+    /// The decoder the run started on (software for a long VP9 exact seek, D46).
+    var decoder: VideoDecoderKind = .hardware
 
-    func report(bytesNow: Int64, cancelled: Bool) -> SeekReport {
+    func report(bytesNow: Int64, cancelled: Bool, handoffs: Int? = nil) -> SeekReport {
         func milliseconds(_ nanos: UInt64?) -> Double? {
             nanos.map { Double($0 &- requestedAtNanos) / 1_000_000 }
         }
@@ -144,7 +153,9 @@ struct SeekRun: Sendable {
             framesSkipped: framesSkipped,
             bytesRead: max(0, bytesNow - bytesAtStart),
             storeHit: storeHit,
-            cancelled: cancelled
+            cancelled: cancelled,
+            decoder: decoder,
+            decoderHandoffs: handoffs
         )
     }
 }
@@ -176,6 +187,14 @@ final class PipelineShared: Sendable {
     let audioEnded = Atomic<Bool>(false)
     /// Tests: milliseconds the audio feeder holds the next packet before submitting it (one shot).
     let audioSubmitHoldForTesting = Atomic<Int>(0)
+    /// Software to hardware hand-offs of the VP9 hybrid since open (D46).
+    let decoderHandoffs = Atomic<Int>(0)
+    /// The last frames enqueued, oldest first, for screenshots: the one on screen is the newest
+    /// with a pts at or before the clock (up to `maxFramesAhead` are queued ahead of it).
+    let recentFrames = Mutex<[DecodedFrame]>([])
+    static let recentFrameLimit = VideoOutput.maxFramesAhead + 1
+    /// Applied to every frame before enqueue (subtitles composited while Picture in Picture runs).
+    let frameTransform = Mutex<FrameTransform?>(nil)
 
     var currentGeneration: UInt64 { generation.load(ordering: .acquiring) }
 
@@ -186,6 +205,10 @@ final class PipelineShared: Sendable {
         let pts = MediaTime(frame.presentationTime) ?? frame.time
         let end = pts + (MediaTime(frame.duration) ?? .zero)
         lastVideoEnd.withLock { $0 = max($0 ?? end, end) }
+        recentFrames.withLock { frames in
+            frames.append(frame)
+            if frames.count > PipelineShared.recentFrameLimit { frames.removeFirst(frames.count - PipelineShared.recentFrameLimit) }
+        }
         let landing = run.withLock { run -> Landing? in
             guard var current = run, current.generation == frame.generation, current.targetLandedNanos == nil else { return nil }
             if let preview = current.previewPTS, preview == pts, current.targetPTS != preview, current.previewLandedNanos == nil {
@@ -202,12 +225,28 @@ final class PipelineShared: Sendable {
         return landing
     }
 
+    /// The recent frame shown at `time`: the newest with a pts at or before it, else the oldest.
+    func frameShown(at time: MediaTime) -> DecodedFrame? {
+        recentFrames.withLock { frames in
+            frames.last { (MediaTime($0.presentationTime) ?? $0.time) <= time + .milliseconds(1) } ?? frames.first
+        }
+    }
+
     func updateRun(generation: UInt64, _ body: (inout SeekRun) -> Void) {
         run.withLock { run in
             guard var current = run, current.generation == generation else { return }
             body(&current)
             run = current
         }
+    }
+}
+
+/// A frame rewrite run by the presenter before enqueue (`PiPFrameCompositor`).
+final class FrameTransform: Sendable {
+    let apply: @Sendable (DecodedFrame) -> DecodedFrame
+
+    init(_ apply: @escaping @Sendable (DecodedFrame) -> DecodedFrame) {
+        self.apply = apply
     }
 }
 
@@ -222,11 +261,13 @@ struct VideoFeedState: Sendable {
     var startKeyframe: MediaTime?
     /// The decoder was drained at the end of the file; decoding needs a keyframe restart.
     var reachedEnd = false
+    /// The decoder holding the reference state (the hybrid's software decoder until it hands over).
+    var active: VideoDecoderKind?
 
     /// The live decoder position for the planner, when continuing is possible.
     func decoderPosition(storeEpoch: UInt64) -> DecoderPosition? {
         guard let cursor, cursor.epoch == storeEpoch, !reachedEnd, let lastSubmittedPTS else { return nil }
-        return DecoderPosition(lastSubmittedPTS: lastSubmittedPTS)
+        return DecoderPosition(lastSubmittedPTS: lastSubmittedPTS, decoder: active)
     }
 }
 
@@ -243,6 +284,8 @@ struct FeedSpec: Sendable {
     var scrubOnly: Bool
     /// The store is being refilled by a demuxer seek of this generation; wait for it first.
     var awaitDemuxerSeek: Bool
+    /// The decoder a restart begins on; a continued run keeps the state's.
+    var decoder: VideoDecoderKind
 }
 
 /// Feeds packets from the PacketStore to the video decoder for one seek generation (design section
@@ -252,10 +295,16 @@ struct FeedSpec: Sendable {
 /// Output flags are decided in decode order with a lookahead window: a packet whose pts is at or
 /// before the target is the target only if no packet in the window has a pts between it and the
 /// target. Any stream with a reorder depth below the window size is decided exactly.
+///
+/// VP9 hybrid (D46): a run may start on `software`; once its target is out, the next keyframe
+/// goes to `decoder` (VideoToolbox) after the software decoder has drained, so the frames before
+/// it are presented and nothing on screen is flushed.
 struct VideoFeeder: Sendable {
     let demuxer: Demuxer
     let format: VideoFormat
     let decoder: any VideoDecoding
+    /// The hybrid's software decoder, when the stream has one.
+    let software: (any VideoDecoding)?
     let orderer: PresentationOrderer
     let credits: FrameCredits
     let shared: PipelineShared
@@ -280,9 +329,11 @@ struct VideoFeeder: Sendable {
     func run(_ initial: VideoFeedState, spec: FeedSpec) async -> VideoFeedState {
         var state = initial
         let generation = spec.generation
+        if spec.keyframe != nil { state.active = spec.decoder }
+        if software == nil || state.active == nil { state.active = decoder.kind }
         if let keyframe = spec.keyframe {
             guard let resolved = await resolveStart(keyframe: keyframe, spec: spec) else { return state }
-            state = VideoFeedState(cursor: resolved.cursor, startKeyframe: resolved.key)
+            state = VideoFeedState(cursor: resolved.cursor, startKeyframe: resolved.key, active: state.active)
             shared.updateRun(generation: generation) { run in
                 run.startKeyframe = resolved.key
                 if spec.preview { run.previewPTS = resolved.key }
@@ -345,6 +396,22 @@ struct VideoFeeder: Sendable {
             }
 
             state.lookahead.removeFirst()
+            if decision.targetSubmitted, !spec.scrubOnly, head.isKeyframe, head.pts != state.startKeyframe,
+               let software, state.active == .software, decoder.kind == .hardware {
+                // Hand-off: the frames before this keyframe come out of software first. Counted
+                // before the drain, which pushes out a software landing whose report must include it.
+                shared.decoderHandoffs.add(1, ordering: .releasing)
+                await software.drain()
+                if isStale(generation) {
+                    // Superseded during the drain: the hand-off did not happen.
+                    shared.decoderHandoffs.subtract(1, ordering: .releasing)
+                    state.lookahead.insert(head, at: 0)
+                    state.reachedEnd = true
+                    return state
+                }
+                state.active = .hardware
+                trace("hybrid hand-off to VideoToolbox at \(head.pts?.description ?? "-")")
+            }
             let action = quick ? Action.submit(output: true) : decide(head, decision: &decision)
             firstPacket = false
             switch action {
@@ -361,7 +428,7 @@ struct VideoFeeder: Sendable {
                 // Before the decode: the presenter tells a preview from the target by this pts.
                 if decision.justSubmittedTarget { shared.updateRun(generation: generation) { $0.targetPTS = head.pts } }
                 do {
-                    try decoder.decode(head, generation: generation, output: output)
+                    try current(state).decode(head, generation: generation, output: output)
                 } catch {
                     if output {
                         credits.release(generation: generation)
@@ -384,6 +451,12 @@ struct VideoFeeder: Sendable {
                 }
             }
         }
+    }
+
+    /// The decoder the state's reference frames live in.
+    private func current(_ state: VideoFeedState) -> any VideoDecoding {
+        if state.active == .software, decoder.kind == .hardware, let software { return software }
+        return decoder
     }
 
     // MARK: Start
@@ -501,7 +574,7 @@ struct VideoFeeder: Sendable {
     // MARK: End of stream
 
     private func finishStream(_ state: inout VideoFeedState, generation: UInt64) async {
-        await decoder.drain()
+        await current(state).drain()
         state.reachedEnd = true
         guard shared.isCurrent(generation) else { return }
         orderer.flush().forEach { frames.yield($0) }

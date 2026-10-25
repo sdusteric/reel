@@ -4,20 +4,33 @@ import ReelEngine
 import ReelUI
 
 /// The one player window (design 9.1): borderless-feeling, black, sized to the video, with the
-/// traffic lights fading together with the SwiftUI chrome.
+/// traffic lights fading together with the SwiftUI chrome. It owns the outputs of the current
+/// engine: the display layer, the subtitle layer and Picture in Picture.
 final class PlayerWindowController: NSWindowController, NSWindowDelegate, PlayerCommandTarget {
     let model: PlayerModel
     private let stateStore: StateStore
     private let log: ReelLog
     private let showSettingsAction: () -> Void
+    private let screenshots: ScreenshotSaver
     private var contentView: PlayerContentView?
     private var videoSize: CGSize?
+    /// The engine of the open file; the model closes it, this keeps its outputs in step.
+    private(set) var engine: PlaybackEngine?
+    let pictureInPicture: PictureInPicture
 
-    init(model: PlayerModel, stateStore: StateStore, log: ReelLog, showSettings: @escaping () -> Void) {
+    init(
+        model: PlayerModel,
+        stateStore: StateStore,
+        screenshots: ScreenshotSaver,
+        log: ReelLog,
+        showSettings: @escaping () -> Void
+    ) {
         self.model = model
         self.stateStore = stateStore
+        self.screenshots = screenshots
         self.log = log
         showSettingsAction = showSettings
+        pictureInPicture = PictureInPicture(model: model, log: log)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: WindowSizing.emptySize),
             styleMask: [.titled, .fullSizeContentView, .resizable, .closable, .miniaturizable],
@@ -37,16 +50,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
         let actions = SceneActions(toggleFullscreen: { [weak self] in self?.toggleFullscreen() })
         let content = PlayerContentView(model: model, actions: actions, commandTarget: self)
-        content.onDrop = { [weak self] url in self?.open(url) }
-        content.videoView.onDrop = { [weak self] url in self?.open(url) }
+        let open: (URL) -> Void = { [weak self] url in self?.open(url) }
+        let useSubtitle: (URL) -> Void = { [weak model] url in model?.useSubtitleFile(url) }
+        content.onDrop = open
+        content.videoView.onDrop = open
+        content.onSubtitleDrop = useSubtitle
+        content.videoView.onSubtitleDrop = useSubtitle
         content.videoView.onDoubleClick = { [weak self] in self?.toggleFullscreen() }
-        content.videoView.contextMenuProvider = { [weak self] in self?.contextMenu() }
+        content.videoView.contextMenuProvider = { [weak self] in self.map { MainMenu.contextMenu(model: $0.model) } }
+        content.videoView.commandTarget = self
+        content.videoView.onLayersResized = { [weak self] in self?.engine?.subtitleLayerDidLayout() }
         window.contentView = content
         contentView = content
         placeEmptyWindow()
 
         model.onChromeVisibilityChange = { [weak self] visible in self?.chromeVisibilityChanged(visible) }
         model.onOpened = { [weak self] info in self?.fitWindow(to: info) }
+        model.onPictureInPictureRequest = { [weak self] wanted in self?.pictureInPicture.toggle(wanted) }
+        model.onAddSubtitleFile = { [weak self] in self?.addSubtitleFile() }
+        pictureInPicture.onActiveChange = { [weak self] active in
+            guard let engine = self?.engine else { return }
+            Task { await engine.setPictureInPictureActive(active) }
+        }
     }
 
     @available(*, unavailable)
@@ -63,15 +88,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     // MARK: Engine
 
     /// The only place the app creates an engine: an audible `PlaybackEngine` that keeps the
-    /// display awake while playing, rendering into this window's display layer. The engine reads
-    /// the decoder and preview settings when it is created, so changes apply to the next file.
+    /// display awake while playing, rendering into this window's display and subtitle layers.
+    /// The engine reads the decoder and preview settings when it is created, so changes apply to
+    /// the next file.
     func makeEngine(for url: URL, settings: ReelCore.Settings) async -> any PlayerEngine {
         var configuration = PlaybackEngine.Configuration.playback
         configuration.hardwareDecoding = settings.hardwareDecoding
         configuration.keyframePreview = settings.keyframePreview
         let engine = EngineFactory.makePlaybackEngine(configuration: configuration)
-        if let layer = contentView?.videoView.prepareDisplayLayer() {
-            await engine.attach(displayLayer: layer)
+        pictureInPicture.stop()
+        self.engine = engine
+        if let layers = contentView?.videoView.prepareLayers() {
+            pictureInPicture.attach(layers.display)
+            engine.attach(subtitleLayer: layers.subtitles)
+            await engine.attach(displayLayer: layers.display)
         }
         return engine
     }
@@ -93,8 +123,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func closeFile() {
+        pictureInPicture.stop()
         Task {
             await model.close()
+            engine = nil
             window?.title = "Reel"
             window?.contentAspectRatio = NSSize(width: 0, height: 0)
             window?.resizeIncrements = NSSize(width: 1, height: 1)
@@ -104,6 +136,21 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     func showSettings() {
         showSettingsAction()
+    }
+
+    /// Add Subtitle File (the panel's footer row and the Subtitles menu).
+    func addSubtitleFile() {
+        guard model.hasMedia else { return }
+        OpenAndDrop.runSubtitlePanel(for: window, videoURL: model.media?.url) { [weak model] url in
+            model?.useSubtitleFile(url)
+        }
+    }
+
+    // MARK: Screenshot
+
+    func takeScreenshot() {
+        guard let engine else { return }
+        screenshots.take(model: model) { try await engine.takeScreenshot() }
     }
 
     // MARK: Window sizing
@@ -162,15 +209,48 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
     }
 
-    // MARK: Fullscreen
+    // MARK: Fullscreen (design 9.1 M2 polish, D41)
+
+    /// The menu bar and the Dock hide in fullscreen and come back at the screen edges.
+    static let fullscreenPresentation: NSApplication.PresentationOptions = [.fullScreen, .autoHideMenuBar, .autoHideDock]
+
+    var isFullscreen: Bool { window?.styleMask.contains(.fullScreen) == true }
 
     func toggleFullscreen() {
         window?.toggleFullScreen(nil)
     }
 
     func exitFullscreen() {
-        guard let window, window.styleMask.contains(.fullScreen) else { return }
-        window.toggleFullScreen(nil)
+        guard isFullscreen else { return }
+        window?.toggleFullScreen(nil)
+    }
+
+    func window(
+        _ window: NSWindow,
+        willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions = []
+    ) -> NSApplication.PresentationOptions {
+        proposedOptions.union(PlayerWindowController.fullscreenPresentation)
+    }
+
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        model.setFullscreen(true)
+    }
+
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        model.setFullscreen(false)
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        model.setFullscreen(false)
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        model.setFullscreen(false)
+        engine?.subtitleLayerDidLayout()
+    }
+
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        engine?.subtitleLayerDidLayout()
     }
 
     // MARK: Chrome
@@ -185,19 +265,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 window?.standardWindowButton(type)?.animator().alphaValue = visible ? 1 : 0
             }
         }
-        if !visible, contentView?.isPointerOverVideo == true {
+        // The cursor hides with the chrome over the picture; in fullscreen the whole screen is
+        // the picture, so it hides wherever it is outside the controller.
+        if !visible, contentView?.isPointerOverVideo == true || (isFullscreen && !model.chrome.isPointerOverController) {
             NSCursor.setHiddenUntilMouseMoves(true)
         }
-    }
-
-    private func contextMenu() -> NSMenu {
-        let menu = NSMenu()
-        menu.addItem(withTitle: "Open\u{2026}", action: #selector(AppDelegate.openDocument(_:)), keyEquivalent: "")
-        let play = menu.addItem(withTitle: model.isPlaying ? "Pause" : "Play", action: #selector(AppDelegate.togglePause(_:)), keyEquivalent: "")
-        play.isEnabled = model.hasMedia
-        let show = menu.addItem(withTitle: "Show in Finder", action: #selector(AppDelegate.showInFinder(_:)), keyEquivalent: "")
-        show.isEnabled = model.hasMedia
-        return menu
     }
 
     // MARK: NSWindowDelegate
@@ -215,7 +287,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         saveFrame()
     }
 
+    func windowDidChangeBackingProperties(_ notification: Notification) {
+        engine?.subtitleLayerDidLayout()
+    }
+
+    /// Closing the window while PiP is active stops PiP and closes the file (design 9.9).
     func windowWillClose(_ notification: Notification) {
+        pictureInPicture.stop()
         model.chrome.invalidate()
     }
 

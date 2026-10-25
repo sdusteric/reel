@@ -18,5 +18,157 @@
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSSupportsAutomaticTermination</key><false/>
   <key>NSSupportsSuddenTermination</key><false/>
+
+  <!-- Folder access (design 9.12): the episode list and sidecar subtitles list the video's folder. -->
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Reel lists the other videos and subtitle files in the folder of the video you open.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Reel lists the other videos and subtitle files in the folder of the video you open.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Reel lists the other videos and subtitle files in the folder of the video you open.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Reel lists the other videos and subtitle files in the folder of the video you open.</string>
+
+  <!-- Default app (design 9.12): Viewer, rank Default. The user picks Reel in Finder; Reel never
+       claims the types through LaunchServices. Where another app declares a type under its own
+       identifier (io.iina.mkv, com.adobe.flash.video), that identifier is listed as well. -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>MPEG-4 Video</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array><string>public.mpeg-4</string><string>com.apple.m4v-video</string></array>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>mp4</string><string>m4v</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>QuickTime Movie</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array><string>com.apple.quicktime-movie</string></array>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>mov</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>Matroska Video</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array><string>org.matroska.mkv</string><string>io.iina.mkv</string></array>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>mkv</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>WebM Video</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array><string>org.webmproject.webm</string></array>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>webm</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>AVI Video</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array><string>public.avi</string></array>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>avi</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>Flash Video</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array><string>com.adobe.flash-video</string><string>com.adobe.flash.video</string></array>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>flv</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>MPEG-2 Transport Stream</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.mpeg-2-transport-stream</string>
+        <string>public.avchd-mpeg-2-transport-stream</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>ts</string><string>m2ts</string><string>mts</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>Ogg Video</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array><string>org.xiph.ogv</string></array>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>ogv</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>Audio</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.mp3</string>
+        <string>public.aac-audio</string>
+        <string>org.xiph.flac</string>
+        <string>com.microsoft.waveform-audio</string>
+        <string>org.xiph.ogg-audio</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>mp3</string><string>aac</string><string>flac</string><string>wav</string><string>ogg</string></array>
+    </dict>
+  </array>
+
+  <!-- Types macOS does not declare itself (design 9.12). Imported, so a system or app declaration wins. -->
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>org.matroska.mkv</string>
+      <key>UTTypeDescription</key><string>Matroska Video</string>
+      <key>UTTypeConformsTo</key><array><string>public.movie</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key><array><string>mkv</string></array>
+        <key>public.mime-type</key><array><string>video/x-matroska</string></array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key><string>org.webmproject.webm</string>
+      <key>UTTypeDescription</key><string>WebM Video</string>
+      <key>UTTypeConformsTo</key><array><string>public.movie</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key><array><string>webm</string></array>
+        <key>public.mime-type</key><array><string>video/webm</string></array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key><string>com.adobe.flash-video</string>
+      <key>UTTypeDescription</key><string>Flash Video</string>
+      <key>UTTypeConformsTo</key><array><string>public.movie</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key><array><string>flv</string></array>
+        <key>public.mime-type</key><array><string>video/x-flv</string></array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key><string>public.avi</string>
+      <key>UTTypeDescription</key><string>AVI Video</string>
+      <key>UTTypeConformsTo</key><array><string>public.movie</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key><array><string>avi</string></array>
+        <key>public.mime-type</key><array><string>video/avi</string><string>video/x-msvideo</string></array>
+      </dict>
+    </dict>
+  </array>
 </dict>
 </plist>

@@ -1,3 +1,4 @@
+import CoreGraphics
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -22,7 +23,9 @@ import Testing
         let report = try #require(await engine.lastReport)
         #expect(report.kind == .exact)
         #expect(report.landedPTS == table.frames.first)
-        #expect(report.targetMilliseconds.map { $0 < 1_000 } == true)
+        // A sanity bound only: seek-bench measures first-frame latency. The whole test run starts
+        // its suites at once, and VideoToolbox is shared with the 4K thumbnail and decode suites.
+        #expect(report.targetMilliseconds.map { $0 < 3_000 } == true, "first frame after \(report.targetMilliseconds ?? -1) ms")
         let states = log.states
         #expect(states.first == .opening)
         #expect(states.last == .paused)
@@ -55,14 +58,14 @@ import Testing
             var pts: MediaTime
             var end: MediaTime
             var generation: UInt64
-            var afterFlush: Bool
+            var restart: UInt64
         }
         let engine = TestEngines.make()
         let flushed = Atomic<Bool>(false)
         let delivered = Mutex<[Delivered]>([])
         let framesAfterFlush = Atomic<Int>(0)
         await engine.setAudioObserver { buffer, generation in
-            let entry = Delivered(pts: buffer.pts, end: buffer.end, generation: generation, afterFlush: flushed.load(ordering: .acquiring))
+            let entry = Delivered(pts: buffer.pts, end: buffer.end, generation: generation, restart: buffer.restart)
             delivered.withLock { $0.append(entry) }
         }
         await engine.setFrameObserver { _ in
@@ -70,8 +73,11 @@ import Testing
         }
         _ = try await engine.open(Fixture.syncH264.url())
         await engine.play()
-        // Audio decodes about 1 s ahead of the clock; let it get there.
-        try await Task.sleep(for: .milliseconds(1_200))
+        // Audio decodes about 1 s ahead of the clock; wait until it is well ahead.
+        let ahead = await instantWhen(timeout: .seconds(30)) {
+            (delivered.withLock { $0.map(\.end).max() } ?? .zero) > engine.currentTime + .milliseconds(700)
+        }
+        #expect(ahead != nil, "audio got ahead of the clock")
         let generation = await engine.currentGeneration
         let reports = await engine.lastReport?.generation
         let decodedAhead = try #require(delivered.withLock { $0.map(\.end).max() })
@@ -79,11 +85,24 @@ import Testing
         let clock = engine.currentTime
         flushed.store(true, ordering: .releasing)
         await engine.deliverAudioEventForTesting(.flushSuggested(.outputConfigurationChanged))
-        try await Task.sleep(for: .milliseconds(500))
-        let after = delivered.withLock { $0.filter(\.afterFlush) }
+        let clockAfter = engine.currentTime
+        let restartCount = try #require(await engine.audioRestartCountForTesting)
+        let restarted = await instantWhen(timeout: .seconds(30)) {
+            delivered.withLock { $0.contains { $0.restart == restartCount } } && framesAfterFlush.load(ordering: .relaxed) > 5
+        }
+        #expect(restarted != nil, "audio restarted and video went on after the flush")
+        // Buffers decoded before the restart can still reach the observer after the event is
+        // sent; only those tagged with the restart's count were decoded after it.
+        let after = delivered.withLock { $0.filter { $0.restart == restartCount } }
         let first = try #require(after.first, "audio restarted after the flush")
+        // The restart reads the live clock when it runs, which a loaded test run delays.
+        let restartedAt = try #require(await engine.lastAudioRestartTimeForTesting)
+        #expect(restartedAt >= clock && restartedAt <= clockAfter, "restart at \(restartedAt), clock \(clock) to \(clockAfter)")
         #expect(decodedAhead > clock + .milliseconds(500), "audio was ahead of the clock before the flush")
-        #expect(first.pts <= clock + .milliseconds(100) && first.end > clock - .milliseconds(100), "restarted at \(first.pts) for the clock at \(clock)")
+        #expect(
+            first.pts <= restartedAt + .milliseconds(100) && first.end > restartedAt - .milliseconds(100),
+            "restarted at \(first.pts) for the clock at \(restartedAt)"
+        )
         #expect(after.allSatisfy { $0.generation == generation }, "same generation: no seek")
         #expect(await engine.currentGeneration == generation)
         #expect(await engine.lastReport?.generation == reports, "no seek was reported")
@@ -453,5 +472,212 @@ import Testing
         let box = Mutex<SendableCallback<Int>?>(SendableCallback { _ in })
         for value in 0..<100_000 { box.withLock { $0 }?.call(value) }
         box.withLock { $0 = nil }
+    }
+}
+
+// MARK: M2: speed, audio delay, thumbnails and Picture in Picture (design sections 9.4, 9.7, 9.9)
+
+extension PlaybackEngineTests {
+    @Test func theRateIsClampedAnnouncedAndDrivesTheClock() async throws {
+        let engine = M2Engines.make()
+        let log = EventLog()
+        log.start(engine.events)
+        _ = try await engine.open(Fixture.syncH264.url())
+        await engine.setRate(10)
+        #expect(await engine.rate == 4)
+        await engine.setRate(0.1)
+        #expect(await engine.rate == 0.25)
+        await engine.setRate(2)
+        #expect(await log.wait(timeout: .seconds(2)) { $0.all.contains(.rateChanged(4)) && $0.all.contains(.rateChanged(0.25)) && $0.all.contains(.rateChanged(2)) })
+        let start = engine.currentTime
+        let began = ContinuousClock.now
+        await engine.play()
+        try await Task.sleep(for: .milliseconds(600))
+        let wall = (ContinuousClock.now - began) / .seconds(1)
+        let moved = (engine.currentTime - start).seconds
+        #expect(moved > wall * 1.5 && moved < wall * 2.3, "at 2x the clock moved \(moved) s in \(wall) s")
+        await engine.close()
+    }
+
+    @Test func audioTimestampsCarryTheDelayWithoutReDecoding() throws {
+        let name = Fixture.syncH264.rawValue
+        let plain = try AudioTestSupport.decodeAll(name).buffers
+        let reader = try AudioFixtureReader(url: try AudioTestMedia.fixture(name))
+        let decoder = try reader.makeDecoder()
+        decoder.timestampOffset = .milliseconds(500)
+        var delayed: [DecodedAudioBuffer] = []
+        while let packet = reader.nextPacket() { delayed += try decoder.decode(packet) }
+        delayed += try decoder.finish()
+        #expect(delayed.count == plain.count)
+        for (shifted, original) in zip(delayed, plain) {
+            #expect(shifted.pts == original.pts + .milliseconds(500))
+            #expect(shifted.frameCount == original.frameCount)
+            #expect(CMTimeCompare(shifted.presentationTime, CMTimeAdd(original.presentationTime, CMTime(value: 500, timescale: 1_000))) == 0)
+        }
+    }
+
+    @Test func anAudioDelayRestartsAudioAtTheClockInTheSameGeneration() async throws {
+        let engine = M2Engines.make()
+        let changed = Atomic<Bool>(false)
+        let after = Mutex<[MediaTime]>([])
+        await engine.setAudioObserver { buffer, _ in
+            if changed.load(ordering: .acquiring) { after.withLock { $0.append(buffer.pts) } }
+        }
+        _ = try await engine.open(Fixture.syncH264.url())
+        await engine.play()
+        try await Task.sleep(for: .milliseconds(500))
+        let generation = await engine.currentGeneration
+        await engine.setAudioDelay(0.4)
+        let clock = engine.currentTime
+        changed.store(true, ordering: .releasing)
+        try await Task.sleep(for: .milliseconds(500))
+        let first = try #require(after.withLock { $0.first })
+        // The first buffer plays at the clock; it holds the audio from 0.4 s earlier.
+        #expect(first <= clock + .milliseconds(100) && first >= clock - .milliseconds(300), "\(first) for \(clock)")
+        #expect(await engine.currentGeneration == generation)
+        #expect(await engine.trackState?.audioDelay == 0.4)
+        // A seek keeps the delay: audio for target T starts at media time T - 0.4.
+        after.withLock { $0.removeAll() }
+        _ = await engine.seekAndWait(.exact(.seconds(5)))
+        try await Task.sleep(for: .milliseconds(400))
+        let afterSeek = try #require(after.withLock { $0.min() })
+        #expect(abs((afterSeek - .seconds(5)).seconds) < 0.05, "audio after the seek starts at the target clock time: \(afterSeek)")
+        await engine.close()
+    }
+
+    @Test func thumbnailsGenerateAfterTheFirstFrameAndAnswerLookups() async throws {
+        let folder = try TemporaryFolder()
+        let engine = M2Engines.make(thumbnailCache: folder.url)
+        let log = EventLog()
+        log.start(engine.events)
+        _ = try await engine.open(Fixture.hevc10.url())
+        let generator = try #require(await engine.thumbnailGenerator)
+        _ = await engine.seekAndWait(.exact(.seconds(30)))
+        let report = await generator.finished()
+        #expect(report.outcome == .completed)
+        let image = try #require(await engine.thumbnail(at: .seconds(31)))
+        #expect(image.width == ThumbnailPack.standardWidth)
+        #expect(image.pts <= .seconds(31))
+        #expect(log.all.contains { if case .thumbnailsProgress(let done, let total) = $0 { done == total && total > 0 } else { false } })
+        let packs = try FileManager.default.contentsOfDirectory(atPath: folder.url.path(percentEncoded: false))
+        #expect(packs.contains { $0.hasSuffix(".thumbs") }, "the pack went to the configured cache: \(packs)")
+        await engine.close()
+    }
+
+    /// `seek-bench --with-thumbs` restarts generation before each gated exact seek, so the seek
+    /// runs while keyframes are in flight; the restarted run pauses for the seek and completes.
+    /// The test holds the JPEG encodes until the seek is done, so the overlap does not depend on
+    /// how fast generation runs beside the other suites.
+    @Test func restartedThumbnailsOverlapAnExactSeekAndComplete() async throws {
+        let first = try TemporaryFolder()
+        let second = try TemporaryFolder()
+        let engine = M2Engines.make(thumbnailCache: first.url)
+        _ = try await engine.open(Fixture.hevc10.url())
+        let original = try #require(await engine.thumbnailGenerator)
+        _ = await original.finished()
+        let generator = try #require(await engine.restartThumbnails(cacheDirectory: second.url) { $0.holdEncodesForTesting() })
+        #expect(await engine.thumbnailGenerator === generator)
+        let inFlight = await instantWhen(timeout: .seconds(60)) { generator.inFlightForTesting > 0 }
+        #expect(inFlight != nil, "keyframes were submitted")
+        #expect(generator.report == nil, "generation is still running when the seek starts")
+        let seek = try #require(await engine.seekAndWait(.exact(.seconds(30))))
+        let landed = seek.requestedAtNanos + UInt64((seek.targetMilliseconds ?? 0) * 1e6)
+        let pause = try #require(generator.pausesForTesting.last, "the seek paused generation")
+        #expect(pause.nanos >= seek.requestedAtNanos && pause.nanos <= landed, "paused at \(pause.nanos), seek from \(seek.requestedAtNanos) to \(landed)")
+        #expect(pause.inFlight > 0, "keyframes were in flight during the seek")
+        generator.releaseEncodesForTesting()
+        let report = await generator.finished()
+        #expect(report.outcome == .completed)
+        #expect(report.generated == report.planned)
+        let packs = try FileManager.default.contentsOfDirectory(atPath: second.url.path(percentEncoded: false))
+        #expect(packs.contains { $0.hasSuffix(".thumbs") }, "the restarted run wrote to its own folder: \(packs)")
+        await engine.close()
+    }
+
+    @Test func noThumbnailsWithoutTheSettingOrWithREELNOTHUMBNAILS() async throws {
+        let plain = M2Engines.make()
+        _ = try await plain.open(Fixture.h264.url())
+        #expect(await plain.thumbnailGenerator == nil)
+        #expect(await plain.thumbnail(at: .seconds(10)) == nil)
+        await plain.close()
+        let folder = try TemporaryFolder()
+        let off = M2Engines.make(thumbnailCache: folder.url, environment: ["REEL_NO_THUMBNAILS": "1"])
+        _ = try await off.open(Fixture.h264.url())
+        #expect(await off.thumbnailGenerator == nil)
+        await off.close()
+    }
+
+    @Test func pictureInPictureCompositesTheSubtitleOverAPooledCopy() async throws {
+        for fixture in [Fixture.h264, Fixture.hevc10, Fixture.av1] {
+            let grab = try FrameGrabber.grab(url: fixture.url(), at: .seconds(2))
+            let frame = grab.frame
+            let compositor = PiPFrameCompositor()
+            let rect = PixelRect(x: 200, y: 900, width: 400, height: 60)
+            let white = try #require(Self.solidImage(width: rect.width, height: rect.height))
+            let out = compositor.composite(frame, subtitle: SubtitleBitmap(image: white, rect: rect), renderedWidth: frame.width, renderedHeight: frame.height)
+            #expect(out.presentationTime == frame.presentationTime && out.generation == frame.generation)
+            #expect(out.pixelFormat == frame.pixelFormat)
+            let original = try #require(FrameGrabber.lumaPlane(frame.pixelBuffer))
+            let composited = try #require(FrameGrabber.lumaPlane(out.pixelBuffer))
+            // Inside the rect: white. Elsewhere: the frame, unchanged up to rounding.
+            let inside = composited.values[(rect.y + 30) * composited.width + rect.x + 200]
+            #expect(inside > 0.85, "\(fixture): luma \(inside) under the subtitle")
+            var squared = 0.0
+            var count = 0
+            for row in stride(from: 0, to: 800, by: 4) {
+                for column in stride(from: 0, to: original.width, by: 4) {
+                    let difference = original.values[row * original.width + column] - composited.values[row * composited.width + column]
+                    squared += difference * difference
+                    count += 1
+                }
+            }
+            let psnr = 10 * log10(1 / max(squared / Double(count), 1e-12))
+            #expect(psnr > 40, "\(fixture): the rest of the frame changed (PSNR \(psnr) dB)")
+            #expect(compositor.statistics.composited == 1)
+            // About 4 ms for a 4K frame on this Mac, within the 12 ms budget.
+            #expect((compositor.statistics.lastMilliseconds ?? .infinity) < 250)
+        }
+    }
+
+    @Test func pictureInPictureLeaves4KUntouchedOnceTooSlow() throws {
+        let frame = try PlaybackEngineTests.blankFrame(at: CMTime(value: 1, timescale: 60), generation: 1)
+        let compositor = PiPFrameCompositor()
+        compositor.disableFor4KForTesting()
+        let white = try #require(Self.solidImage(width: 10, height: 10))
+        let subtitle = SubtitleBitmap(image: white, rect: PixelRect(x: 0, y: 0, width: 10, height: 10))
+        // A 16x16 frame is not 4K: still composited.
+        _ = compositor.composite(frame, subtitle: subtitle, renderedWidth: 16, renderedHeight: 16)
+        #expect(compositor.statistics.composited == 1)
+        #expect(PiPFrameCompositor.is4K(width: 3840, height: 2160))
+        #expect(!PiPFrameCompositor.is4K(width: 1920, height: 1080))
+    }
+
+    @Test func pictureInPictureWithAVisibleSubtitleCompositesFramesBeforeEnqueue() async throws {
+        let engine = M2Engines.make(external: false)
+        _ = try await engine.open(SubtitleFixture.tracks.url())
+        _ = await engine.seekAndWait(.exact(.seconds(1.2)))
+        await engine.setPictureInPictureActive(true)
+        _ = await M2Engines.waitForSubtitle(engine) { $0.bitmap != nil && $0.frameWidth == 1280 }
+        await engine.play()
+        try await Task.sleep(for: .milliseconds(500))
+        await engine.pause()
+        #expect(await engine.pictureInPictureCompositor.statistics.composited > 5)
+        await engine.setPictureInPictureActive(false)
+        let composited = await engine.pictureInPictureCompositor.statistics.composited
+        await engine.play()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await engine.pictureInPictureCompositor.statistics.composited == composited, "off when PiP ends")
+        await engine.close()
+    }
+
+    static func solidImage(width: Int, height: Int) -> CGImage? {
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                  data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+              ) else { return nil }
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
     }
 }

@@ -144,10 +144,10 @@ import Testing
     }
 
     @Test func unsupportedCommandsAreReportedNotBound() {
-        let parsed = InputMap(parsing: "v cycle sub-visibility\nSPACE cycle pause\nz add sub-delay -0.1")
+        let parsed = InputMap(parsing: "Ctrl+Meta+t cycle ontop\nSPACE cycle pause\nShift+Meta+> add chapter 1")
         #expect(parsed.bindings.count == 1)
         #expect(parsed.diagnostics.map(\.line) == [1, 3])
-        #expect(parsed.diagnostics.first?.message.contains("cycle sub-visibility") == true)
+        #expect(parsed.diagnostics.first?.message.contains("cycle ontop") == true)
     }
 
     @Test func malformedLinesAreReportedWithTheirLineNumber() {
@@ -160,5 +160,109 @@ import Testing
         let chord = KeyChord(character: "f", modifiers: [.control, .command])
         #expect(chord.description == "Ctrl+Meta+f")
         #expect(InputMap.parseChord(chord.description) == chord)
+    }
+
+    // MARK: M2 rows (design section 10, as in IINA's iina-default-input.conf)
+
+    @Test func subtitleLineKeys() {
+        #expect(action("Shift+RIGHT") == .subtitleLine(forward: true))
+        #expect(action("Shift+LEFT") == .subtitleLine(forward: false))
+    }
+
+    @Test func subtitleDelayKeysAreShiftedLetters() {
+        #expect(action("Z") == .adjustSubtitleDelay(seconds: -0.5))
+        #expect(action("X") == .adjustSubtitleDelay(seconds: 0.5))
+        #expect(action("Alt+Z") == .adjustSubtitleDelay(seconds: -0.1))
+        #expect(action("Alt+X") == .adjustSubtitleDelay(seconds: 0.1))
+        #expect(action("C") == .setSubtitleDelay(seconds: 0))
+        #expect(map.action(for: KeyChord(character: "z", modifiers: .shift)) == .adjustSubtitleDelay(seconds: -0.5))
+        // Lowercase z, x and c are not bound (the M1 draft had them wrong).
+        #expect(action("z") == nil)
+        #expect(action("x") == nil)
+        #expect(action("c") == nil)
+    }
+
+    @Test func audioDelayKeysUseParenthesesAndUnderscore() {
+        #expect(action("Shift+(") == .adjustAudioDelay(seconds: 0.5))
+        #expect(action("Shift+)") == .adjustAudioDelay(seconds: -0.5))
+        #expect(action("Alt+Shift+(") == .adjustAudioDelay(seconds: 0.1))
+        #expect(action("Alt+Shift+)") == .adjustAudioDelay(seconds: -0.1))
+        #expect(action("Shift+_") == .setAudioDelay(seconds: 0))
+        // The key handler sends Shift+9 as "(" without Shift, as mpv does.
+        #expect(map.action(for: KeyChord(character: "(")) == .adjustAudioDelay(seconds: 0.5))
+        #expect(map.action(for: KeyChord(character: "(", modifiers: .option)) == .adjustAudioDelay(seconds: 0.1))
+        #expect(map.action(for: KeyChord(character: "_")) == .setAudioDelay(seconds: 0))
+    }
+
+    @Test func subtitleSizePositionAndVisibilityKeys() {
+        #expect(action("G") == .adjustSubtitleScale(delta: 0.1))
+        #expect(action("F") == .adjustSubtitleScale(delta: -0.1))
+        #expect(action("r") == .adjustSubtitlePosition(delta: -1))
+        #expect(action("R") == .adjustSubtitlePosition(delta: 1))
+        #expect(action("t") == .adjustSubtitlePosition(delta: 1))
+        #expect(action("v") == .toggleSubtitleVisibility)
+        // Shift+F is subtitle size; plain f stays fullscreen.
+        #expect(action("f") == .toggleFullscreen)
+    }
+
+    @Test func trackCycleKeys() {
+        #expect(action("Ctrl+Meta+s") == .cycleTrack(.subtitle))
+        #expect(action("Ctrl+Meta+a") == .cycleTrack(.audio))
+        #expect(action("Ctrl+Meta+v") == .cycleTrack(.video))
+    }
+
+    @Test func episodeKeysIncludeMediaAndMouseButtons() {
+        #expect(action("Meta+RIGHT") == .episode(forward: true))
+        #expect(action("Meta+LEFT") == .episode(forward: false))
+        #expect(action("NEXT") == .episode(forward: true))
+        #expect(action("PREV") == .episode(forward: false))
+        #expect(map.action(for: KeyChord(.mouseForward)) == .episode(forward: true))
+        #expect(map.action(for: KeyChord(.mouseBack)) == .episode(forward: false))
+    }
+
+    @Test func speedKeys() {
+        #expect(action("Meta+]") == .multiplySpeed(factor: 2))
+        #expect(action("Meta+[") == .multiplySpeed(factor: 0.5))
+        #expect(action("Alt+Meta+]") == .multiplySpeed(factor: 1.1))
+        #expect(action("Alt+Meta+[") == .multiplySpeed(factor: 1 / 1.1))
+        #expect(action("Meta+\\") == .setSpeed(1))
+    }
+
+    @Test func mediaSeekKeys() {
+        #expect(map.action(for: KeyChord(.mediaForward)) == .seek(seconds: 15))
+        #expect(map.action(for: KeyChord(.mediaRewind)) == .seek(seconds: -15))
+    }
+
+    @Test func screenshotLoopAndPictureInPictureKeys() {
+        #expect(action("Meta+s") == .screenshot)
+        #expect(action("Meta+l") == .abLoop)
+        #expect(action("Meta+L") == .toggleFileLoop)
+        #expect(map.action(for: KeyChord(character: "l", modifiers: [.command, .shift])) == .toggleFileLoop)
+        #expect(action("Ctrl+Meta+p") == .togglePictureInPicture)
+    }
+
+    @Test func menuLookupFindsTheM2Chords() {
+        #expect(map.chord(for: .screenshot) == KeyChord(character: "s", modifiers: .command))
+        #expect(map.chord(for: .togglePictureInPicture) == KeyChord(character: "p", modifiers: [.control, .command]))
+    }
+
+    @Test func numbersAcceptSignsAndFractions() {
+        #expect(InputMap.number("+0.1") == 0.1)
+        #expect(InputMap.number("-1") == -1)
+        #expect(InputMap.number("1/1.1") == 1 / 1.1)
+        #expect(InputMap.number("1/0") == nil)
+        #expect(InputMap.number("abc") == nil)
+    }
+
+    @Test func iinaFileSyntaxForM2CommandsParses() {
+        let text = """
+            Meta+L cycle-values loop "inf" "no"
+            Alt+Meta+[ multiply speed 1/1.1
+            G add sub-scale +0.1
+            Shift+_ set audio-delay 0
+            """
+        let parsed = InputMap(parsing: text)
+        #expect(parsed.diagnostics.isEmpty)
+        #expect(parsed.bindings.count == 4)
     }
 }

@@ -2,9 +2,37 @@ import Foundation
 import ReelCore
 import ReelEngine
 
-/// `reelctl probe <file> [--json]`: streams, codecs, decoder choice, hardware support, keyframe
-/// count and duration. `reelctl probe --build-info` prints FFmpeg's license and configuration.
+/// `reelctl probe <file> [--json] [--no-external]`: streams, codecs, decoder choice, hardware
+/// support, keyframe count and duration, and the audio and subtitle tracks with their labels, the
+/// default selections and the sidecar subtitle files (design section 8.2).
+/// `reelctl probe --build-info` prints FFmpeg's license and configuration.
 enum ProbeCommand {
+    struct TrackRow: Encodable {
+        var id: String
+        var streamIndex: Int?
+        var label: String
+        var detail: String?
+        var tag: String
+        var language: String?
+        var isDefault: Bool
+        var isForced: Bool
+        var isExternal: Bool
+        var supported: Bool
+        var reason: String?
+    }
+
+    struct Tracks: Encodable {
+        var audio: [TrackRow]
+        var subtitles: [TrackRow]
+        var selectedAudio: Int?
+        /// "off", "embedded:3" or "external:<file name>".
+        var selectedSubtitle: String
+        /// Sidecar subtitle files found next to the video (and in Subs/, Subtitles/).
+        var sidecars: [String]
+        /// The VP9 hybrid (D46) applies: long exact seeks decode in software.
+        var hybridSeeks: Bool
+    }
+
     struct Report: Encodable {
         var file: String
         var format: String
@@ -19,6 +47,7 @@ enum ProbeCommand {
         var hardwareDecodeSupported: Bool?
         var keyframeCount: Int
         var keyframeKinds: [String: Int]
+        var tracks: Tracks
     }
 
     static func run(_ arguments: CommandArguments) throws -> Int32 {
@@ -26,7 +55,7 @@ enum ProbeCommand {
             try printBuildInfo(json: arguments.json)
             return 0
         }
-        let report = try probe(arguments.file())
+        let report = try probe(arguments.file(), external: !arguments.flags.contains("--no-external"))
         if arguments.json {
             try printJSON(report)
         } else {
@@ -35,12 +64,13 @@ enum ProbeCommand {
         return 0
     }
 
-    static func probe(_ url: URL) throws -> Report {
+    static func probe(_ url: URL, external: Bool = true) throws -> Report {
         let demuxer = try Demuxer(url: url)
         defer { demuxer.stop() }
         let info = demuxer.info
         var decoder: DecoderDecision?
         var hardware: Bool?
+        var hybrid = false
         if let format = demuxer.videoFormat {
             let supported = format.isHardwareDecodeSupported
             hardware = supported
@@ -53,8 +83,12 @@ enum ProbeCommand {
             case .other: break
             }
             let policy = DecoderPolicy(environment: ReelEnvironment(), support: support)
-            decoder = policy.decide(for: VideoStreamTraits(codec: format.codecName, bitDepth: format.bitDepth))
+            let traits = VideoStreamTraits(codec: format.codecName, bitDepth: format.bitDepth)
+            decoder = policy.decide(for: traits)
+            hybrid = policy.allowsHybridSeeks(for: traits)
         }
+        let sidecars = external ? ExternalSubtitles.scan(for: url) : []
+        let state = TrackState(info: info, external: sidecars.map(\.track))
         let index = demuxer.keyframeIndex
         var kinds: [String: Int] = [:]
         for entry in index.entries { kinds[entry.kind.rawValue, default: 0] += 1 }
@@ -71,7 +105,31 @@ enum ProbeCommand {
             decoderReason: decoder?.reason.rawValue,
             hardwareDecodeSupported: hardware,
             keyframeCount: index.count,
-            keyframeKinds: kinds
+            keyframeKinds: kinds,
+            tracks: Tracks(
+                audio: state.audio.enumerated().map { offset, track in
+                    let label = track.label(ordinal: offset + 1)
+                    return TrackRow(
+                        id: "audio:\(track.streamIndex)", streamIndex: track.streamIndex, label: label.title, detail: label.detail,
+                        tag: label.tag, language: track.language, isDefault: track.isDefault, isForced: false, isExternal: false,
+                        supported: true, reason: nil
+                    )
+                },
+                subtitles: state.subtitles.enumerated().map { offset, track in
+                    let label = track.label(ordinal: offset + 1)
+                    var streamIndex: Int?
+                    if case .embedded(let index) = track.id { streamIndex = index }
+                    return TrackRow(
+                        id: track.id.description, streamIndex: streamIndex, label: label.title, detail: label.detail, tag: label.tag,
+                        language: track.language, isDefault: track.isDefault, isForced: track.isForced, isExternal: track.isExternal,
+                        supported: track.isSupported, reason: track.unsupportedReason
+                    )
+                },
+                selectedAudio: state.selectedAudio,
+                selectedSubtitle: state.selectedSubtitle.trackID?.description ?? "off",
+                sidecars: sidecars.map(\.url.lastPathComponent),
+                hybridSeeks: hybrid
+            )
         )
     }
 
@@ -102,6 +160,16 @@ enum ProbeCommand {
         }
         let kinds = report.keyframeKinds.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
         print("keyframes: \(report.keyframeCount)" + (kinds.isEmpty ? "" : " (\(kinds))"))
+        let tracks = report.tracks
+        for track in tracks.audio {
+            let mark = track.streamIndex == tracks.selectedAudio ? "*" : " "
+            print("\(mark) \(track.id)  \(track.label)  \(track.tag)" + (track.detail.map { "  \($0)" } ?? ""))
+        }
+        for track in tracks.subtitles {
+            let mark = track.id == tracks.selectedSubtitle ? "*" : " "
+            print("\(mark) \(track.id)  \(track.label)  \(track.tag)" + (track.detail.map { "  \($0)" } ?? ""))
+        }
+        print("subtitles: \(tracks.selectedSubtitle)" + (tracks.sidecars.isEmpty ? "" : ", sidecars: \(tracks.sidecars.joined(separator: ", "))"))
     }
 
     private static func printBuildInfo(json: Bool) throws {

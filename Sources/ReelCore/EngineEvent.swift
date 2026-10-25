@@ -48,6 +48,16 @@ public enum EngineEvent: Sendable, Hashable {
     case storedRange(ClosedRange<MediaTime>?)
     /// The video decoder changed, e.g. a hardware session failed and software took over.
     case decoderChanged(VideoDecoderKind, reason: String)
+    /// The track lists, the selections or the subtitle settings changed (after open, a
+    /// selection, an added external file or a delay, size or position change).
+    case tracksChanged(TrackState)
+    /// The playback rate in force.
+    case rateChanged(Double)
+    case loopChanged(LoopState)
+    /// Background thumbnail generation: `done` of `total` are stored.
+    case thumbnailsProgress(done: Int, total: Int)
+    /// A subtitle track could not be opened or decoded; it is listed as disabled with `reason`.
+    case subtitleTrackFailed(TrackID, reason: String)
     /// Playback reached the end of the file.
     case ended
     case failed(EngineError)

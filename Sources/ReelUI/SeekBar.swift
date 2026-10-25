@@ -43,24 +43,29 @@ public final class SeekBarInteraction {
     }
 }
 
-/// The controller's seek bar: track, stored range, played part, thumb, resume tick and the
-/// hover pill (design 9.4 and 15).
+/// The controller's seek bar: track, stored range, loop marks, played part, thumb, resume tick and
+/// the hover pill with its thumbnail (design 9.4 and 15.2).
 struct SeekBar: View {
     static let trackHeight: CGFloat = 4
     static let hoverTrackHeight: CGFloat = 8
     static let thumbSize: CGFloat = 12
     static let hitHeight: CGFloat = 20
+    static let loopMarkSize = CGSize(width: 3, height: 14)
 
     let model: PlayerModel
+    let context: ControllerContext
     @State private var interaction: SeekBarInteraction?
+    @Environment(\.colorScheme) private var colorScheme
 
     private var isActive: Bool { model.seekHoverFraction != nil || model.isScrubbing }
 
     var body: some View {
         GeometryReader { proxy in
             let width = proxy.size.width
+            let barFrame = proxy.frame(in: .named(ChromeStyle.controllerSpace))
             ZStack(alignment: .leading) {
                 track(width: width)
+                loopMarks(width: width)
                 if isActive {
                     Circle()
                         .fill(Color.white)
@@ -73,16 +78,7 @@ struct SeekBar: View {
             .frame(width: width, height: SeekBar.hitHeight)
             .overlay(alignment: .topLeading) {
                 if let hover = model.seekHoverFraction {
-                    HoverPill(text: TimeFormat.hover(model.time(atFraction: hover), duration: model.duration))
-                        .fixedSize()
-                        .alignmentGuide(.leading) { dimensions in
-                            // Centred on the pointer, kept inside the bar's ends.
-                            let half = dimensions.width / 2
-                            let centre = min(max(width * hover, half), max(half, width - half))
-                            return half - centre
-                        }
-                        .offset(y: -36)
-                        .transition(.opacity.animation(.easeOut(duration: 0.1)))
+                    hoverOverlay(hover: hover, width: width, barFrame: barFrame)
                         .allowsHitTesting(false)
                 }
             }
@@ -108,6 +104,9 @@ struct SeekBar: View {
         }
         .frame(height: SeekBar.hitHeight)
         .animation(.spring(duration: 0.18), value: isActive)
+        .accessibilityElement()
+        .accessibilityLabel("Seek")
+        .accessibilityValue(model.elapsedLabel)
     }
 
     private func currentInteraction() -> SeekBarInteraction {
@@ -115,6 +114,34 @@ struct SeekBar: View {
         let created = SeekBarInteraction(model: model)
         interaction = created
         return created
+    }
+
+    /// With a thumbnail: a 12 pt container 8 pt above the controller, centred on the pointer and
+    /// kept 16 pt inside the window. Without one: the time capsule above the track, kept inside
+    /// the bar's ends.
+    private func hoverOverlay(hover: Double, width: CGFloat, barFrame: CGRect) -> some View {
+        let time = TimeFormat.hover(model.time(atFraction: hover), duration: model.duration)
+        let hasThumbnail = model.hoverThumbnail != nil
+        let windowRange = (ControllerLayout.edgeMargin - context.frame.minX - barFrame.minX)...(
+            context.windowSize.width - ControllerLayout.edgeMargin - context.frame.minX - barFrame.minX
+        )
+        return AboveLayout(
+            x: width * hover,
+            centered: true,
+            range: hasThumbnail ? windowRange : 0...width,
+            gap: hasThumbnail ? barFrame.minY + ThumbnailPill.gap : 12
+        ) {
+            if let image = model.hoverThumbnail {
+                ThumbnailPill(image: image, time: time)
+                    .fixedSize()
+                    .transition(.opacity)
+            } else {
+                HoverPill(text: time)
+                    .fixedSize()
+                    .transition(.opacity.animation(.easeOut(duration: 0.1)))
+            }
+        }
+        .animation(Motion.easeOut(0.12), value: hasThumbnail)
     }
 
     private func track(width: CGFloat) -> some View {
@@ -129,6 +156,15 @@ struct SeekBar: View {
                     .frame(width: max(0, width * (end - start)))
                     .offset(x: width * start)
             }
+            if let range = model.loop.range {
+                let start = model.fraction(of: range.lowerBound)
+                let end = model.fraction(of: range.upperBound)
+                Rectangle()
+                    .fill(ChromeStyle.accentTint(colorScheme))
+                    .frame(width: max(0, width * (end - start)), height: height)
+                    .offset(x: width * start)
+                    .transition(.opacity)
+            }
             Capsule()
                 .fill(Color.accentColor)
                 .frame(width: max(height, width * model.playedFraction))
@@ -142,13 +178,35 @@ struct SeekBar: View {
         }
         .frame(width: width, height: height)
         .clipShape(Capsule())
+        .animation(Motion.easeOut(0.12), value: model.loop)
+    }
+
+    /// A and B as 3 x 14 pt accent capsules, taller than the track (design 9.4).
+    private func loopMarks(width: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            if let start = model.loop.start {
+                loopMark(width: width, at: start)
+            }
+            if let end = model.loop.end {
+                loopMark(width: width, at: end)
+            }
+        }
+        .frame(width: width, height: SeekBar.hitHeight, alignment: .leading)
+        .animation(Motion.easeOut(0.12), value: model.loop)
+    }
+
+    private func loopMark(width: CGFloat, at time: MediaTime) -> some View {
+        Capsule()
+            .fill(Color.accentColor)
+            .frame(width: SeekBar.loopMarkSize.width, height: SeekBar.loopMarkSize.height)
+            .offset(x: width * model.fraction(of: time) - SeekBar.loopMarkSize.width / 2)
+            .transition(.opacity)
     }
 }
 
 /// Time under the pointer, on the controller material (design 9.4).
 struct HoverPill: View {
     let text: String
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Text(text)
@@ -156,8 +214,6 @@ struct HoverPill: View {
             .foregroundStyle(Color.primary.opacity(0.9))
             .padding(.horizontal, 9)
             .padding(.vertical, 4)
-            .background(.regularMaterial, in: Capsule())
-            .overlay(Capsule().strokeBorder(ChromeStyle.stroke(colorScheme), lineWidth: 0.5))
-            .shadow(color: .black.opacity(0.2), radius: 8, y: 3)
+            .chromeSurface(Capsule(), shadow: .small)
     }
 }

@@ -26,6 +26,12 @@ public struct ReelPaths: Sendable, Hashable {
     public var logsDirectory: URL { home.appending(path: "logs", directoryHint: .isDirectory) }
     public var logFile: URL { logsDirectory.appending(path: "reel.log", directoryHint: .notDirectory) }
     public var cachesDirectory: URL { home.appending(path: "Caches", directoryHint: .isDirectory) }
+    /// Thumbnail packs, one per content key (design section 11.3).
+    public var thumbnailsDirectory: URL { cachesDirectory.appending(path: "thumbnails", directoryHint: .isDirectory) }
+
+    public func thumbnailPack(for key: ContentKey) -> URL {
+        thumbnailsDirectory.appending(path: "\(key.hex).\(ThumbnailPack.fileExtension)", directoryHint: .notDirectory)
+    }
 
     /// Creates `home` and `logs` if missing.
     public func createDirectories(fileManager: FileManager = .default) throws {
@@ -90,4 +96,21 @@ public struct ReelEnvironment: Sendable, Hashable {
     public var allowsAudioOutput: Bool { values["REEL_ALLOW_AUDIO"] == "1" }
 
     public var debugLogging: Bool { values["REEL_LOG"]?.lowercased() == "debug" }
+
+    /// Cmd+S folder (design section 9.12): `REEL_SCREENSHOTS` when set, else
+    /// `REEL_HOME/Screenshots` when `REEL_HOME` is set (so a test or tool with a temp home never
+    /// writes to ~/Pictures), else `~/Pictures/Reel`.
+    public var screenshotsDirectory: URL {
+        if let value = values["REEL_SCREENSHOTS"], !value.isEmpty {
+            return URL(filePath: ReelPaths.expandTilde(value, environment: values), directoryHint: .isDirectory)
+        }
+        if let home = values["REEL_HOME"], !home.isEmpty {
+            return paths.home.appending(path: "Screenshots", directoryHint: .isDirectory)
+        }
+        return ReelPaths.userHome(environment: values).appending(path: "Pictures/Reel", directoryHint: .isDirectory)
+    }
+
+    /// `REEL_NO_THUMBNAILS=1` turns background thumbnail generation off (benches that measure
+    /// seeks alone).
+    public var thumbnailsDisabled: Bool { values["REEL_NO_THUMBNAILS"] == "1" }
 }

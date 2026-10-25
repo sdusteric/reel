@@ -160,6 +160,10 @@ public final class PresentationOrderer: Sendable {
 public actor VideoOutput {
     /// A 4K P010 frame is about 25 MB, so the decoded-ahead queue is capped at 8 frames.
     public static let maxFramesAhead = 8
+    /// Frames due within this much of the clock skip the receiver's back-pressure. Paused, the
+    /// receiver takes only about 25 MB (one 4K frame past the shown one) and asks for more about
+    /// 20 ms after that frame comes due, so at 60 fps the next frame would arrive late.
+    public static let immediateLead = MediaTime.milliseconds(100)
 
     public enum EnqueueOutcome: Sendable, Equatable {
         case enqueued
@@ -185,8 +189,19 @@ public actor VideoOutput {
         var attachments: String
     }
 
-    public init(receiver: sending AVSampleBufferVideoRenderer.Receiver) {
+    private let clock: (@Sendable () -> MediaTime)?
+
+    /// - Parameter clock: the synchronizer time; with it, frames due within `immediateLead` are
+    ///   enqueued at once instead of waiting for the receiver to ask.
+    public init(receiver: sending AVSampleBufferVideoRenderer.Receiver, clock: (@Sendable () -> MediaTime)? = nil) {
         self.receiver = receiver
+        self.clock = clock
+    }
+
+    /// True when `frame` is due within `immediateLead` of the clock.
+    nonisolated func isDueSoon(_ frame: DecodedFrame) -> Bool {
+        guard let clock, let pts = MediaTime(frame.presentationTime) else { return false }
+        return pts <= clock() + VideoOutput.immediateLead
     }
 
     /// Frames reserved or waiting for the receiver.
@@ -230,7 +245,8 @@ public actor VideoOutput {
             return .failed(String(describing: error))
         }
         do {
-            let result = try await receiver.enqueue(sample)
+            // Bounded: only the frames of the next 100 ms bypass the receiver's readiness.
+            let result = isDueSoon(frame) ? receiver.enqueueImmediately(sample) : try await receiver.enqueue(sample)
             switch result {
             case .enqueued:
                 enqueuedCount += 1

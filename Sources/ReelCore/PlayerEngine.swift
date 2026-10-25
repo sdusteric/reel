@@ -25,10 +25,53 @@ public protocol PlayerEngine: AnyObject, Sendable {
 
     /// Stops playback, releases the file and finishes `events`.
     func close() async
+
+    // MARK: M2 (design sections 8, 9.7 to 9.12). Each has a no-op default below.
+
+    /// Switches audio without moving the picture; answered by `.tracksChanged`.
+    func selectAudioTrack(_ streamIndex: Int) async
+    /// Ctrl+Cmd+V cycling; answered by `.tracksChanged`.
+    func selectVideoTrack(_ streamIndex: Int) async
+    /// Shows an embedded track, an external file (added to the track list if new) or nothing.
+    func selectSubtitle(_ selection: SubtitleSelection) async
+    /// Seconds; positive shows subtitles later. Applies to text and bitmap tracks.
+    func setSubtitleDelay(_ seconds: Double) async
+    /// Seconds; positive plays audio later. Applied by offsetting audio timestamps, no re-decode.
+    func setAudioDelay(_ seconds: Double) async
+    /// Font scale for text tracks, 1 for size 45 (`SubtitleStyle.scale`). Bitmaps ignore it.
+    func setSubtitleScale(_ factor: Double) async
+    /// mpv `sub-pos`: 100 is the default bottom position, each 1 is 1% of the video height.
+    func setSubtitlePosition(_ percent: Double) async
+    func setSubtitlesVisible(_ visible: Bool) async
+    /// Lifts bottom-aligned, unpositioned lines so their bottom edge sits this many points above
+    /// the window bottom (`SubtitleStyle.liftInset`); nil puts them back (section 8.5).
+    func setSubtitleAvoidance(bottomInsetPoints: Double?) async
+    /// Playback rate 0.25 to 4 with pitch preserved; answered by `.rateChanged`.
+    func setRate(_ rate: Double) async
+    /// A-B loop and file loop; answered by `.loopChanged`.
+    func setLoop(_ loop: LoopState) async
+    /// The stored thumbnail of the last keyframe at or before `time`, or nil if none is ready.
+    func thumbnail(at time: MediaTime) async -> ThumbnailImage?
+    /// Start and end of every known event of the selected subtitle track, sorted, for next and
+    /// previous line. Empty with no text track selected.
+    func subtitleEvents() async -> [SubtitleEventTime]
 }
 
 extension PlayerEngine {
     public func setTimeUpdateInterval(_ seconds: Double) async {}
+    public func selectAudioTrack(_ streamIndex: Int) async {}
+    public func selectVideoTrack(_ streamIndex: Int) async {}
+    public func selectSubtitle(_ selection: SubtitleSelection) async {}
+    public func setSubtitleDelay(_ seconds: Double) async {}
+    public func setAudioDelay(_ seconds: Double) async {}
+    public func setSubtitleScale(_ factor: Double) async {}
+    public func setSubtitlePosition(_ percent: Double) async {}
+    public func setSubtitlesVisible(_ visible: Bool) async {}
+    public func setSubtitleAvoidance(bottomInsetPoints: Double?) async {}
+    public func setRate(_ rate: Double) async {}
+    public func setLoop(_ loop: LoopState) async {}
+    public func thumbnail(at time: MediaTime) async -> ThumbnailImage? { nil }
+    public func subtitleEvents() async -> [SubtitleEventTime] { [] }
 }
 
 /// The cubic volume curve mpv uses, so a level matches IINA's (design section 7.4).
