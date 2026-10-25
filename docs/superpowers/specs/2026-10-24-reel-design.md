@@ -405,8 +405,8 @@ All sizes in points.
 ### 9.2 Chrome visibility
 
 - The traffic lights, title and controller share one `chromeVisible` state.
-- Shown on pointer movement of 2 pt or more inside the window, on any key that changes playback (shown for the auto-hide period), and always while paused.
-- Hidden after 2.5 s without input while playing. Never hidden while the pointer is over the controller or a drag is in progress.
+- Shown on pointer movement of 2 pt or more inside the window, on any key that changes playback (shown for the auto-hide period), and while paused with the pointer inside the window.
+- Hidden after 2.5 s without input while playing, and at once when the pointer leaves the window, playing or paused, so burned-in subtitles are never covered (user request 2026-10-25). Never hidden while the pointer is over the controller, a drag is in progress or a panel is open. The tracking area is `.activeAlways` so the exit arrives when another app is in front.
 - The cursor hides with the chrome (`NSCursor.setHiddenUntilMouseMoves(true)`) only when the pointer is over the video.
 - Fade in 0.16 s on the shared ease-out token (at least 90% opaque by 60 ms, 15.2), fade out 0.35 s ease-in. Traffic lights fade through `standardWindowButton(_:)?.animator().alphaValue` in the same transaction. With Reduce Motion: opacity only, 0.1 s.
 
