@@ -262,6 +262,9 @@ struct ControllerView: View {
             }
             .buttonStyle(.plain)
             .help(model.showRemainingTime ? "Show total time" : "Show remaining time")
+            .accessibilityLabel(model.showRemainingTime ? "Time remaining" : "Total time")
+            .accessibilityValue(model.trailingLabel)
+            .accessibilityHint(model.showRemainingTime ? "Shows the total time" : "Shows the time remaining")
         }
         .frame(height: SeekBar.hitHeight)
     }

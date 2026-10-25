@@ -177,7 +177,7 @@ final class SystemNowPlayingPublisher: NowPlayingPublishing {
 
     /// MediaPlayer calls the artwork handler on its own queue, so the closure must not inherit the
     /// main actor (a main-actor closure traps in dispatch_assert_queue there).
-    nonisolated private static func artwork(jpeg: Data, size: CGSize) -> MPMediaItemArtwork {
+    nonisolated static func artwork(jpeg: Data, size: CGSize) -> MPMediaItemArtwork {
         MPMediaItemArtwork(boundsSize: size) { @Sendable _ in
             NSImage(data: jpeg) ?? NSImage()
         }

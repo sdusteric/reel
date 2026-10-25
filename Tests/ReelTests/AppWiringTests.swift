@@ -1,6 +1,7 @@
 import AppKit
 import CoreMedia
 import Foundation
+import MediaPlayer
 import ReelCore
 import ReelUI
 import Synchronization
@@ -681,4 +682,32 @@ func makeAppModel(engines: EngineList = EngineList()) -> PlayerModel {
         #expect(saver.screenshotsDirectory.standardizedFileURL.path.hasPrefix(scratch.url.standardizedFileURL.path))
         #expect(!saver.screenshotsDirectory.path.contains("/Pictures/"))
     }
+}
+
+/// Regression for 57b62a8: MediaPlayer calls the artwork handler on its own queue. A closure
+/// that inherited the main actor trapped in dispatch_assert_queue there.
+@Suite struct NowPlayingArtworkTests {
+    @Test func artworkHandlerRunsOffTheMainThread() async throws {
+        let size = NSSize(width: 4, height: 3)
+        let image = NSImage(size: size, flipped: false) { rect in
+            NSColor.red.setFill()
+            rect.fill()
+            return true
+        }
+        let jpeg = try #require(image.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0) }?.representation(using: .jpeg, properties: [:]))
+        let artwork = NowPlayingArtworkBox(SystemNowPlayingPublisher.artwork(jpeg: jpeg, size: size))
+        let result: (width: Double, onMain: Bool) = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                let image = artwork.value.image(at: CGSize(width: 4, height: 3))
+                continuation.resume(returning: (Double(image?.size.width ?? 0), Thread.isMainThread))
+            }
+        }
+        #expect(!result.onMain)
+        #expect(result.width > 0, "an image comes back")
+    }
+}
+
+nonisolated final class NowPlayingArtworkBox: @unchecked Sendable {
+    let value: MPMediaItemArtwork
+    init(_ value: MPMediaItemArtwork) { self.value = value }
 }

@@ -215,7 +215,7 @@ import Testing
         await #expect(throws: EngineError.self) { try await engine.open(file) }
         #expect(await engine.playbackState == .failed)
         #expect(await log.wait { $0.states.last == .failed })
-        #expect(log.all.contains { if case .failed = $0 { true } else { false } })
+        #expect(await log.wait { $0.all.contains { if case .failed = $0 { true } else { false } } })
         await engine.close()
     }
 

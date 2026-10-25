@@ -87,6 +87,23 @@ final class NullCommandTarget: PlayerCommandTarget {
         }
     }
 
+    /// AC-M3-8: nothing overrides the window server's colour matching. A set `colorspace` or any
+    /// filter on the display layer would change the saturation or gamma of SDR content.
+    @Test func displayLayerColorspaceAndFiltersAreNeverOverridden() {
+        let (view, _) = Self.makeView()
+        for content in [DynamicRange.sdr, .hdr10, .hlg] {
+            view.apply(plan: DynamicRangePlan.make(content: content, setting: .full, display: .xdr))
+            for layer in [view.videoView.displayLayer, view.videoView.prepareLayers().display] {
+                // AVSampleBufferDisplayLayer has no public colorspace; if the private one answers it must be unset.
+                let getter = NSSelectorFromString("colorspace")
+                #expect(!layer.responds(to: getter) || layer.value(forKey: "colorspace") == nil, "\(content.rangeName)")
+                #expect(layer.filters?.isEmpty ?? true)
+                #expect(layer.compositingFilter == nil)
+                #expect(layer.backgroundFilters?.isEmpty ?? true)
+            }
+        }
+    }
+
     @Test func theViewStartsFromTheModelsPlan() {
         let model = makeAppModel()
         let (view, _) = Self.makeView(model: model)

@@ -190,7 +190,7 @@ struct TrackPanelView: View {
                     )
                 }
                 PanelSeparator()
-                PanelActionRow(symbol: "doc.badge.plus", title: "Add Subtitle File...") {
+                PanelActionRow(symbol: "doc.badge.plus", title: "Add Subtitle File\u{2026}") {
                     model.addSubtitleFile()
                 }
             } else if !rows.isEmpty {

@@ -1,4 +1,5 @@
 import CReelDeps
+import Darwin
 import Foundation
 import Synchronization
 
@@ -41,8 +42,12 @@ final class MatroskaClusterCheck: Sendable {
     /// Background reads and checksums, one cluster at a time.
     private let queue = DispatchQueue(label: "reel.matroska-cluster-check", qos: .utility)
 
+    /// Runs after a check released the lock and before it reads the cluster (tests only).
+    private let afterSnapshot: (@Sendable () -> Void)?
+
     /// Nil when the file is not Matroska or its Segment cannot be found.
-    init?(url: URL) {
+    init?(url: URL, afterSnapshot: (@Sendable () -> Void)? = nil) {
+        self.afterSnapshot = afterSnapshot
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         guard let size = try? handle.seekToEnd(), size > 0,
               let segment = MatroskaClusterCheck.findSegment(handle, fileSize: Int64(size)) else {
@@ -80,15 +85,47 @@ final class MatroskaClusterCheck: Sendable {
         }
     }
 
-    /// Synchronous check of the cluster holding `position` (tests, and the queue above).
+    /// Synchronous check of the cluster holding `position` (tests, and the queue above). The
+    /// state lock is held only to find the cluster and read its CRC element; the cluster's data
+    /// is read and checksummed outside it, on a duplicate of the descriptor, so `check` and
+    /// `close` never wait for a read of up to `maximumClusterBytes`.
     func checksumFails(position: Int64) -> Bool {
-        state.withLock { state in
-            guard let index = MatroskaClusterCheck.cluster(containing: position, in: &state) else { return false }
-            if let known = state.clusters[index].damaged { return known }
-            let damaged = MatroskaClusterCheck.checksumFails(state.clusters[index], state: state)
-            state.clusters[index].damaged = damaged
-            return damaged
+        enum Step {
+            case answer(Bool)
+            case verify(Job)
         }
+        let step = state.withLock { state -> Step in
+            guard let index = MatroskaClusterCheck.cluster(containing: position, in: &state) else { return .answer(false) }
+            if let known = state.clusters[index].damaged { return .answer(known) }
+            guard let job = MatroskaClusterCheck.job(for: state.clusters[index], index: index, state: state) else {
+                state.clusters[index].damaged = false
+                return .answer(false)
+            }
+            return .verify(job)
+        }
+        let job: Job
+        switch step {
+        case .answer(let value): return value
+        case .verify(let pending): job = pending
+        }
+        defer { Darwin.close(job.descriptor) }
+        afterSnapshot?()
+        let damaged = MatroskaClusterCheck.checksumFails(job)
+        state.withLock { state in
+            // close() ran meanwhile: drop the result.
+            guard state.handle != nil, job.index < state.clusters.count else { return }
+            state.clusters[job.index].damaged = damaged
+        }
+        return damaged
+    }
+
+    /// What the unlocked part of a check needs: a private descriptor and the byte ranges.
+    private struct Job {
+        var index: Int
+        var descriptor: Int32
+        var expected: UInt32
+        var dataStart: Int64
+        var dataEnd: Int64
     }
 
     // MARK: Walking
@@ -131,22 +168,37 @@ final class MatroskaClusterCheck: Sendable {
         return nil
     }
 
-    private static func checksumFails(_ cluster: Cluster, state: State) -> Bool {
+    /// Under the lock: the cheap part of a check (the CRC element) and a duplicate descriptor.
+    /// nil when the cluster cannot be checked (no CRC-32, too large, cut short, closed).
+    private static func job(for cluster: Cluster, index: Int, state: State) -> Job? {
         guard let handle = state.handle, cluster.dataEnd <= state.fileSize,
               cluster.dataEnd - cluster.dataStart <= Int64(maximumClusterBytes),
               let first = readHeader(handle, at: cluster.dataStart, fileSize: state.fileSize),
-              first.id == crcID, first.size == 4 else { return false }
+              first.id == crcID, first.size == 4 else { return nil }
         let crcStart = cluster.dataStart + Int64(first.length)
-        let covered = crcStart + 4
-        guard let stored = read(handle, at: crcStart, count: 4), stored.count == 4,
-              let data = read(handle, at: covered, count: Int(cluster.dataEnd - covered)),
-              data.count == Int(cluster.dataEnd - covered) else { return false }
+        guard let stored = read(handle, at: crcStart, count: 4), stored.count == 4 else { return nil }
+        let descriptor = dup(handle.fileDescriptor)
+        guard descriptor >= 0 else { return nil }
         // EBML stores the CRC-32 (IEEE, reflected) little-endian.
         let expected = UInt32(stored[0]) | UInt32(stored[1]) << 8 | UInt32(stored[2]) << 16 | UInt32(stored[3]) << 24
-        let crc = data.withUnsafeBytes { bytes in
-            reel_crc32(bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count)
+        return Job(index: index, descriptor: descriptor, expected: expected, dataStart: crcStart + 4, dataEnd: cluster.dataEnd)
+    }
+
+    /// Outside the lock: reads the covered data with `pread` and compares the CRC-32.
+    private static func checksumFails(_ job: Job) -> Bool {
+        let count = Int(job.dataEnd - job.dataStart)
+        var data = [UInt8](repeating: 0, count: count)
+        var done = 0
+        while done < count {
+            let got = data.withUnsafeMutableBytes { buffer in
+                pread(job.descriptor, buffer.baseAddress! + done, count - done, off_t(job.dataStart) + off_t(done))
+            }
+            if got <= 0 { return false }
+            done += got
         }
-        return crc != expected
+        return data.withUnsafeBytes { bytes in
+            reel_crc32(bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count)
+        } != job.expected
     }
 
     private static func findSegment(_ handle: FileHandle, fileSize: Int64) -> (dataStart: Int64, dataEnd: Int64)? {

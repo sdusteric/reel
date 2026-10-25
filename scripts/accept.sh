@@ -1595,6 +1595,7 @@ ac_m3_8() {
     done
   done
   m2_suite ColorPipelineTests
+  m3_test DynamicRangeLayerTests displayLayerColorspaceAndFiltersAreNeverOverridden
   m2_finish AC-M3-8 "SDR colour against AVAssetImageGenerator"
 }
 

@@ -233,6 +233,34 @@ import Testing
         #expect(MatroskaClusterCheck(url: try fixtureURL("corpus/h264_faststart.mp4")) == nil)
     }
 
+    /// close() (from Demuxer.stop) must not wait for a cluster read in progress: the check holds
+    /// no lock while it reads, and drops its result when close() ran meanwhile.
+    @Test func closeReturnsWhileAClusterCheckIsInProgress() throws {
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let check = try #require(MatroskaClusterCheck(url: fixtureURL("corpus/hevc.overwrite50.mkv")) {
+            entered.signal()
+            release.wait()
+        })
+        let result = Mutex<Bool?>(nil)
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            result.withLock { $0 = check.checksumFails(position: 355_867 / 2) }
+            finished.signal()
+        }
+        #expect(entered.wait(timeout: .now() + 10) == .success)
+        let closed = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            check.close()
+            closed.signal()
+        }
+        #expect(closed.wait(timeout: .now() + 2) == .success, "close() waited for the read")
+        release.signal()
+        #expect(finished.wait(timeout: .now() + 10) == .success)
+        #expect(result.withLock { $0 } == true, "the read still finishes on its own descriptor")
+        #expect(!check.checksumFails(position: 355_867 / 2), "closed: the result was dropped, nothing is known")
+    }
+
     @Test func damageEventsAreLimitedToOnePerKindEveryTenSeconds() {
         let tracker = DamageTracker()
         let events = Mutex<[(MediaTime?, DamageKind)]>([])
