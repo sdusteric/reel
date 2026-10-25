@@ -57,8 +57,10 @@ public struct PlayerSceneView<Surface: View>: View {
                         ))
                 }
                 if showsEmptyState {
+                    // Clicks fall through to the video surface, which moves the window on drag.
                     EmptyStateView(errorMessage: model.errorMessage)
                         .frame(width: size.width, height: size.height)
+                        .allowsHitTesting(false)
                 }
                 if model.activePanel != nil {
                     // A click anywhere else closes the panel and does nothing more.
