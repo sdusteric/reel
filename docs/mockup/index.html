@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Reel M2 Mockup</title>
+<style>
+/* Tokens follow design section 15 and the M1 shots in build/shots. Sizes are points (1 CSS px = 1 pt). */
+:root {
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .16), 0 4px 18px rgba(0, 0, 0, .22);
+  --shadow-2: 0 1px 3px rgba(0, 0, 0, .22), 0 12px 40px rgba(0, 0, 0, .3);
+  --font: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --font-display: "SF Pro Display", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-rounded: "SF Pro Rounded", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-cjk: "PingFang SC", "Hiragino Sans GB", "Heiti SC", sans-serif;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --page-bg: #111214;
+  --page-fg: #e8e8ea;
+  --page-dim: #9a9aa0;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) { --page-bg: #f2f2f4; --page-fg: #1c1c1e; --page-dim: #6b6b70; }
+}
+:root[data-theme="light"] { --page-bg: #f2f2f4; --page-fg: #1c1c1e; --page-dim: #6b6b70; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--page-bg); color: var(--page-fg); font-family: var(--font); -webkit-font-smoothing: antialiased; }
+::selection { background: rgba(10, 132, 255, .35); }
+
+/* Appearance of the player chrome. The video area stays black in both. */
+.t-dark {
+  --fg: 255, 255, 255;
+  --mat-bg: rgba(36, 36, 38, .56);
+  --mat-filter: blur(30px) saturate(175%) brightness(.9);
+  --stroke: rgba(255, 255, 255, .12);
+  --accent: #0a84ff;
+  --accent-soft: rgba(10, 132, 255, .22);
+  --hover: rgba(255, 255, 255, .1);
+  --sep: rgba(255, 255, 255, .1);
+  --menu-bg: rgba(34, 34, 36, .78);
+  --menu-stroke: rgba(255, 255, 255, .14);
+  --sec: .55;
+  --tag: .5;
+}
+.t-light {
+  --fg: 0, 0, 0;
+  --mat-bg: rgba(248, 248, 250, .64);
+  --mat-filter: blur(30px) saturate(185%) brightness(1.04);
+  --stroke: rgba(0, 0, 0, .08);
+  --accent: #007aff;
+  --accent-soft: rgba(0, 122, 255, .16);
+  --hover: rgba(0, 0, 0, .1);
+  --sep: rgba(0, 0, 0, .1);
+  --menu-bg: rgba(246, 246, 248, .82);
+  --menu-stroke: rgba(0, 0, 0, .1);
+  --sec: .68;
+  --tag: .62;
+}
+
+.material {
+  background: var(--mat-bg);
+  backdrop-filter: var(--mat-filter);
+  -webkit-backdrop-filter: var(--mat-filter);
+  box-shadow: inset 0 0 0 .5px var(--stroke), var(--shadow-2);
+  color: rgba(var(--fg), .85);
+}
+
+/* Window */
+.window { position: relative; overflow: hidden; background: #000; font-family: var(--font); }
+.video, .video > svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.scrim { position: absolute; left: 0; right: 0; top: 0; height: 68px; pointer-events: none;
+  background: linear-gradient(to bottom, rgba(0,0,0,.5), rgba(0,0,0,.3) 30%, rgba(0,0,0,.12) 65%, rgba(0,0,0,0)); }
+.title { position: absolute; left: 80px; right: 80px; top: 0; height: 28px; line-height: 28px; text-align: center;
+  font: 600 13px/28px var(--font); color: rgba(255,255,255,.88); text-shadow: 0 .5px 4px rgba(0,0,0,.45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lights { position: absolute; left: 14px; top: 8px; display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.18); }
+.lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+.ends { position: absolute; right: 24px; top: 0; height: 28px; display: flex; align-items: center;
+  font: 500 12px var(--font); font-variant-numeric: tabular-nums; color: rgba(255,255,255,.72); text-shadow: 0 .5px 4px rgba(0,0,0,.45); }
+
+/* Controller (design 9.3, M2 layout in 15.2) */
+.controller { position: absolute; height: 80px; border-radius: 24px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+.row1 { height: 20px; display: flex; align-items: center; gap: 12px; }
+.time { font: 500 12px var(--font); font-variant-numeric: tabular-nums; color: rgba(var(--fg), .85); white-space: nowrap; }
+.seek { position: relative; flex: 1; height: 20px; }
+.track { position: absolute; left: 0; right: 0; top: 50%; height: 4px; transform: translateY(-50%); border-radius: 4px; background: rgba(var(--fg), .18); overflow: hidden; }
+.seek.active .track { height: 8px; }
+.track .stored { position: absolute; top: 0; bottom: 0; background: rgba(var(--fg), .4); }
+.track .played { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 4px; }
+.thumb { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: #fff; box-shadow: 0 .5px 3px rgba(0,0,0,.35); }
+.loopmark { position: absolute; top: 50%; width: 3px; height: 14px; margin: -7px 0 0 -1.5px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 0 1px rgba(var(--fg), .0), 0 .5px 2px rgba(0,0,0,.3); }
+.looprange { position: absolute; top: 0; bottom: 0; background: var(--accent-soft); }
+.row2 { position: relative; height: 32px; display: flex; align-items: center; }
+.cluster { display: flex; align-items: center; }
+.cluster.left { gap: 6px; }
+.cluster.center { position: absolute; left: 50%; transform: translateX(-50%); }
+.cluster.right { margin-left: auto; }
+.btn { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: rgba(var(--fg), .9); position: relative; flex: none; }
+.btn svg { width: 17px; height: 17px; }
+.btn.play { width: 32px; height: 32px; }
+.btn.play svg { width: 22px; height: 22px; }
+.btn.on { background: var(--hover); }
+.btn.lit { color: var(--accent); }
+.btn.disabled { color: rgba(var(--fg), .55); }
+.speed { height: 28px; min-width: 36px; padding: 0 6px; border-radius: 14px; display: grid; place-items: center;
+  font: 600 13px var(--font-rounded); font-variant-numeric: tabular-nums; color: rgba(var(--fg), .9); letter-spacing: -.01em; }
+.speed.changed { color: var(--accent); background: var(--accent-soft); }
+.speed.on { background: var(--hover); }
+.vol { width: 72px; height: 28px; position: relative; }
+.vol::before, .vol::after { content: ""; position: absolute; left: 0; top: 12px; height: 4px; border-radius: 2px; }
+.vol::before { right: 0; background: rgba(var(--fg), .2); }
+.vol::after { width: var(--v, 47%); background: rgba(var(--fg), .75); }
+.gap16 { width: 16px; } .gap20 { width: 20px; }
+
+/* Hover and scrub pill with thumbnail (9.4, 15.2) */
+.pill { position: absolute; border-radius: 12px; padding: 4px; display: flex; flex-direction: column; align-items: center;
+  box-shadow: inset 0 0 0 .5px var(--stroke), var(--shadow-1); }
+.pill .img { width: 192px; height: 108px; border-radius: 8px; overflow: hidden; position: relative; box-shadow: 0 0 0 .5px rgba(0,0,0,.25); }
+.pill .img svg { width: 100%; height: 100%; display: block; }
+.pill .t { height: 22px; display: flex; align-items: center; font: 600 12px var(--font); font-variant-numeric: tabular-nums; color: rgba(var(--fg), .9); }
+
+/* Panels: subtitle, audio, speed (15.2) */
+.panel { position: absolute; border-radius: 16px; padding: 6px; width: 320px; }
+.panel h4 { margin: 0; padding: 8px 10px 6px; font: 600 13px var(--font); color: rgba(var(--fg), .9); display: flex; justify-content: space-between; align-items: baseline; }
+.panel h4 span { font: 500 11px var(--font); color: rgba(var(--fg), var(--tag)); }
+.prow { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; column-gap: 6px; min-height: 30px; padding: 5px 10px 5px 6px; border-radius: 10px; }
+.prow.hover { background: var(--hover); }
+.prow .ck { width: 22px; height: 22px; display: grid; place-items: center; color: rgba(var(--fg), .85); }
+.prow .ck svg { width: 14px; height: 14px; }
+.prow .ck.icon { color: rgba(var(--fg), .6); }
+.prow .ck.icon svg { width: 16px; height: 16px; }
+.prow .lb { font: 500 13px var(--font); color: rgba(var(--fg), .9); line-height: 17px; min-width: 0; }
+.prow .lb small { display: block; font: 400 11.5px var(--font); color: rgba(var(--fg), var(--sec)); line-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prow .lb .cjk { font-family: var(--font-cjk); }
+.prow .fmt { font: 600 10.5px var(--font); letter-spacing: .03em; color: rgba(var(--fg), var(--tag)); padding: 2px 6px; border-radius: 5px; box-shadow: inset 0 0 0 .5px rgba(var(--fg), .24); }
+.empty { padding: 6px 10px 10px 34px; font: 400 12px/1.45 var(--font); color: rgba(var(--fg), var(--sec)); }
+.psep { height: 1px; margin: 5px 10px; background: var(--sep); }
+.stepper { display: flex; align-items: center; gap: 8px; }
+.stepper .val { font: 500 13px var(--font); font-variant-numeric: tabular-nums; color: rgba(var(--fg), .85); min-width: 44px; text-align: right; }
+.seg2 { display: flex; height: 26px; border-radius: 8px; background: rgba(var(--fg), .08); }
+.seg2 b { width: 30px; display: grid; place-items: center; color: rgba(var(--fg), .8); }
+.seg2 b + b { box-shadow: inset .5px 0 0 rgba(var(--fg), .15); }
+.seg2 svg { width: 12px; height: 12px; }
+.chips { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; padding: 3px; margin: 2px 4px 6px; border-radius: 9px; background: rgba(var(--fg), .07); }
+.chips b { height: 26px; border-radius: 7px; display: grid; place-items: center; font: 600 12px var(--font-rounded); font-variant-numeric: tabular-nums; color: rgba(var(--fg), .75); }
+.chips b.sel { background: var(--accent); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+
+/* OSD (9.5) */
+.osd { position: absolute; left: 20px; display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: 14px;
+  box-shadow: inset 0 0 0 .5px var(--stroke), var(--shadow-1); }
+.osd svg { width: 20px; height: 20px; color: rgba(var(--fg), .7); flex: none; }
+.osd .tx { font: 600 20px var(--font-rounded); font-variant-numeric: tabular-nums; color: rgba(var(--fg), .9); white-space: nowrap; letter-spacing: -.01em; }
+.osd .tx em { font-style: normal; color: rgba(var(--fg), var(--sec)); font-weight: 500; }
+
+/* Subtitles: libass output, mocked with CSS. Size 45 on the 720-line reference, PingFang SC Medium,
+   white, black 2.5 outline, soft shadow. */
+.subs { position: absolute; left: 0; right: 0; display: flex; flex-direction: column; align-items: center; pointer-events: none; text-align: center; }
+.sub-zh { font-family: var(--font-cjk); font-weight: 500; color: #fff; line-height: 1.22; white-space: nowrap; }
+.sub-en { font-family: var(--font-cjk); font-weight: 500; color: #fff; line-height: 1.22; white-space: nowrap; }
+.sub-en2 { font-family: var(--font); font-weight: 500; color: #fff; line-height: 1.25; white-space: nowrap; }
+
+/* Next episode card (15.2) */
+.next { position: absolute; width: 360px; border-radius: 20px; padding: 12px; display: flex; gap: 12px; }
+.next .nt { position: relative; width: 128px; height: 72px; flex: none; border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 .5px rgba(0,0,0,.25); }
+.next .nt svg.scene { width: 100%; height: 100%; display: block; }
+.next .nt .shade { position: absolute; inset: 0; background: rgba(0,0,0,.28); }
+.next .ring { position: absolute; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; color: #fff; }
+.next .ring svg { width: 34px; height: 34px; display: block; }
+.next .nb { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.next .h { display: flex; align-items: baseline; gap: 6px; font: 600 13px var(--font); color: rgba(var(--fg), .9); }
+.next .h span { margin-left: auto; font: 500 12px var(--font); font-variant-numeric: tabular-nums; color: rgba(var(--fg), var(--sec)); }
+.next .e { margin-top: 2px; font: 500 13px var(--font); color: rgba(var(--fg), .85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.next .acts { margin-top: auto; display: flex; gap: 8px; justify-content: flex-end; }
+.cap { height: 26px; padding: 0 12px; border-radius: 13px; display: grid; place-items: center; font: 600 12px var(--font); }
+.cap.sec { background: rgba(var(--fg), .1); color: rgba(var(--fg), .85); }
+.cap.pri { background: var(--accent); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+
+/* PiP placeholder (15.2) */
+.pipbg { position: absolute; inset: -60px; filter: blur(48px) saturate(120%) brightness(.42); }
+.pipbg svg { width: 100%; height: 100%; display: block; }
+.pipc { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; padding-bottom: 60px; }
+.pipc .tile { width: 60px; height: 60px; border-radius: 16px; background: rgba(255,255,255,.1); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.14); display: grid; place-items: center; color: rgba(255,255,255,.62); }
+.pipc .tile svg { width: 28px; height: 28px; }
+.pipc .h { margin-top: 18px; font: 600 15px var(--font); color: rgba(255,255,255,.78); }
+.pipc .s { margin-top: 6px; font: 400 12px var(--font); color: rgba(255,255,255,.5); }
+.pipc .cap { margin-top: 16px; background: rgba(255,255,255,.14); color: rgba(255,255,255,.88); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.12); }
+
+/* Pointer */
+.cursor { position: absolute; width: 17px; height: 24px; pointer-events: none; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.35)); }
+
+/* Menu bar menus (system NSMenu, drawn for review) */
+.desk { position: absolute; inset: 0; }
+.menubar { position: absolute; left: 0; right: 0; top: 0; height: 26px; display: flex; align-items: center; gap: 2px; padding: 0 10px;
+  font: 500 13px var(--font); }
+.t-light .menubar { color: rgba(0,0,0,.85); background: rgba(255,255,255,.28); backdrop-filter: blur(20px); }
+.t-dark .menubar { color: rgba(255,255,255,.88); background: rgba(0,0,0,.22); backdrop-filter: blur(20px); }
+.menubar b { padding: 3px 9px; border-radius: 6px; font-weight: 500; }
+.menubar b.app { font-weight: 700; }
+.menubar b.open { background: rgba(var(--fg), .14); }
+.menubar .clock { margin-left: auto; font-variant-numeric: tabular-nums; }
+.menu { position: absolute; top: 31px; border-radius: 12px; padding: 5px; min-width: 268px; background: var(--menu-bg);
+  backdrop-filter: blur(32px) saturate(180%); -webkit-backdrop-filter: blur(32px) saturate(180%);
+  box-shadow: inset 0 0 0 .5px var(--menu-stroke), 0 1px 2px rgba(0,0,0,.14), 0 12px 36px rgba(0,0,0,.26); color: rgba(var(--fg), .88); }
+.mi { height: 24px; display: grid; grid-template-columns: 18px 1fr auto 12px; align-items: center; padding: 0 8px 0 4px; border-radius: 7px; font: 400 13px var(--font); white-space: nowrap; column-gap: 4px; }
+.mi .k { color: rgba(var(--fg), .5); font-variant-numeric: tabular-nums; letter-spacing: .04em; }
+.mi .ck svg { width: 12px; height: 12px; display: block; }
+.mi .sub svg { width: 10px; height: 10px; display: block; color: rgba(var(--fg), .5); }
+.mi.hl { background: var(--accent); color: #fff; }
+.mi.hl .k, .mi.hl .sub svg { color: rgba(255,255,255,.8); }
+.mi.dis { color: rgba(var(--fg), .35); }
+.mi .cjk { font-family: var(--font-cjk); }
+.mi .dim { color: rgba(var(--fg), .5); }
+.mi.hl .dim { color: rgba(255,255,255,.8); }
+.msep { height: 1px; margin: 5px 9px; background: var(--sep); }
+.mlabel { position: absolute; font: 500 12px var(--font); color: rgba(255,255,255,.7); text-shadow: 0 1px 3px rgba(0,0,0,.4); }
+
+/* Gallery page (no query): every frame, scaled, with notes */
+.gallery { max-width: 1240px; margin: 0 auto; padding: 40px 16px 80px; }
+.gallery h1 { font: 700 28px var(--font-display); letter-spacing: -.02em; margin: 0 0 8px; }
+.gallery > p { color: var(--page-dim); margin: 0 0 32px; max-width: 70ch; line-height: 1.5; }
+.entry { margin: 0 0 44px; }
+.entry h2 { font: 600 17px var(--font); margin: 0 0 4px; }
+.entry p { font: 400 13px/1.5 var(--font); color: var(--page-dim); margin: 0 0 12px; max-width: 80ch; }
+.pair { display: flex; gap: 16px; flex-wrap: wrap; }
+.shot { position: relative; overflow: hidden; border-radius: 10px; box-shadow: 0 0 0 1px rgba(127,127,127,.25); }
+.shot > .window { transform-origin: 0 0; }
+.shot figcaption { position: absolute; right: 8px; bottom: 6px; font: 500 11px var(--font); color: rgba(255,255,255,.7); }
+body.single { background: #000; overflow: hidden; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M7.6 5.1v13.8c0 .95 1.05 1.52 1.85 1.01l10.7-6.9a1.2 1.2 0 0 0 0-2.02L9.45 4.09C8.65 3.58 7.6 4.15 7.6 5.1z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect fill="currentColor" x="5.8" y="4.3" width="4.4" height="15.4" rx="1.3"/><rect fill="currentColor" x="13.8" y="4.3" width="4.4" height="15.4" rx="1.3"/></symbol>
+    <symbol id="i-back10" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12.4 3.9A8.4 8.4 0 1 1 4.3 9"/></g><path fill="currentColor" d="M9.3 3.9l3.6-2.5v5z"/><text x="12.3" y="15.6" text-anchor="middle" font-family="SF Pro Rounded, -apple-system, sans-serif" font-size="7.6" font-weight="700" fill="currentColor">10</text></symbol>
+    <symbol id="i-fwd10" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M11.6 3.9A8.4 8.4 0 1 0 19.7 9"/></g><path fill="currentColor" d="M14.7 3.9l-3.6-2.5v5z"/><text x="11.7" y="15.6" text-anchor="middle" font-family="SF Pro Rounded, -apple-system, sans-serif" font-size="7.6" font-weight="700" fill="currentColor">10</text></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><rect fill="currentColor" x="4.6" y="5.2" width="2.5" height="13.6" rx="1.1"/><path fill="currentColor" d="M19.4 6.4v11.2c0 .9-1 1.42-1.75.92l-8.3-5.6a1.15 1.15 0 0 1 0-1.9l8.3-5.6c.75-.5 1.75.02 1.75.98z"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><rect fill="currentColor" x="16.9" y="5.2" width="2.5" height="13.6" rx="1.1"/><path fill="currentColor" d="M4.6 6.4v11.2c0 .9 1 1.42 1.75.92l8.3-5.6a1.15 1.15 0 0 0 0-1.9l-8.3-5.6C5.6 4.92 4.6 5.44 4.6 6.4z"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 24 24"><path fill="currentColor" d="M3.4 9h3.2l4.6-3.95c.62-.53 1.6-.09 1.6.73v12.44c0 .82-.98 1.26-1.6.73L6.6 15H3.4a1.1 1.1 0 0 1-1.1-1.1v-3.8A1.1 1.1 0 0 1 3.4 9z"/><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M15.6 9.2a4 4 0 0 1 0 5.6"/><path d="M18.3 6.7a7.6 7.6 0 0 1 0 10.6"/></g></symbol>
+    <symbol id="i-cc" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.2 4.6h11.6a3 3 0 0 1 3 3v6.3a3 3 0 0 1-3 3h-6.9l-3.7 3.1c-.42.36-1.05.06-1.05-.48V16.9h0a3 3 0 0 1-2.95-3V7.6a3 3 0 0 1 3-3z"/><path d="M7 9.2h4.2M13.2 9.2h3.8M7 12.4h7.4"/></g></symbol>
+    <mask id="m-ccfill" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24"><rect width="24" height="24" fill="#fff"/><path d="M7 9.2h4.2M13.2 9.2h3.8M7 12.4h7.4" stroke="#000" stroke-width="1.7" stroke-linecap="round"/></mask>
+    <symbol id="i-ccfill" viewBox="0 0 24 24"><path fill="currentColor" mask="url(#m-ccfill)" d="M6.2 3.8h11.6a3.8 3.8 0 0 1 3.8 3.8v6.3a3.8 3.8 0 0 1-3.8 3.8h-6.6l-3.7 3.15c-.95.8-2.4.13-2.4-1.1v-2.1A3.8 3.8 0 0 1 2.4 13.9V7.6a3.8 3.8 0 0 1 3.8-3.8z"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><g fill="currentColor"><rect x="3.2" y="9.4" width="2" height="5.2" rx="1"/><rect x="7.1" y="6.2" width="2" height="11.6" rx="1"/><rect x="11" y="3.6" width="2" height="16.8" rx="1"/><rect x="14.9" y="7.4" width="2" height="9.2" rx="1"/><rect x="18.8" y="10.2" width="2" height="3.6" rx="1"/></g></symbol>
+    <symbol id="i-pip" viewBox="0 0 24 24"><rect x="2.8" y="4.6" width="18.4" height="14.8" rx="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="12.2" y="11.6" width="6.6" height="5.4" rx="1.2" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.4 8.2l3.6 3.4"/><path d="M10.4 8.6v3.3H7.1"/></g></symbol>
+    <symbol id="i-pipexit" viewBox="0 0 24 24"><rect x="2.8" y="4.6" width="18.4" height="14.8" rx="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="12.2" y="11.6" width="6.6" height="5.4" rx="1.2" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.2 11.4L6.6 8"/><path d="M6.4 11.3V8h3.3"/></g></symbol>
+    <symbol id="i-full" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 4.6l5.4 5.4M4.6 9.4V4.6h4.8M19.4 19.4L14 14M19.4 14.6v4.8h-4.8"/></g></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.6l4.4 4.4L19 7.4" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 11.4V9.8a3.2 3.2 0 0 1 3.2-3.2h11"/><path d="M16 3.8l2.9 2.8L16 9.4"/><path d="M19.4 12.6v1.6a3.2 3.2 0 0 1-3.2 3.2h-11"/><path d="M8 20.2l-2.9-2.8L8 14.6"/></g></symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4.1 17.2a8.6 8.6 0 1 1 15.8 0"/><path d="M12 13.6l4.3-4.6"/></g><circle cx="12" cy="13.6" r="1.9" fill="currentColor"/></symbol>
+    <symbol id="i-docplus" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.6 3.6H7.4a2 2 0 0 0-2 2v12.8a2 2 0 0 0 2 2h4.4"/><path d="M13.6 3.6l5 5v3.2"/><path d="M13.6 3.6v3.4a1.6 1.6 0 0 0 1.6 1.6h3.4"/><path d="M17.4 14.6v6M14.4 17.6h6"/></g></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 5.5l6.5 6.5L9 18.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-replay" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5.3 12.6A7 7 0 1 0 7.4 7"/><path d="M7.4 3.2V7H3.6"/></g></symbol>
+    <symbol id="i-cursor" viewBox="0 0 17 24"><path d="M1.5 1.5v18.2l4.7-4.4 3 6.9 3.1-1.3-3-6.8h6.4z" fill="#000" stroke="#fff" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+<div id="root"></div>
+<script>
+"use strict";
+// ---------- deterministic synthetic scenes (no real media) ----------
+let uid = 0;
+function rng(seed) {
+  return function () {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function ridge(seed, base, amp, color, opacity = 1, step = 40) {
+  const r = rng(seed); const pts = []; let v = 0;
+  for (let x = -60; x <= 1990; x += step) {
+    v += (r() - .5) * amp * .55; v *= .82;
+    pts.push([x, base + v + Math.sin(x / 240 + seed) * amp * .38 + Math.sin(x / 97 + seed * 2) * amp * .12]);
+  }
+  let d = `M${pts[0][0]} ${pts[0][1].toFixed(1)}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const mx = (pts[i][0] + pts[i + 1][0]) / 2, my = (pts[i][1] + pts[i + 1][1]) / 2;
+    d += ` Q${pts[i][0]} ${pts[i][1].toFixed(1)} ${mx} ${my.toFixed(1)}`;
+  }
+  d += ` L1990 1080 L-60 1080 Z`;
+  return `<path d="${d}" fill="${color}" opacity="${opacity}"/>`;
+}
+function stars(seed, n, maxY) {
+  const r = rng(seed); let s = "";
+  for (let i = 0; i < n; i++) s += `<circle cx="${(r() * 1920).toFixed(0)}" cy="${(r() * maxY).toFixed(0)}" r="${(r() * 1.6 + .4).toFixed(1)}" fill="#fff" opacity="${(r() * .6 + .2).toFixed(2)}"/>`;
+  return s;
+}
+function scene(kind) {
+  const p = "s" + (uid++);
+  const open = `<svg class="scene" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">`;
+  if (kind === "dusk") {
+    return open + `<defs>
+      <linearGradient id="${p}sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0d1433"/><stop offset=".34" stop-color="#28306a"/><stop offset=".56" stop-color="#7e4b7e"/><stop offset=".7" stop-color="#e2835f"/><stop offset=".8" stop-color="#f6c07b"/></linearGradient>
+      <radialGradient id="${p}glow" cx=".66" cy=".64" r=".32"><stop offset="0" stop-color="#ffd8a1" stop-opacity=".9"/><stop offset="1" stop-color="#ffd8a1" stop-opacity="0"/></radialGradient>
+      <linearGradient id="${p}lake" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a3466"/><stop offset="1" stop-color="#0b0d22"/></linearGradient>
+      <radialGradient id="${p}ref" cx=".5" cy=".2" r=".8"><stop offset="0" stop-color="#f7b277" stop-opacity=".55"/><stop offset="1" stop-color="#f7b277" stop-opacity="0"/></radialGradient>
+      <filter id="${p}soft" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="10"/></filter>
+    </defs>
+    <rect width="1920" height="1080" fill="url(#${p}sky)"/>${stars(7, 90, 380)}
+    <rect width="1920" height="1080" fill="url(#${p}glow)"/>
+    <circle cx="1268" cy="706" r="44" fill="#ffe6bd"/>
+    ${ridge(3, 640, 120, "#6a4877", .92)}${ridge(11, 720, 140, "#3a2c58")}${ridge(23, 800, 90, "#1b1932")}
+    <rect y="842" width="1920" height="238" fill="url(#${p}lake)"/>
+    <ellipse cx="1268" cy="900" rx="70" ry="80" fill="url(#${p}ref)" filter="url(#${p}soft)"/>
+    ${[862, 884, 910, 940, 974].map((y, i) => `<rect x="${1268 - (60 + i * 26)}" y="${y}" width="${120 + i * 52}" height="2.5" rx="1.25" fill="#f7c08a" opacity="${(.42 - i * .07).toFixed(2)}"/>`).join("")}
+    </svg>`;
+  }
+  if (kind === "day") {
+    const r = rng(5); let clouds = "";
+    for (let i = 0; i < 7; i++) clouds += `<ellipse cx="${(r() * 1920).toFixed(0)}" cy="${(120 + r() * 300).toFixed(0)}" rx="${(140 + r() * 220).toFixed(0)}" ry="${(30 + r() * 40).toFixed(0)}" fill="#fff" opacity=".85" filter="url(#${p}b)"/>`;
+    return open + `<defs>
+      <filter id="${p}b" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="22"/></filter>
+      <linearGradient id="${p}sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7fbbe9"/><stop offset=".55" stop-color="#d9ecf8"/></linearGradient>
+      <linearGradient id="${p}sea" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3d8fbf"/><stop offset="1" stop-color="#7cc6d8"/></linearGradient>
+      <linearGradient id="${p}sand" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f6ecd6"/><stop offset="1" stop-color="#eedcb4"/></linearGradient>
+    </defs>
+    <rect width="1920" height="1080" fill="url(#${p}sky)"/>${clouds}
+    ${ridge(31, 590, 26, "#5e8a9e", .55)}
+    <rect y="600" width="1920" height="130" fill="url(#${p}sea)"/>
+    <path d="M0 708 Q480 690 960 712 T1920 704 V1080 H0z" fill="#ffffff" opacity=".9"/>
+    <path d="M0 724 Q520 704 980 728 T1920 720 V1080 H0z" fill="url(#${p}sand)"/>
+    </svg>`;
+  }
+  if (kind === "night") {
+    const r = rng(17); let b = "", w = "";
+    let x = -20;
+    while (x < 1940) {
+      const bw = 70 + r() * 120, bh = 180 + r() * 420, top = 860 - bh;
+      b += `<rect x="${x.toFixed(0)}" y="${top.toFixed(0)}" width="${bw.toFixed(0)}" height="${(bh + 240).toFixed(0)}" fill="${r() > .5 ? "#0b1024" : "#111733"}"/>`;
+      for (let yy = top + 16; yy < 850; yy += 22) for (let xx = x + 10; xx < x + bw - 12; xx += 18) if (r() > .62) w += `<rect x="${xx.toFixed(0)}" y="${yy.toFixed(0)}" width="8" height="10" fill="${r() > .3 ? "#ffcf7a" : "#9fd3ff"}" opacity="${(.45 + r() * .5).toFixed(2)}"/>`;
+      x += bw + 6;
+    }
+    return open + `<defs><linearGradient id="${p}sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#050816"/><stop offset=".7" stop-color="#1d2550"/><stop offset="1" stop-color="#3a2f5c"/></linearGradient></defs>
+    <rect width="1920" height="1080" fill="url(#${p}sky)"/>${stars(3, 60, 300)}
+    <circle cx="380" cy="190" r="38" fill="#e9eefc" opacity=".9"/>${b}${w}
+    <rect y="860" width="1920" height="220" fill="#070a18"/>
+    ${[900, 940, 990].map((y, i) => `<rect x="0" y="${y}" width="1920" height="${2 + i}" fill="#ff5a4e" opacity="${.25 + i * .1}"/>`).join("")}
+    </svg>`;
+  }
+  if (kind === "forest") {
+    return open + `<defs><linearGradient id="${p}sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#cfdccb"/><stop offset="1" stop-color="#eef1e6"/></linearGradient></defs>
+    <rect width="1920" height="1080" fill="url(#${p}sky)"/>
+    ${ridge(41, 520, 110, "#8fa98a", .8)}${ridge(43, 640, 120, "#5d7d5e", .9)}${ridge(47, 760, 140, "#36553e")}${ridge(53, 880, 120, "#1d3326")}
+    </svg>`;
+  }
+  // credits: end of episode
+  return open + `<rect width="1920" height="1080" fill="#050505"/>
+    <g font-family="SF Pro Display, -apple-system, sans-serif" fill="#c9c9c9" text-anchor="middle">
+      <text x="960" y="430" font-size="30" letter-spacing="6" opacity=".55">WRITTEN BY</text>
+      <text x="960" y="486" font-size="46" opacity=".85">Mara Ellison</text>
+      <text x="960" y="600" font-size="30" letter-spacing="6" opacity=".55">DIRECTED BY</text>
+      <text x="960" y="656" font-size="46" opacity=".85">Tomas Varga</text>
+    </g></svg>`;
+}
+
+// ---------- components ----------
+const icon = (id, extra = "") => `<svg ${extra}><use href="#${id}"/></svg>`;
+const FILE = "Northern.Line.S02E05.1080p.BluRay.x265.10bit-RLS.mkv";
+const NEXT = "Northern.Line.S02E06.1080p.BluRay.x265.10bit-RLS.mkv";
+const DURATION = 2605; // 43:25
+function mmss(s) { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+
+// Controller width (15.2): clamp(0.45 x window width, 440, 600), at most 70% of the window.
+function controllerFrame(W, H, opts = {}) {
+  const width = Math.min(Math.max(W * .45, 440), 600, W * .7);
+  const cx = W * (opts.cx ?? .49);
+  const left = Math.min(Math.max(cx - width / 2, 16), W - 16 - width);
+  const bottom = opts.bottomPts ?? H * .11;
+  return { left, top: H - bottom - 80, width, bottom };
+}
+function controller(W, H, o = {}) {
+  const f = controllerFrame(W, H, o);
+  const pos = o.pos ?? 1864;
+  const played = pos / DURATION;
+  const active = o.active ? " active" : "";
+  let bar = `<div class="track"><div class="stored" style="left:${((pos - 8) / DURATION * 100).toFixed(2)}%;width:${(28 / DURATION * 100).toFixed(2)}%"></div>`;
+  if (o.loop) bar += `<div class="looprange" style="left:${(o.loop[0] / DURATION * 100).toFixed(2)}%;width:${((o.loop[1] - o.loop[0]) / DURATION * 100).toFixed(2)}%"></div>`;
+  bar += `<div class="played" style="width:${(played * 100).toFixed(2)}%"></div></div>`;
+  if (o.loop) bar += o.loop.map(t => `<div class="loopmark" style="left:${(t / DURATION * 100).toFixed(2)}%"></div>`).join("");
+  if (o.thumbAt != null) bar += `<div class="thumb" style="left:${(o.thumbAt * 100).toFixed(2)}%"></div>`;
+  const remaining = o.ended ? "-0:00" : "-" + mmss(DURATION - pos);
+  const playIcon = o.ended ? "i-replay" : o.paused ? "i-play" : "i-pause";
+  const speedLabel = o.speed ?? "1×";
+  const speedCls = "speed" + (speedLabel !== "1×" ? " changed" : "") + (o.openPanel === "speed" ? " on" : "");
+  const ccIcon = o.subsOff ? "i-cc" : "i-ccfill";
+  return `<div class="controller material" style="left:${f.left}px;top:${f.top}px;width:${f.width}px">
+    <div class="row1"><span class="time">${o.ended ? mmss(DURATION) : mmss(pos)}</span>
+      <div class="seek${active}">${bar}</div><span class="time">${remaining}</span></div>
+    <div class="row2">
+      <div class="cluster left"><div class="btn">${icon("i-speaker")}</div><div class="vol" style="--v:47%"></div></div>
+      <div class="cluster center">
+        ${o.single ? "" : `<div class="btn">${icon("i-prev")}</div><div class="gap16"></div>`}
+        <div class="btn">${icon("i-back10")}</div><div class="gap20"></div>
+        <div class="btn play">${icon(playIcon)}</div><div class="gap20"></div>
+        <div class="btn">${icon("i-fwd10")}</div>
+        ${o.single ? "" : `<div class="gap16"></div><div class="btn${o.ended ? " lit" : ""}">${icon("i-next")}</div>`}
+      </div>
+      <div class="cluster right">
+        <div class="${speedCls}" data-anchor="speed">${speedLabel}</div><div style="width:6px"></div>
+        <div class="btn${o.openPanel === "subs" ? " on" : ""}" data-anchor="subs">${icon(ccIcon)}</div>
+        <div class="btn${o.openPanel === "audio" ? " on" : ""}" data-anchor="audio">${icon("i-wave")}</div>
+        <div class="btn${o.pip ? " lit" : ""}">${icon(o.pip ? "i-pipexit" : "i-pip")}</div>
+        <div class="btn">${icon("i-full")}</div>
+      </div>
+    </div></div>`;
+}
+function titlebar(o = {}) {
+  return `<div class="scrim"></div>${o.noLights ? "" : `<div class="lights"><i></i><i></i><i></i></div>`}<div class="title">${o.title ?? FILE}</div>${o.ends ? `<div class="ends">Ends at ${o.ends}</div>` : ""}`;
+}
+// Outline and shadow: libass Outline 2.5 and Shadow 1 on the 720-line reference, scaled with the video.
+function outline(scale) {
+  const r = 2.5 * scale, parts = [];
+  for (let a = 0; a < 360; a += 22.5) {
+    const rad = a * Math.PI / 180;
+    parts.push(`${(r * Math.cos(rad)).toFixed(2)}px ${(r * Math.sin(rad)).toFixed(2)}px ${(0.6 * scale).toFixed(2)}px #000`);
+  }
+  parts.push(`0 ${(1.4 * scale).toFixed(2)}px ${(2.6 * scale).toFixed(2)}px rgba(0,0,0,.6)`);
+  return parts.join(",");
+}
+function subtitles(H, bottom, kind) {
+  const s = H / 720;
+  const ol = outline(s);
+  if (kind === "bilingual") {
+    return `<div class="subs" style="bottom:${bottom}px">
+      <div class="sub-zh" style="font-size:${45 * s}px;text-shadow:${ol}">我们得在天亮之前离开这里。</div>
+      <div class="sub-en2" style="font-size:${27 * s}px;margin-top:${2 * s}px;text-shadow:${outline(s * .8)}">We have to get out of here before dawn.</div></div>`;
+  }
+  if (kind === "sdh") {
+    return `<div class="subs" style="bottom:${bottom}px">
+      <div class="sub-en" style="font-size:${45 * s}px;text-shadow:${ol}">[distant thunder]</div>
+      <div class="sub-en" style="font-size:${45 * s}px;text-shadow:${ol}">Did you hear that? It came from the pier.</div></div>`;
+  }
+  return `<div class="subs" style="bottom:${bottom}px">
+      <div class="sub-zh" style="font-size:${45 * s}px;text-shadow:${ol}">别回头，继续往前走。</div>
+      <div class="sub-en2" style="font-size:${27 * s}px;margin-top:${2 * s}px;text-shadow:${outline(s * .8)}">Don't look back. Keep walking.</div></div>`;
+}
+// Subtitle bottom: 40 pt margin on the 720 reference; lifted 12 pt above the controller while it shows.
+function subBottom(H, ctrl) { return ctrl ? (H - ctrl.top) + 12 : 40 * H / 720; }
+
+function osd(sym, text, chromeVisible) {
+  return `<div class="osd material" style="top:${20 + (chromeVisible ? 28 : 0)}px">${icon(sym)}<span class="tx">${text}</span></div>`;
+}
+function trackRow(o) {
+  const ck = o.sel ? `<span class="ck">${icon("i-check")}</span>` : o.icon ? `<span class="ck icon">${icon(o.icon)}</span>` : `<span class="ck"></span>`;
+  const small = o.detail ? `<small${o.cjk ? ' class="cjk"' : ""}>${o.detail}</small>` : "";
+  return `<div class="prow${o.hover ? " hover" : ""}">${ck}<div class="lb">${o.label}${small}</div>${o.fmt ? `<span class="fmt">${o.fmt}</span>` : "<span></span>"}</div>`;
+}
+function stepperRow(label, value) {
+  return `<div class="prow"><span class="ck"></span><div class="lb">${label}</div><div class="stepper"><span class="val">${value}</span><span class="seg2"><b>${icon("i-minus")}</b><b>${icon("i-plus")}</b></span></div></div>`;
+}
+function subtitlePanel() {
+  return `<div class="panel material" data-panel="subs">
+    <h4>Subtitles<span>7 tracks</span></h4>
+    ${trackRow({ label: "Off" })}
+    ${trackRow({ sel: true, label: "Chinese (Simplified)", detail: "简英双语 · Default", cjk: true, fmt: "ASS" })}
+    ${trackRow({ label: "Chinese (Traditional)", detail: "繁英雙語", cjk: true, fmt: "ASS" })}
+    ${trackRow({ label: "English", fmt: "SRT" })}
+    ${trackRow({ label: "English SDH", detail: "Hearing impaired", fmt: "SRT", hover: true })}
+    ${trackRow({ label: "Japanese", fmt: "PGS" })}
+    ${trackRow({ label: "Chinese (Simplified)", detail: "External: Northern.Line.S02E05.zh-Hans.srt", fmt: "SRT" })}
+    <div class="psep"></div>
+    ${stepperRow("Delay", "0.0 s")}
+    ${stepperRow("Size", "45")}
+    <div class="psep"></div>
+    ${trackRow({ icon: "i-docplus", label: "Add Subtitle File…" })}
+  </div>`;
+}
+function emptySubtitlePanel() {
+  return `<div class="panel material" data-panel="subs">
+    <h4>Subtitles</h4>
+    <div class="empty">No subtitles in this file or next to it.</div>
+    <div class="psep"></div>
+    ${trackRow({ icon: "i-docplus", label: "Add Subtitle File…", hover: true })}
+  </div>`;
+}
+function audioPanel() {
+  return `<div class="panel material" data-panel="audio">
+    <h4>Audio<span>4 tracks</span></h4>
+    ${trackRow({ sel: true, label: "English", detail: "Default", fmt: "E-AC-3 5.1" })}
+    ${trackRow({ label: "Japanese", fmt: "AAC 5.1", hover: true })}
+    ${trackRow({ label: "Chinese (Mandarin)", fmt: "AAC 2.0" })}
+    ${trackRow({ label: "English", detail: "Commentary", fmt: "AAC 2.0" })}
+    <div class="psep"></div>
+    ${stepperRow("Delay", "0.0 s")}
+  </div>`;
+}
+function speedPanel() {
+  return `<div class="panel material" data-panel="speed" style="width:264px">
+    <h4>Speed</h4>
+    <div class="chips">${["0.5", "0.75", "1", "1.25", "1.5", "2"].map(v => `<b class="${v === "1.5" ? "sel" : ""}">${v}×</b>`).join("")}</div>
+    ${stepperRow("Fine", "1.50×")}
+  </div>`;
+}
+function pill(sceneKind, time) {
+  return `<div class="pill material" data-pill>${sceneKind ? `<div class="img">${scene(sceneKind)}</div>` : ""}<div class="t" style="${sceneKind ? "" : "padding:0 6px;height:20px"}">${time}</div></div>`;
+}
+function ring(progress) {
+  const r = 15, c = 2 * Math.PI * r;
+  return `<svg viewBox="0 0 34 34"><circle cx="17" cy="17" r="${r}" fill="rgba(0,0,0,.35)" stroke="rgba(255,255,255,.3)" stroke-width="2.5"/>
+    <circle cx="17" cy="17" r="${r}" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="${(c * progress).toFixed(2)} ${c.toFixed(2)}" transform="rotate(-90 17 17)"/>
+    <use href="#i-play" x="9.5" y="9.5" width="15" height="15" style="color:#fff"/></svg>`;
+}
+function nextCard(W, H, ctrl) {
+  // Bottom-right, 24 pt from the right edge, bottom aligned with the controller's bottom edge,
+  // or 12 pt above the controller when they would overlap.
+  const w = 360;
+  const left = Math.min(ctrl.left + ctrl.width - w, W - 16 - w);
+  const bottom = (H - ctrl.top) + 12;
+  return `<div class="next material" style="left:${left}px;bottom:${bottom}px">
+    <div class="nt">${scene("forest")}<div class="shade"></div><div class="ring">${ring(.4)}</div></div>
+    <div class="nb"><div class="h">Next Episode<span>in 3 s</span></div>
+      <div class="e">${episodeName(NEXT)}</div>
+      <div class="acts"><span class="cap sec">Cancel</span><span class="cap pri">Play Now</span></div></div>
+  </div>`;
+}
+// "Northern.Line.S02E06.1080p..." -> "Northern Line S02E06": the stem up to the episode token.
+function episodeName(file) {
+  const m = file.match(/^(.*?[Ss]\d{1,2}[Ee]\d{1,3})/);
+  return (m ? m[1] : file.replace(/\.[^.]+$/, "")).replace(/[._]+/g, " ");
+}
+function middleTruncate(s, n) { if (s.length <= n) return s; const h = Math.floor((n - 1) / 2); return s.slice(0, h) + "…" + s.slice(s.length - (n - 1 - h)); }
+function cursor(x, y) { return `<svg class="cursor" style="left:${x}px;top:${y}px" viewBox="0 0 17 24"><use href="#i-cursor"/></svg>`; }
+
+// ---------- frames ----------
+const W = 1280, H = 720;
+function windowFrame(theme, inner, w = W, h = H) { return `<div class="window t-${theme}" style="width:${w}px;height:${h}px">${inner}</div>`; }
+const F = [];
+F.push({ id: "01-controller", name: "Controller, M2 layout", note: "Playing, chrome visible. New: previous and next episode around the transport; speed, subtitles, audio and Picture in Picture on the right. Width is 0.45 of the window (576 pt here), between 440 and 600.",
+  build: t => windowFrame(t, `<div class="video">${scene("dusk")}</div>${titlebar()}${controller(W, H, {})}`) });
+F.push({ id: "02-subtitle-menu", name: "Subtitle track panel", note: "Opens from the subtitle button, 10 pt above the controller, on the controller material. Language first, the container title second, the format as a small tag on the right. Delay and size steppers and Add Subtitle File at the bottom.",
+  build: t => windowFrame(t, `<div class="video">${scene("dusk")}</div>${titlebar()}${controller(W, H, { openPanel: "subs" })}${subtitlePanel()}`), anchor: ["subs", "subs"] });
+F.push({ id: "03-audio-menu", name: "Audio track panel", note: "Same panel pattern. Codec and channel layout are the tag; the container title (Commentary) is the second line; audio delay at the bottom.",
+  build: t => windowFrame(t, `<div class="video">${scene("dusk")}</div>${titlebar()}${controller(W, H, { openPanel: "audio" })}${audioPanel()}`), anchor: ["audio", "audio"] });
+F.push({ id: "04-speed-menu", name: "Speed panel", note: "Six presets and a fine stepper (0.05 steps). When the rate is not 1, the speed button keeps an accent tint so the state is visible at a glance.",
+  build: t => windowFrame(t, `<div class="video">${scene("dusk")}</div>${titlebar()}${controller(W, H, { openPanel: "speed", speed: "1.5×" })}${speedPanel()}`), anchor: ["speed", "speed"] });
+F.push({ id: "05-thumbnail-hover", name: "Seek bar thumbnail, hover", note: "Pointer over a later part of the bar while playing. The pill gains a 192 x 108 thumbnail of the keyframe at or before the hovered time; the time sits under it. Video keeps playing underneath.",
+  build: t => windowFrame(t, `<div class="video">${scene("dusk")}</div>${titlebar()}${controller(W, H, { active: true })}${pill("night", "37:12")}`), pill: .857, cursor: true });
+F.push({ id: "06-thumbnail-scrub", name: "Seek bar thumbnail, scrubbing", note: "Dragging: the thumb follows the pointer, the picture shows the keyframe preview, and the pill shows the same moment so the eye can stay near the pointer.",
+  build: t => windowFrame(t, `<div class="video">${scene("forest")}</div>${titlebar()}${controller(W, H, { active: true, pos: 990, thumbAt: 990 / DURATION })}${pill("forest", "16:30")}`), pill: 990 / DURATION, cursor: true });
+F.push({ id: "07-subtitles-bilingual", name: "Subtitles: bilingual ASS (Chinese and English)", themes: ["dark"], note: "Chrome hidden. A Chinese fansub ASS track keeps its own styles: here the author set Chinese at 45 and the English line at 27 on the 720-line reference (45 pt in a 720 pt tall window). Reel only applies the user's size factor to ASS. Compare 08, where Reel's default style sets every line of a plain SRT at 45.",
+  build: t => windowFrame(t, `<div class="video">${scene("dusk")}</div>${subtitles(H, subBottom(H), "bilingual")}`) });
+F.push({ id: "08-subtitles-srt-bright", name: "Subtitles: English SDH SRT over a bright frame", themes: ["dark"], note: "Reel's default text style (PingFang SC Medium, size 45, outline 2.5, shadow 1) over sand and sky, the hardest case for white text. Bottom margin 40 on the 720 reference.",
+  build: t => windowFrame(t, `<div class="video">${scene("day")}</div>${subtitles(H, subBottom(H), "sdh")}`) });
+F.push({ id: "09-subtitles-lifted", name: "Subtitles lifted above the controller", note: "While the controller shows and overlaps the bottom subtitle area, bottom-aligned lines move up to 12 pt above it (0.25 s ease-out) and return after the chrome fades out. Positioned signs do not move.",
+  build: t => { const c = controllerFrame(W, H); return windowFrame(t, `<div class="video">${scene("dusk")}</div>${titlebar()}${subtitles(H, subBottom(H, c), "walk")}${controller(W, H, {})}`); } });
+F.push({ id: "10-osd-speed", name: "OSD: speed", note: "Cmd+] or the speed panel. Chrome hidden (keyboard change while the pointer is still). Text changes in place on repeated presses.",
+  build: t => windowFrame(t, `<div class="video">${scene("dusk")}</div>${osd("i-gauge", "Speed 1.5×", false)}${subtitles(H, subBottom(H), "bilingual")}`) });
+F.push({ id: "11-osd-subtitle-delay", name: "OSD: subtitle delay", note: "Shift+X adds 0.5 s, Alt+Shift+X adds 0.1 s, Shift+C resets. Sign always shown.",
+  build: t => windowFrame(t, `<div class="video">${scene("dusk")}</div>${osd("i-ccfill", "Subtitle Delay +0.5 s", false)}${subtitles(H, subBottom(H), "bilingual")}`) });
+F.push({ id: "12-osd-loop-set", name: "OSD: A-B loop set", note: "Second Cmd+L. The bar shows A and B as 3 pt accent marks with a tinted range between them; the marks stay while the loop is active.",
+  build: t => windowFrame(t, `<div class="video">${scene("dusk")}</div>${titlebar()}${osd("i-repeat", "Loop 31:04 <em>to</em> 32:10", true)}${controller(W, H, { pos: 1902, loop: [1864, 1930] })}`) });
+F.push({ id: "13-osd-loop-cleared", name: "OSD: A-B loop cleared", note: "Third Cmd+L. Marks are removed with the OSD.",
+  build: t => windowFrame(t, `<div class="video">${scene("dusk")}</div>${titlebar()}${osd("i-repeat", "Loop Off", true)}${controller(W, H, { pos: 1902 })}`) });
+F.push({ id: "14-next-episode", name: "End of episode: next episode card", note: "At the end of the file, when the folder has a next episode. The card sits 12 pt above the controller with its right edge on the controller's right edge, next to the lit next-episode button. The second line is the file stem up to the episode token (S02E06). Countdown 5 s on the ring; Play Now, the thumbnail or Return start it now; Cancel or Esc stays on the last frame with Replay in the controller.",
+  build: t => { const c = controllerFrame(W, H); return windowFrame(t, `<div class="video">${scene("credits")}</div>${titlebar()}${controller(W, H, { ended: true, pos: DURATION })}${nextCard(W, H, c)}`); } });
+F.push({ id: "15-fullscreen", name: "Fullscreen", size: [2560, 1440], dsf: 1, note: "The user's 5K display at 2560 x 1440 pt, drawn at 1x. Controller 56 pt from the bottom (600 pt wide), menu bar and cursor hide with the chrome, title and end time at the top.",
+  build: t => { const FW = 2560, FH = 1440; const o = { bottomPts: 56 }; const c = controllerFrame(FW, FH, o); return windowFrame(t, `<div class="video">${scene("dusk")}</div>${titlebar({ noLights: true, ends: "22:47" })}${subtitles(FH, subBottom(FH, c), "walk")}${controller(FW, FH, o)}`, FW, FH); } });
+F.push({ id: "16-pip", name: "Picture in Picture: main window", note: "The video plays in the system PiP window. The main window keeps its size and shows the last frame blurred and dimmed, a short explanation and the way back. The controller still works; the PiP button is lit.",
+  build: t => windowFrame(t, `<div class="video" style="overflow:hidden;background:#000"><div class="pipbg">${scene("dusk")}</div></div>
+    <div class="pipc"><div class="tile">${icon("i-pip")}</div><div class="h">Playing in Picture in Picture</div><div class="s">Playback controls here still work.</div><span class="cap">Exit Picture in Picture</span></div>
+    ${titlebar()}${controller(W, H, { pip: true })}`) });
+F.push({ id: "18-edge-states", name: "Edge states: single file, no subtitles", note: "A file alone in its folder: previous and next are hidden and the transport re-centres (no dead buttons). A file with no subtitle tracks and no sidecar files: the panel says so in one line and keeps Add Subtitle File, so the subtitle button is never a dead end. The button shows the outline glyph when subtitles are off.",
+  build: t => windowFrame(t, `<div class="video">${scene("night")}</div>${titlebar({ title: "Sunset Drive 4K60.mkv" })}${controller(W, H, { single: true, subsOff: true, openPanel: "subs" })}${emptySubtitlePanel()}`), anchor: ["subs", "subs"] });
+F.push({ id: "17-menus", name: "Menu bar: Video, Audio, Subtitles", note: "System menus (NSMenu), drawn side by side for review; only one opens at a time. Track items mirror the panels; Command and Control shortcuts are shown, plain-key bindings are not (M1 rule).",
+  build: t => windowFrame(t, menusFrame(t)) });
+
+function mi(label, key = "", o = {}) {
+  return `<div class="mi${o.hl ? " hl" : ""}${o.dis ? " dis" : ""}"><span class="ck">${o.ck ? icon("i-check") : ""}</span><span>${label}</span><span class="k">${key}</span><span class="sub">${o.sub ? icon("i-chev") : ""}</span></div>`;
+}
+const msep = `<div class="msep"></div>`;
+function menusFrame(t) {
+  const desk = t === "dark"
+    ? `linear-gradient(160deg,#1b2340 0%,#2c2a52 40%,#4a2f4f 70%,#5a3a3a 100%)`
+    : `linear-gradient(160deg,#a9c7e8 0%,#c9c2e6 45%,#ead1d6 75%,#f1dcc6 100%)`;
+  return `<div class="desk" style="background:${desk}"></div>
+  <div class="menubar"><b class="app">Reel</b><b>File</b><b>Playback</b><b class="open">Video</b><b class="open">Audio</b><b class="open">Subtitles</b><b>Window</b><b>Help</b><span class="clock">Sat 24 Oct 21:30</span></div>
+  <div class="menu" style="left:150px">
+    ${mi("Half Size", "⌘0")}${mi("Actual Size", "⌘1")}${mi("Double Size", "⌘2")}${mi("Fit to Screen", "⌘3")}${msep}
+    ${mi("Enter Full Screen", "⌃⌘F")}${mi("Enter Picture in Picture", "⌃⌘P", { hl: true })}${msep}
+    ${mi("Video Track", "", { sub: true })}${mi("Next Video Track", "⌃⌘V", { dis: true })}${msep}
+    ${mi("Take Screenshot", "⌘S")}${mi("Show Screenshots in Finder")}
+  </div>
+  <div class="menu" style="left:440px;min-width:290px">
+    ${mi(`English <span class="dim">E-AC-3 5.1</span>`, "", { ck: true })}${mi(`Japanese <span class="dim">AAC 5.1</span>`)}${mi(`Chinese (Mandarin) <span class="dim">AAC 2.0</span>`)}${mi(`English Commentary <span class="dim">AAC 2.0</span>`)}${msep}
+    ${mi("Next Audio Track", "⌃⌘A")}${msep}
+    ${mi("Volume Up")}${mi("Volume Down")}${mi("Mute", "⌘/")}${msep}
+    ${mi("Increase Audio Delay")}${mi("Decrease Audio Delay")}${mi("Reset Audio Delay", "", { dis: true })}
+  </div>
+  <div class="menu" style="left:752px;min-width:378px">
+    ${mi("Off")}
+    ${mi(`Chinese (Simplified) <span class="dim">ASS, <span class="cjk">简英双语</span></span>`, "", { ck: true })}
+    ${mi(`Chinese (Traditional) <span class="dim">ASS, <span class="cjk">繁英雙語</span></span>`)}
+    ${mi(`English <span class="dim">SRT</span>`)}
+    ${mi(`English SDH <span class="dim">SRT</span>`, "", { hl: true })}
+    ${mi(`Japanese <span class="dim">PGS</span>`)}
+    ${mi(`Chinese (Simplified) <span class="dim">SRT, external</span>`)}${msep}
+    ${mi("Next Subtitle Track", "⌃⌘S")}${mi("Add Subtitle File…")}${msep}
+    ${mi("Show Subtitles", "", { ck: true })}${mi("Delay", "", { sub: true })}${mi("Size and Position", "", { sub: true })}
+  </div>`;
+}
+
+// ---------- layout fixups that need measured geometry ----------
+function place(root, frame) {
+  const win = root.querySelector(".window");
+  const wr = win.getBoundingClientRect();
+  const scale = wr.width / win.offsetWidth;
+  const rel = r => ({ left: (r.left - wr.left) / scale, top: (r.top - wr.top) / scale, width: r.width / scale, height: r.height / scale });
+  const ctrl = win.querySelector(".controller");
+  const panel = win.querySelector("[data-panel]");
+  if (panel && frame.anchor) {
+    const b = rel(win.querySelector(`[data-anchor="${frame.anchor[0]}"]`).getBoundingClientRect());
+    const c = rel(ctrl.getBoundingClientRect());
+    const pw = panel.offsetWidth, ph = panel.offsetHeight;
+    let left = b.left + b.width / 2 - pw / 2;
+    left = Math.min(Math.max(left, 16), win.offsetWidth - 16 - pw);
+    panel.style.left = left + "px";
+    panel.style.top = (c.top - 10 - ph) + "px";
+  }
+  const pillEl = win.querySelector("[data-pill]");
+  if (pillEl && frame.pill != null) {
+    const s = rel(win.querySelector(".seek").getBoundingClientRect());
+    const c = rel(ctrl.getBoundingClientRect());
+    const x = s.left + s.width * frame.pill;
+    const pw = pillEl.offsetWidth, ph = pillEl.offsetHeight;
+    const left = Math.min(Math.max(x - pw / 2, 16), win.offsetWidth - 16 - pw);
+    pillEl.style.left = left + "px";
+    pillEl.style.top = (c.top - 8 - ph) + "px";
+    if (frame.cursor) win.insertAdjacentHTML("beforeend", cursor(x - 1.5, s.top + s.height / 2 - 2));
+  }
+}
+
+// ---------- entry: single frame for headless screenshots, or the gallery ----------
+const params = new URLSearchParams(location.search);
+const root = document.getElementById("root");
+if (params.has("frame")) {
+  document.body.classList.add("single");
+  const frame = F.find(f => f.id === params.get("frame"));
+  const theme = params.get("theme") || "dark";
+  root.innerHTML = frame.build(theme);
+  place(root, frame);
+} else {
+  let html = `<div class="gallery"><h1>Reel M2 surfaces</h1><p>Static mockup of every new or changed M2 surface, drawn with the M1 tokens (design sections 9 and 15). The picture is a generated scene, not real media. Window frames are 1280 x 720 pt; fullscreen is the 2560 x 1440 pt display. PNGs are in png/.</p>`;
+  for (const f of F) {
+    const themes = f.themes || ["light", "dark"];
+    const [fw, fh] = f.size || [W, H];
+    const s = 600 / fw;
+    html += `<section class="entry"><h2>${f.id.slice(0, 2)}. ${f.name}</h2><p>${f.note}</p><div class="pair">`;
+    for (const t of themes) html += `<figure class="shot" data-id="${f.id}" data-theme="${t}" style="margin:0;width:${fw * s}px;height:${fh * s}px"><div style="transform:scale(${s});transform-origin:0 0;width:${fw}px;height:${fh}px">${f.build(t)}</div><figcaption>${t}</figcaption></figure>`;
+    html += `</div></section>`;
+  }
+  root.innerHTML = html + `</div>`;
+  for (const fig of root.querySelectorAll(".shot")) place(fig, F.find(f => f.id === fig.dataset.id));
+}
+</script>
+</body>
+</html>
