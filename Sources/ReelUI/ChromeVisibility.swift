@@ -4,9 +4,10 @@ import SwiftUI
 
 /// The shared `chromeVisible` state of the traffic lights, title and controller (design 9.2).
 ///
-/// Shown on pointer movement of 2 pt or more, on playback keys and always while paused. Hidden
-/// 2.5 s after the last input while playing, but never while the pointer is over the controller
-/// or a drag is in progress. Time comes from an injected clock so tests need no waiting.
+/// Shown on pointer movement of 2 pt or more, on playback keys and while paused. Hidden 2.5 s
+/// after the last input while playing, and at once when the pointer leaves the window (playing or
+/// paused, so burned-in subtitles are never covered), but never while the pointer is over the
+/// controller, a drag is in progress or a panel is open. Time comes from an injected clock so tests need no waiting.
 @Observable
 public final class ChromeVisibility {
     public static let autoHideDelay: TimeInterval = 2.5
@@ -22,6 +23,8 @@ public final class ChromeVisibility {
     public private(set) var isDragging = false
     /// A track or speed panel is open: the chrome stays up so the panel never loses its anchor.
     public private(set) var isPanelOpen = false
+    /// The pointer is outside the window: the chrome stays hidden until it comes back.
+    public private(set) var isPointerOutside = false
     /// The last input that keeps the chrome up, on the injected clock.
     public private(set) var lastInputAt: TimeInterval
 
@@ -54,23 +57,33 @@ public final class ChromeVisibility {
         return lastInputAt + ChromeVisibility.autoHideDelay
     }
 
-    private var canAutoHide: Bool { isPlaying && !isPointerOverController && !isDragging && !isPanelOpen }
+    private var canAutoHide: Bool {
+        (isPlaying || isPointerOutside) && !isPointerOverController && !isDragging && !isPanelOpen
+    }
 
     // MARK: Inputs
 
     /// Pointer moved inside the window. Movement under 2 pt is ignored (trackpad jitter).
     public func pointerMoved(to point: CGPoint) {
         defer { lastPointer = point }
+        if isPointerOutside {
+            isPointerOutside = false
+            registerInput()
+            return
+        }
         if let lastPointer, hypot(point.x - lastPointer.x, point.y - lastPointer.y) < ChromeVisibility.pointerThreshold {
             return
         }
         registerInput()
     }
 
-    /// The pointer left the window: forget the position so re-entry shows the chrome.
+    /// The pointer left the window: hide now (unless a drag or panel holds the chrome up) and
+    /// forget the position so re-entry shows the chrome.
     public func pointerExited() {
         lastPointer = nil
+        isPointerOutside = true
         isPointerOverController = false
+        if !isDragging, !isPanelOpen { setVisible(false) }
         reschedule()
     }
 
@@ -83,7 +96,7 @@ public final class ChromeVisibility {
         guard playing != isPlaying else { return }
         isPlaying = playing
         if !playing {
-            show()
+            if !isPointerOutside { show() }
         } else {
             lastInputAt = now()
         }
@@ -116,7 +129,7 @@ public final class ChromeVisibility {
         if let deadline = hideDeadline, now() >= deadline {
             setVisible(false)
         }
-        if !isVisible, !canAutoHide {
+        if !isVisible, !canAutoHide, !isPointerOutside {
             setVisible(true)
         }
     }

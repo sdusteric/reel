@@ -124,4 +124,48 @@ import Testing
         }
         #expect(intervals == [0.1, 1, 0.1])
     }
+
+    @Test func leavingTheWindowHidesAtOnceWhilePlayingOrPaused() {
+        let clock = TestClock()
+        let chrome = make(clock)
+        #expect(chrome.isVisible)
+        chrome.pointerExited()
+        #expect(!chrome.isVisible, "paused: hidden as soon as the pointer leaves")
+        chrome.evaluate()
+        #expect(!chrome.isVisible, "and stays hidden")
+
+        chrome.pointerMoved(to: CGPoint(x: 10, y: 10))
+        #expect(chrome.isVisible, "coming back shows it")
+        chrome.setPlaying(true)
+        chrome.setPointerOverController(true)
+        chrome.pointerExited()
+        #expect(!chrome.isVisible, "playing, leaving straight from the controller")
+    }
+
+    @Test func aKeyWhileOutsideShowsThenHidesEvenWhenPaused() {
+        let clock = TestClock()
+        let chrome = make(clock)
+        chrome.pointerExited()
+        chrome.playbackKeyPressed()
+        #expect(chrome.isVisible)
+        clock.advance(by: 2.5)
+        chrome.evaluate()
+        #expect(!chrome.isVisible)
+        chrome.setPlaying(true)
+        chrome.setPlaying(false)
+        #expect(!chrome.isVisible, "pausing with the pointer outside does not cover the picture")
+    }
+
+    @Test func aPanelOrDragKeepsTheChromeWhenThePointerLeaves() {
+        let clock = TestClock()
+        let chrome = make(clock)
+        chrome.setPlaying(true)
+        chrome.setPanelOpen(true)
+        chrome.pointerExited()
+        #expect(chrome.isVisible)
+        chrome.setPanelOpen(false)
+        clock.advance(by: 2.5)
+        chrome.evaluate()
+        #expect(!chrome.isVisible)
+    }
 }

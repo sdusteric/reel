@@ -49,7 +49,9 @@ final class PlayerContentView: DropAcceptingView {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(
             rect: .zero,
-            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            // activeAlways: the exit must arrive even when another app is in front, or the chrome
+            // would stay over the picture.
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
             owner: self
         ))
     }
