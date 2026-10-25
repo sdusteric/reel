@@ -169,12 +169,18 @@ final class SystemNowPlayingPublisher: NowPlayingPublishing {
         ]
         if let duration = state.duration { info[MPMediaItemPropertyPlaybackDuration] = duration }
         if let jpeg = state.artwork, let image = NSImage(data: jpeg) {
-            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in
-                NSImage(data: jpeg) ?? NSImage()
-            }
+            info[MPMediaItemPropertyArtwork] = Self.artwork(jpeg: jpeg, size: image.size)
         }
         center.nowPlayingInfo = info
         center.playbackState = state.isPlaying ? .playing : .paused
+    }
+
+    /// MediaPlayer calls the artwork handler on its own queue, so the closure must not inherit the
+    /// main actor (a main-actor closure traps in dispatch_assert_queue there).
+    nonisolated private static func artwork(jpeg: Data, size: CGSize) -> MPMediaItemArtwork {
+        MPMediaItemArtwork(boundsSize: size) { @Sendable _ in
+            NSImage(data: jpeg) ?? NSImage()
+        }
     }
 }
 
@@ -210,7 +216,7 @@ final class SystemRemoteCommands: RemoteCommandRegistering {
 
         func add(_ command: MPRemoteCommand, _ translate: @escaping @Sendable (MPRemoteCommandEvent) -> RemoteCommand?) {
             command.isEnabled = true
-            let token = command.addTarget { event in
+            let token = command.addTarget { @Sendable event in
                 guard let value = translate(event) else { return .commandFailed }
                 Task { @MainActor in handler(value) }
                 return .success
