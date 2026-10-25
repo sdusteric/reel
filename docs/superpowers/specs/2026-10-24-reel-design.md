@@ -55,7 +55,7 @@ These are failures, not missing features. Each has a guard in the design.
 - **A seek that freezes the picture without feedback.** The seek bar and time label move on input before any decode starts, a keyframe preview appears within 80 ms, and the old frame stays on screen (never black) until the new one is ready. Section 7.5.
 - **Losing the resume position.** Saved every 5 s, on pause, on seek settle, on close and on quit, with atomic writes. Section 11.
 - **A window that steals focus.** Reel never calls `activate` on its own. Tests and screenshots never create an on-screen window and check that the frontmost app is unchanged. Section 14.
-- **Anything that phones home.** No network code. FFmpeg is built with `--disable-network`, there is no updater, no analytics, no crash reporter. A lint rule rejects `URLSession`, `NWConnection` and `Network` imports in `Sources/`. Section 13.
+- **Anything that phones home.** No network code. FFmpeg is built with `--disable-network`, there is no analytics and no crash reporter. The one exception, added after M2, is Sparkle 2 auto-update in the app target only (app-updates `CONTRACT.md`); it never starts in tests, shots, tools or with `REEL_NO_UPDATES=1`. A lint rule rejects `URLSession`, `NWConnection` and `Network` imports in `Sources/`. Section 13.
 
 ## 5. Supported formats
 

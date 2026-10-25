@@ -8,7 +8,8 @@
 # Env (all optional):
 #   REEL_SCRATCH     SwiftPM scratch path (default <repo>/.build). Agents building in parallel pass
 #                    their own.
-#   REEL_BUNDLE_BIN  use this binary instead of running swift build
+#   REEL_BUNDLE_BIN  use this binary instead of running swift build (Sparkle.framework is taken
+#                    from the same directory)
 #   REEL_BUNDLE_ID   CFBundleIdentifier (default dev.sdusteric.reel)
 #   SIGN_ID          signing identity SHA-1 (default: the Apple Development cert)
 #   INSTALL_DIR      install target for --install (default: $HOME/Applications)
@@ -37,7 +38,8 @@ OUT="$REPO/build/bundle/Reel.app"
 
 VERSION="$(tr -d '[:space:]' <"$REPO/VERSION")"
 [ -n "$VERSION" ] || { echo "VERSION file is empty" >&2; exit 1; }
-BUILD="$(date +%Y%m%d%H%M)"
+# CFBundleVersion is the UTC build time, so every release sorts after the one before it.
+BUILD="$(date -u +%Y%m%d%H%M)"
 
 # Check the signing identity before spending time on a build.
 if ! security find-identity -v -p codesigning | grep -q "$SIGN_ID"; then
@@ -58,6 +60,16 @@ case "$OUT" in */build/bundle/Reel.app) ;; *) echo "refusing odd output path $OU
 [ -d "$OUT" ] && rm -rf "$OUT"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 cp "$BIN" "$OUT/Contents/MacOS/Reel"
+
+# Sparkle (app-updates CONTRACT.md): SwiftPM puts the framework next to the binary. ditto keeps
+# the Versions symlinks. The executable finds it through @executable_path/../Frameworks.
+SPARKLE_SRC="$(dirname "$BIN")/Sparkle.framework"
+[ -d "$SPARKLE_SRC" ] || { echo "missing $SPARKLE_SRC" >&2; exit 1; }
+mkdir -p "$OUT/Contents/Frameworks"
+ditto "$SPARKLE_SRC" "$OUT/Contents/Frameworks/Sparkle.framework"
+if ! otool -l "$OUT/Contents/MacOS/Reel" | grep -q 'path @executable_path/../Frameworks '; then
+  install_name_tool -add_rpath @executable_path/../Frameworks "$OUT/Contents/MacOS/Reel"
+fi
 
 sed -e "s|@BUNDLE_ID@|$BUNDLE_ID|" -e "s|@VERSION@|$VERSION|" -e "s|@BUILD@|$BUILD|" \
   "$REPO/resources/Info.plist.in" >"$OUT/Contents/Info.plist"
@@ -80,11 +92,21 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns "$SET" -o "$OUT/Contents/Resources/AppIcon.icns"
 
-# Sign with the Apple Development cert: no hardened runtime, no entitlements, no --deep.
+# Sparkle is signed inside-out first, as Sparkle documents: its helpers keep the hardened runtime
+# they ship with, and Downloader.xpc keeps its entitlements.
+SPARKLE="$OUT/Contents/Frameworks/Sparkle.framework"
+sign_sparkle() { codesign --force --sign "$SIGN_ID" --timestamp=none -o runtime "$@"; }
+sign_sparkle "$SPARKLE/Versions/B/XPCServices/Installer.xpc"
+sign_sparkle --preserve-metadata=entitlements "$SPARKLE/Versions/B/XPCServices/Downloader.xpc"
+sign_sparkle "$SPARKLE/Versions/B/Autoupdate"
+sign_sparkle "$SPARKLE/Versions/B/Updater.app"
+sign_sparkle "$SPARKLE"
+
+# Then the app with the Apple Development cert: no hardened runtime, no entitlements, no --deep.
 # --timestamp=none needs no network. The designated requirement keys on the bundle id and the
 # cert, so grants survive rebuilds.
 codesign --force --sign "$SIGN_ID" --timestamp=none "$OUT"
-codesign --verify --strict --verbose=2 "$OUT"
+codesign --verify --deep --strict --verbose=2 "$OUT"
 
 if [ "$INSTALL" = 1 ]; then
   DEST_DIR="${INSTALL_DIR:-$HOME/Applications}"

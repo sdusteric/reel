@@ -20,6 +20,8 @@
 # in front would otherwise hide). The subtitle scenarios exit non-zero unless libass drew the
 # line. Only that PID is ever stopped, and the only thing deleted is the exact mktemp directory.
 set -euo pipefail
+# Shot mode never starts Sparkle; this keeps it off even if that ever changes.
+export REEL_NO_UPDATES=1
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 APP="${REEL_APP:-$REPO/build/bundle/Reel.app}"

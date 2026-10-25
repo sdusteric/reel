@@ -42,6 +42,8 @@ final class SettingsModel {
 
 struct SettingsView: View {
     let model: SettingsModel
+    /// Nil when there is no updater (`REEL_NO_UPDATES=1`).
+    var updates: UpdateSettingsModel?
 
     var body: some View {
         Form {
@@ -56,6 +58,9 @@ struct SettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            if let updates {
+                UpdatesSection(updates: updates)
+            }
         }
         .formStyle(.grouped)
         .frame(width: 420)
@@ -63,10 +68,27 @@ struct SettingsView: View {
     }
 }
 
+private struct UpdatesSection: View {
+    @Bindable var updates: UpdateSettingsModel
+
+    var body: some View {
+        Section {
+            Toggle("Automatically install updates", isOn: $updates.automaticallyInstallsUpdates)
+            HStack {
+                Text("Reel checks once a day.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Check for Updates\u{2026}") { updates.checkForUpdates() }
+            }
+        }
+    }
+}
+
 /// The Settings window, created on first use (Cmd+,).
 final class SettingsWindowController: NSWindowController {
-    init(model: SettingsModel) {
-        let hosting = NSHostingController(rootView: SettingsView(model: model))
+    init(model: SettingsModel, updates: UpdateSettingsModel? = nil) {
+        let hosting = NSHostingController(rootView: SettingsView(model: model, updates: updates))
         let window = NSWindow(contentViewController: hosting)
         window.title = "Settings"
         window.styleMask = [.titled, .closable]

@@ -14,6 +14,10 @@ let package = Package(
         .executable(name: "Reel", targets: ["Reel"]),
         .executable(name: "reelctl", targets: ["reelctl"]),
     ],
+    dependencies: [
+        // Auto-update (app-updates CONTRACT.md). Only the Reel app target links it.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
+    ],
     targets: [
         .target(
             name: "CReelDeps",
@@ -52,7 +56,7 @@ let package = Package(
         .target(name: "ReelUI", dependencies: ["ReelCore"], swiftSettings: mainActorByDefault),
         .executableTarget(
             name: "Reel",
-            dependencies: ["ReelUI", "ReelEngine", "ReelCore"],
+            dependencies: ["ReelUI", "ReelEngine", "ReelCore", .product(name: "Sparkle", package: "Sparkle")],
             swiftSettings: mainActorByDefault
         ),
         .executableTarget(name: "reelctl", dependencies: ["ReelEngine", "ReelCore", "CReelDeps"]),
@@ -60,6 +64,7 @@ let package = Package(
         .testTarget(name: "ReelEngineTests", dependencies: ["ReelEngine", "ReelCore", "CReelDeps"]),
         .testTarget(name: "ReelUITests", dependencies: ["ReelUI", "ReelCore"]),
         // The app's own wiring (Now Playing, media keys, Picture in Picture) through fakes only.
+        // It links Sparkle through Reel but never creates an Updater.
         .testTarget(name: "ReelTests", dependencies: ["Reel", "ReelUI", "ReelCore"], swiftSettings: mainActorByDefault),
     ],
     swiftLanguageModes: [.v6]

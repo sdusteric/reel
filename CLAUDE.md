@@ -15,6 +15,7 @@ swiftlint lint --strict
 REEL_SCRATCH="$TMPDIR/reel-check" scripts/check.sh   # every gate
 scripts/shots.sh                # 16 scenarios x light/dark background screenshots into build/shots
 REEL_SCRATCH="$TMPDIR/reel-accept" scripts/accept.sh offline   # M1 criteria, then the M2 group
+scripts/release.sh [--notes <file.md>] [--dry-run <dir>]   # check.sh, release bundle, app-updates publish.sh
 ```
 
 `reelctl` (headless, always with `REEL_HOME` set to a temp dir; `swift build -c release` puts it in
@@ -38,6 +39,9 @@ reelctl seek-bench <file> [--runs N] [--with-thumbs] --json   # M1 seek threshol
 - Several agents may build at once. Always pass your own `--scratch-path` outside the repo and
   delete it by its exact path when done.
 - Use `caffeinate -i` for long runs (deps, fixtures, benches).
+- Set `REEL_NO_UPDATES=1` for every test, shot or `reelctl` run (check.sh and shots.sh export it).
+- `scripts/release.sh` publishes a real update for the user. Agents run it only with
+  `--dry-run <dir>`, and only when asked.
 
 ## Layout
 
@@ -48,14 +52,17 @@ reelctl seek-bench <file> [--runs N] [--with-thumbs] --json   # M1 seek threshol
 - `ReelUI`: SwiftUI and AppKit views, `@MainActor` by default. Depends only on `ReelCore` and talks
   to the engine through `PlayerEngine`.
 - `Reel`: the app executable (`@MainActor` by default). `reelctl`: the headless CLI.
+- Sparkle (exact 2.10.0, app-updates `CONTRACT.md`) is linked by the `Reel` target only.
+  `Updater` wraps `SPUStandardUpdaterController` behind ReelUI's `UpdaterControlling`, and
+  `UpdaterPolicy` returns no updater in shot mode, with `REEL_NO_UPDATES=1` or outside a `.app`.
 - Swift 6 language mode, Swift Testing (`@Suite struct XTests`, `@Test func descriptiveName()`).
 
 ## Safety rules (this is the user's real Mac)
 
 1. Never show a window, take focus or trigger a permission dialog. Never run `open`, never use
    osascript, never launch IINA or any GUI app. The Reel binary runs only in `--shot` mode (no
-   `NSApplication.run`, no `NSWindow`) or as `reelctl`, always with `REEL_HOME` set to a temp dir.
-   Compare `lsappinfo front` before and after any Reel launch.
+   `NSApplication.run`, no `NSWindow`, no updater) or as `reelctl`, always with `REEL_HOME` set to
+   a temp dir and `REEL_NO_UPDATES=1`. Compare `lsappinfo front` before and after any Reel launch.
 2. Never make a sound. No test, bench or tool attaches an `AVSampleBufferAudioRenderer` or any
    audio output. Never set `REEL_ALLOW_AUDIO=1`. No afplay, no say.
 3. Never read the user's media or private folders (~/Downloads, ~/Desktop, ~/Movies, ~/Documents
@@ -65,8 +72,10 @@ reelctl seek-bench <file> [--runs N] [--with-thumbs] --json   # M1 seek threshol
 4. Never `rm -rf` with wildcards, relative paths or after `cd`. Delete only exact absolute paths
    inside `.build`, `build/`, `vendor/build`, `vendor/prefix` or a dir you created with `mktemp`.
 5. Track every process you start by PID and stop it by PID. Never kill or signal anything else.
-6. No network except `scripts/deps.sh` downloading its pinned, sha256-verified tarballs. No
-   `URLSession`, `NWConnection` or `import Network` in `Sources/` (swiftlint enforces it).
+6. No network except `scripts/deps.sh` downloading its pinned, sha256-verified tarballs and
+   SwiftPM resolving Sparkle. No `URLSession`, `NWConnection` or `import Network` in `Sources/`
+   (swiftlint enforces it). Sparkle in the installed app is the one runtime exception; no test,
+   shot or tool ever creates an `Updater` or makes Sparkle fetch the feed.
 7. Install nothing, change no system or app settings (no `defaults write`, no LaunchServices).
 8. FFmpeg stays LGPL: never `--enable-gpl`, `--enable-nonfree` or `--enable-version3`.
 

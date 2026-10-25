@@ -19,6 +19,13 @@
   <key>NSSupportsAutomaticTermination</key><false/>
   <key>NSSupportsSuddenTermination</key><false/>
 
+  <!-- Sparkle auto-update (app-updates CONTRACT.md). -->
+  <key>SUFeedURL</key><string>https://sdusteric.github.io/app-updates/reel/appcast.xml</string>
+  <key>SUPublicEDKey</key><string>PMaW+8sZRzOkfIwy1KBGk0CHTVoN49FE9o8gUlNGdZc=</string>
+  <key>SUEnableAutomaticChecks</key><true/>
+  <key>SUAutomaticallyUpdate</key><true/>
+  <key>SUScheduledCheckInterval</key><integer>86400</integer>
+
   <!-- Folder access (design 9.12): the episode list and sidecar subtitles list the video's folder. -->
   <key>NSDocumentsFolderUsageDescription</key>
   <string>Reel lists the other videos and subtitle files in the folder of the video you open.</string>

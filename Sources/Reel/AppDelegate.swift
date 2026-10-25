@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var model: PlayerModel?
     private var windowController: PlayerWindowController?
     private var settingsWindow: SettingsWindowController?
+    private var updater: Updater?
     private var episodeNavigator: EpisodeNavigator?
     private var screenshots: ScreenshotSaver?
     private var nowPlaying: NowPlaying?
@@ -54,7 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     // MARK: NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApplication.shared.mainMenu = MainMenu.make(trackMenus: trackMenus)
+        updater = Updater.make()
+        NSApplication.shared.mainMenu = MainMenu.make(trackMenus: trackMenus, offersUpdates: updater != nil)
         let settingsStore = settingsStore
         let dependencies = PlayerModel.Dependencies(
             makeEngine: { [weak self] url in
@@ -178,10 +180,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc func showSettings(_ sender: Any?) {
         if settingsWindow == nil {
-            settingsWindow = SettingsWindowController(model: settingsModel)
+            settingsWindow = SettingsWindowController(
+                model: settingsModel, updates: updater.map { UpdateSettingsModel(updater: $0) }
+            )
         }
         settingsWindow?.showWindow(sender)
     }
+
+    @objc func checkForUpdates(_ sender: Any?) { updater?.checkForUpdates() }
 
     @objc func openDocument(_ sender: Any?) { windowController?.openDocument() }
     @objc func closeFile(_ sender: Any?) { windowController?.closeFile() }
@@ -288,8 +294,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     // MARK: Validation: enabling, checkmarks and titles that follow the state (design 9.11)
 
     private static let alwaysEnabled: Set<Selector> = [
-        #selector(showSettings(_:)), #selector(openDocument(_:)), #selector(toggleAutoAdvance(_:)),
-        #selector(showScreenshots(_:)), #selector(toggleFullscreen(_:)),
+        #selector(showSettings(_:)), #selector(checkForUpdates(_:)), #selector(openDocument(_:)),
+        #selector(toggleAutoAdvance(_:)), #selector(showScreenshots(_:)), #selector(toggleFullscreen(_:)),
     ]
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {

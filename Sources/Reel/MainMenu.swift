@@ -8,10 +8,13 @@ import ReelUI
 /// documents list. Checkmarks, titles that follow the state and enabling are set by
 /// `AppDelegate.validateMenuItem`; the track lists are rebuilt by `TrackMenus` when a menu opens.
 enum MainMenu {
-    static func make(appName: String = "Reel", trackMenus: TrackMenus) -> NSMenu {
+    /// `offersUpdates` adds "Check for Updates..." under About; only the app's updater sets it.
+    static func make(appName: String = "Reel", trackMenus: TrackMenus, offersUpdates: Bool = false) -> NSMenu {
         let main = NSMenu()
+        let updates = offersUpdates ? [item("Check for Updates\u{2026}", #selector(AppDelegate.checkForUpdates(_:)))] : []
         main.addItem(submenu(appName, items: [
             item("About \(appName)", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+        ] + updates + [
             .separator(),
             item("Settings\u{2026}", #selector(AppDelegate.showSettings(_:)), key: ","),
             .separator(),
