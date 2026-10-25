@@ -87,3 +87,8 @@ reelctl seek-bench <file> [--runs N] [--with-thumbs] --json   # M1 seek threshol
 - No `try!` in `Sources/`; no `try?` in `Sources/ReelCore/*Store*.swift` (swiftlint enforces both).
 - At the Swift 6 sending boundary (`CMReadySampleBuffer(unsafeBuffer:)`), wrap fresh buffers in a
   small `@unchecked Sendable` box with a comment saying why, and nowhere else.
+
+## Installing and updates (user preferences)
+
+- Install new builds to ~/Applications without asking, but only when the app is not running (scripts/bundle.sh --release --install). Never quit a running copy to install unless the user asks.
+- Auto-update goes through Sparkle 2.10.0 and the public sdusteric/app-updates repo; the contract is ~/Documents/projects/app-updates/CONTRACT.md. Keep it wired in every release; agents run release.sh only with --dry-run.
