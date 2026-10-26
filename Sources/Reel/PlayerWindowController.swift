@@ -17,6 +17,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The engine of the open file; the model closes it, this keeps its outputs in step.
     private(set) var engine: PlaybackEngine?
     let pictureInPicture: PictureInPicture
+    /// The macOS PiP crop workaround: the window shrinks to the PiP panel and hides while PiP runs.
+    private let pipSource = PiPSourceWindow()
     /// M3 observers (sections 7.7, 7.9, 7.10): the screen's EDR state, occlusion, pointer
     /// activity for the paused thumbnail rule, and the drive of the open file.
     private var displayMonitor: DisplayRangeMonitor?
@@ -80,6 +82,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         model.onPictureInPictureRequest = { [weak self] wanted in self?.pictureInPicture.toggle(wanted) }
         model.onAddSubtitleFile = { [weak self] in self?.addSubtitleFile() }
         pictureInPicture.onActiveChange = { [weak self] active in
+            if let self, let window = self.window {
+                if active { self.pipSource.begin(window: window) } else { self.pipSource.end() }
+            }
             self?.occlusion?.setPictureInPictureActive(active)
             guard let engine = self?.engine else { return }
             Task { await engine.setPictureInPictureActive(active) }
@@ -393,6 +398,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Closing the window while PiP is active stops PiP and closes the file (design 9.9).
     func windowWillClose(_ notification: Notification) {
         pictureInPicture.stop()
+        pipSource.end()
         model.chrome.invalidate()
         displayMonitor?.stop()
         volumeWatcher?.stop()
@@ -403,7 +409,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func saveFrame() {
-        guard let window, model.hasMedia, !window.styleMask.contains(.fullScreen) else { return }
+        // While PiP runs the window is shrunk to the panel; that size is not the user's.
+        guard let window, model.hasMedia, !window.styleMask.contains(.fullScreen), !pipSource.isActive else { return }
         // Stored as the content rect, the size the sizing rules work in.
         let frame = window.contentRect(forFrameRect: window.frame)
         do {
