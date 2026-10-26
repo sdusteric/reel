@@ -15,7 +15,7 @@ nonisolated public enum PanelKey: Sendable {
 
 enum PanelMetrics {
     static let trackWidth: CGFloat = 320
-    static let speedWidth: CGFloat = 264
+    static let speedWidth: CGFloat = 280
     static let padding: CGFloat = 6
     static let cornerRadius: CGFloat = 16
     static let rowRadius: CGFloat = 10
@@ -365,6 +365,8 @@ struct PanelStepperRow: View {
     let label: String
     let value: String
     var altScale: Double = 5
+    /// Space before the label. Track panels leave room for the check column; the speed panel has none.
+    var labelIndent: CGFloat = PanelMetrics.checkColumn + PanelMetrics.checkGap
     /// Called with the step multiplier: 1, or `altScale` with Option held.
     let minus: (Double) -> Void
     let plus: (Double) -> Void
@@ -376,7 +378,7 @@ struct PanelStepperRow: View {
             Text(label)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(Color.primary.opacity(0.9))
-                .padding(.leading, PanelMetrics.checkColumn + PanelMetrics.checkGap)
+                .padding(.leading, labelIndent)
             Spacer(minLength: 8)
             Text(value)
                 .font(.system(size: 13, weight: .medium).monospacedDigit())

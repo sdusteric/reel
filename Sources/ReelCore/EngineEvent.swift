@@ -35,8 +35,8 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
         case .decoderFailed(let reason): "Decoding failed: \(reason)"
         case .io(let reason): "Read error: \(reason)"
         case .notOpen: "No file is open."
-        case .notMedia(let reason): "Not a video or audio file: \(reason)"
-        case .cutShort(let reason): "The file ends before its first frame: \(reason)"
+        case .notMedia(let reason): reason.prefix(1).uppercased() + reason.dropFirst()
+        case .cutShort(let reason): reason.prefix(1).uppercased() + reason.dropFirst()
         }
     }
 }

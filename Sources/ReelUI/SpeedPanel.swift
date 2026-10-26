@@ -25,6 +25,7 @@ struct SpeedPanelView: View {
                 label: "Fine",
                 value: PlaybackSpeed.fineLabel(model.rate),
                 altScale: 1,
+                labelIndent: 10,
                 minus: { _ in model.stepSpeed(by: -1) },
                 plus: { _ in model.stepSpeed(by: 1) }
             )

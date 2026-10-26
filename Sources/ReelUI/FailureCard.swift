@@ -82,7 +82,7 @@ struct FailureCard: View {
             if let detail = content.detail {
                 Text(detail)
                     .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(0.5))
+                    .foregroundStyle(Color.white.opacity(0.58))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: FailureCard.fileNameWidth)

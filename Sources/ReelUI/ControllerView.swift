@@ -18,6 +18,11 @@ enum ChromeStyle {
         Color.primary.opacity(scheme == .dark ? 0.5 : 0.62)
     }
 
+    /// Accent text on the accent tint: darkened in light mode, where plain accent on its own tint falls under 4.5:1.
+    static func accentText(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.accentColor : Color.accentColor.mix(with: .black, by: 0.35)
+    }
+
     static func accentTint(_ scheme: ColorScheme) -> Color {
         Color.accentColor.opacity(scheme == .dark ? 0.22 : 0.16)
     }
@@ -542,7 +547,7 @@ struct SpeedButton: View {
         } label: {
             Text(PlaybackSpeed.label(model.rate))
                 .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
-                .foregroundStyle(isChanged ? Color.accentColor : Color.primary.opacity(model.hasMedia ? 0.9 : 0.55))
+                .foregroundStyle(isChanged ? ChromeStyle.accentText(colorScheme) : Color.primary.opacity(model.hasMedia ? 0.9 : 0.55))
                 .padding(.horizontal, 6)
                 .frame(minWidth: 36, minHeight: ChromeStyle.hitSize)
                 .background {

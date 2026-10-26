@@ -129,7 +129,7 @@ struct VideoInfoPanel: View {
             Spacer(minLength: 8)
             Text("\u{2318}I")
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(ChromeStyle.tagText(colorScheme))
+                .foregroundStyle(ChromeStyle.secondaryText(colorScheme))
         }
         .padding(.top, 8)
         .padding(.horizontal, 10)

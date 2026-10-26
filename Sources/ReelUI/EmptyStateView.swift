@@ -87,7 +87,7 @@ struct EmptyStateView: View {
                         .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Color.white.opacity(0.1)))
                 }
                 .font(.system(size: 12))
-                .foregroundStyle(Color.white.opacity(0.5))
+                .foregroundStyle(Color.white.opacity(0.58))
             }
             .padding(24)
             .environment(\.colorScheme, .dark)

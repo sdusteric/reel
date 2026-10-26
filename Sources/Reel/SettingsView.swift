@@ -297,7 +297,7 @@ private struct UpdatesSection: View {
     @Bindable var updates: UpdateSettingsModel
 
     var body: some View {
-        Section {
+        Section("Updates") {
             Toggle("Automatically install updates", isOn: $updates.automaticallyInstallsUpdates)
             HStack {
                 Text("Reel checks once a day.")
