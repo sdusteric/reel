@@ -26,8 +26,13 @@ final class PictureInPicture: NSObject {
     private var controller: AVPictureInPictureController?
     private weak var layer: AVSampleBufferDisplayLayer?
     private let snapshot = Mutex(Snapshot())
-    /// Tells the engine to start or stop compositing subtitles into the frames.
+    /// Tells the engine to start or stop compositing subtitles into the frames, and the window
+    /// to apply or undo the PiP crop workaround. Runs before the placeholder is shown.
     var onActiveChange: ((Bool) -> Void)?
+    /// True while the crop workaround hides the window; the placeholder then needs no snapshot.
+    var hidesWindowDuringPiP: () -> Bool = { false }
+    /// When AVKit said PiP will start, for the timing lines in the log.
+    private var willStartAt: ContinuousClock.Instant?
 
     init(model: PlayerModel, log: ReelLog) {
         self.model = model
@@ -92,9 +97,27 @@ final class PictureInPicture: NSObject {
 
     func didChange(active: Bool) {
         guard let model else { return }
-        model.setPictureInPicture(active: active, snapshot: active ? displayedFrame() : nil)
+        let started = ContinuousClock.now
         onActiveChange?(active)
+        let windowDone = ContinuousClock.now
+        let snapshot = active && !hidesWindowDuringPiP() ? displayedFrame() : nil
+        model.setPictureInPicture(active: active, snapshot: snapshot)
+        let done = ContinuousClock.now
         log.info(active ? "Picture in Picture started" : "Picture in Picture stopped")
+        if active {
+            let sinceWill = willStartAt.map { " \(Self.milliseconds(started - $0)) ms after will-start," } ?? ""
+            log.info("pip timing:\(sinceWill) window \(Self.milliseconds(windowDone - started)) ms, placeholder \(Self.milliseconds(done - windowDone)) ms")
+        }
+        willStartAt = nil
+    }
+
+    func willStart() {
+        willStartAt = ContinuousClock.now
+        log.info("Picture in Picture will start")
+    }
+
+    nonisolated static func milliseconds(_ duration: Duration) -> Int {
+        Int(Double(duration.components.seconds) * 1_000 + Double(duration.components.attoseconds) / 1e15)
     }
 
     func failedToStart(_ error: String) {
@@ -158,6 +181,10 @@ extension PictureInPicture: AVPictureInPictureSampleBufferPlaybackDelegate {
 }
 
 extension PictureInPicture: AVPictureInPictureControllerDelegate {
+    nonisolated func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        Task { @MainActor in self.willStart() }
+    }
+
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         Task { @MainActor in self.didChange(active: true) }
     }

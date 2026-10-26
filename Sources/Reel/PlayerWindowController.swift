@@ -18,7 +18,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private(set) var engine: PlaybackEngine?
     let pictureInPicture: PictureInPicture
     /// The macOS PiP crop workaround: the window shrinks to the PiP panel and hides while PiP runs.
-    private let pipSource = PiPSourceWindow()
+    private let pipSource: PiPSourceWindow
     /// M3 observers (sections 7.7, 7.9, 7.10): the screen's EDR state, occlusion, pointer
     /// activity for the paused thumbnail rule, and the drive of the open file.
     private var displayMonitor: DisplayRangeMonitor?
@@ -41,6 +41,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         self.log = log
         showSettingsAction = showSettings
         pictureInPicture = PictureInPicture(model: model, log: log)
+        pipSource = PiPSourceWindow(log: { log.info($0) })
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: WindowSizing.emptySize),
             styleMask: [.titled, .fullSizeContentView, .resizable, .closable, .miniaturizable],
@@ -81,6 +82,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         model.onOpened = { [weak self] info in self?.fitWindow(to: info) }
         model.onPictureInPictureRequest = { [weak self] wanted in self?.pictureInPicture.toggle(wanted) }
         model.onAddSubtitleFile = { [weak self] in self?.addSubtitleFile() }
+        pictureInPicture.hidesWindowDuringPiP = { [weak self] in self?.pipSource.isActive == true }
         pictureInPicture.onActiveChange = { [weak self] active in
             if let self, let window = self.window {
                 if active { self.pipSource.begin(window: window) } else { self.pipSource.end() }

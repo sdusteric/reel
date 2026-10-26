@@ -311,6 +311,22 @@ func makeAppModel(engines: EngineList = EngineList()) -> PlayerModel {
         #expect(reported == [true, false], "the engine is told to start and stop compositing subtitles")
     }
 
+    @Test func theWindowIsHiddenBeforeThePlaceholderIsBuilt() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let model = makeAppModel()
+        await model.open(try scratch.makeFile("movie.mkv"))
+        await eventually("playing") { model.playbackState == .playing }
+        let pip = PictureInPicture(model: model, log: .disabled)
+        pip.hidesWindowDuringPiP = { true }
+        var placeholderShownWhenReported: [Bool] = []
+        pip.onActiveChange = { _ in placeholderShownWhenReported.append(model.isPictureInPictureActive) }
+        pip.didChange(active: true)
+        #expect(placeholderShownWhenReported == [false], "the PiP crop workaround hides the window first")
+        #expect(model.isPictureInPictureActive)
+        #expect(model.pictureInPictureSnapshot == nil, "no blurred snapshot for a window nobody sees")
+    }
+
     @Test func theToggleAsksTheAppOnlyWithAFileOpen() async throws {
         let model = makeAppModel()
         var requests: [Bool] = []

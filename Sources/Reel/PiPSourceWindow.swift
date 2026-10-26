@@ -14,6 +14,9 @@ final class PiPSourceWindow {
     nonisolated static let blankOverlayClassName = "AVPictureInPictureCALayerHostView"
     /// AVKit builds the panel's views after PiP starts.
     static let overlayDelay: TimeInterval = 0.1
+    /// The panel can still be animating to its size when PiP reports it started, without telling
+    /// its content view; the window is refitted once it has settled.
+    static let settleChecks: [TimeInterval] = [0.3, 1.0]
 
     private struct Saved {
         var frame: CGRect
@@ -23,46 +26,68 @@ final class PiPSourceWindow {
     }
 
     private let findPanel: @MainActor () -> NSWindow?
-    private let later: @MainActor (@escaping @MainActor () -> Void) -> Void
+    private let later: @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> Void
+    private let log: @MainActor (String) -> Void
     private weak var window: NSWindow?
     private weak var panel: NSWindow?
     private var saved: Saved?
-    private var resizeObserver: (any NSObjectProtocol)?
+    private var observers: [any NSObjectProtocol] = []
 
     init(
         findPanel: @escaping @MainActor () -> NSWindow? = PiPSourceWindow.systemPanel,
-        later: @escaping @MainActor (@escaping @MainActor () -> Void) -> Void = PiPSourceWindow.afterOverlayDelay
+        later: @escaping @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> Void = PiPSourceWindow.after,
+        log: @escaping @MainActor (String) -> Void = { _ in }
     ) {
         self.findPanel = findPanel
         self.later = later
+        self.log = log
     }
 
     var isActive: Bool { saved != nil }
 
     func begin(window: NSWindow) {
-        guard saved == nil, let panel = findPanel(), let content = panel.contentView else { return }
+        guard saved == nil, let panel = findPanel(), let content = panel.contentView else {
+            log("pip source: no panel found, window left as it is")
+            return
+        }
         self.window = window
         self.panel = panel
-        later { [weak self] in self?.hideBlankOverlays() }
+        log("pip source: panel \(Self.sizeText(content.bounds.size)) at \(panel.backingScaleFactor)x, frame \(Self.rectText(panel.frame)); window \(Self.sizeText(window.contentRect(forFrameRect: window.frame).size)) at \(window.backingScaleFactor)x")
+        later(Self.overlayDelay) { [weak self] in
+            self?.hideBlankOverlays()
+            self?.logTree("after start")
+        }
         // A fullscreen window cannot be resized; only the blank view is hidden then.
-        guard !window.styleMask.contains(.fullScreen) else { return }
+        guard !window.styleMask.contains(.fullScreen) else {
+            log("pip source: fullscreen, window not resized")
+            return
+        }
         saved = Saved(frame: window.frame, minSize: window.minSize, alpha: window.alphaValue, ignoresMouseEvents: window.ignoresMouseEvents)
         window.minSize = NSSize(width: 1, height: 1)
         window.ignoresMouseEvents = true
         window.alphaValue = 0
         fit(window, to: content.bounds.size)
         content.postsFrameChangedNotifications = true
-        resizeObserver = NotificationCenter.default.addObserver(
-            forName: NSView.frameDidChangeNotification, object: content, queue: nil
-        ) { [weak self] note in
-            guard let size = (note.object as? NSView)?.bounds.size else { return }
-            MainActor.assumeIsolated { self?.panelResized(to: size) }
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: NSView.frameDidChangeNotification, object: content, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated { self?.panelResized() }
+            },
+            center.addObserver(forName: NSWindow.didResizeNotification, object: panel, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated { self?.panelResized() }
+            },
+        ]
+        for delay in Self.settleChecks {
+            later(delay) { [weak self] in
+                self?.panelResized()
+                if delay == Self.settleChecks.last { self?.logTree("settled") }
+            }
         }
     }
 
     func end() {
-        if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
-        resizeObserver = nil
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
         defer {
             saved = nil
             panel = nil
@@ -74,10 +99,13 @@ final class PiPSourceWindow {
         window.ignoresMouseEvents = saved.ignoresMouseEvents
     }
 
-    private func panelResized(to size: CGSize) {
-        guard saved != nil, let window else { return }
+    private func panelResized() {
+        guard saved != nil, let window, let size = panel?.contentView?.bounds.size else { return }
+        let current = window.contentRect(forFrameRect: window.frame).size
+        guard current != size else { return }
         fit(window, to: size)
-        later { [weak self] in self?.hideBlankOverlays() }
+        log("pip source: panel now \(Self.sizeText(size)), window \(Self.sizeText(window.contentRect(forFrameRect: window.frame).size))")
+        later(Self.overlayDelay) { [weak self] in self?.hideBlankOverlays() }
     }
 
     private func fit(_ window: NSWindow, to contentSize: CGSize) {
@@ -85,6 +113,11 @@ final class PiPSourceWindow {
         let content = window.contentRect(forFrameRect: window.frame)
         let target = PiPSourceWindow.shrunkFrame(current: content, contentSize: contentSize)
         window.setFrame(window.frameRect(forContentRect: target), display: true)
+    }
+
+    private func logTree(_ moment: String) {
+        guard let root = panel?.contentView else { return }
+        log("pip source: panel tree \(moment)\n" + Self.describe(root).joined(separator: "\n"))
     }
 
     private func hideBlankOverlays() {
@@ -116,7 +149,40 @@ final class PiPSourceWindow {
         NSApplication.shared.windows.first { isPiPPanel(className: String(describing: type(of: $0))) }
     }
 
-    static func afterOverlayDelay(_ work: @escaping @MainActor () -> Void) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + overlayDelay) { MainActor.assumeIsolated { work() } }
+    static func after(_ delay: TimeInterval, _ work: @escaping @MainActor () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { work() } }
+    }
+
+    /// One line per view and per layer under `root`: class, frame, and what can hide, scale or
+    /// tint the picture. For the log only.
+    static func describe(_ root: NSView, maxDepth: Int = 8) -> [String] {
+        var lines: [String] = []
+        func layerLine(_ layer: CALayer, depth: Int) {
+            guard depth <= maxDepth else { return }
+            let pad = String(repeating: "  ", count: depth)
+            var line = "\(pad)layer \(type(of: layer)) \(rectText(layer.frame)) scale \(layer.contentsScale)"
+            if layer.transform.m11 != 1 || layer.transform.m22 != 1 { line += " transform \(layer.transform.m11)x\(layer.transform.m22)" }
+            if let color = layer.backgroundColor, let rgb = NSColor(cgColor: color)?.usingColorSpace(.sRGB) {
+                line += String(format: " background %.2f %.2f %.2f %.2f", rgb.redComponent, rgb.greenComponent, rgb.blueComponent, rgb.alphaComponent)
+            }
+            if layer.isHidden { line += " hidden" }
+            if layer.contents != nil { line += " contents" }
+            lines.append(line)
+            layer.sublayers?.forEach { layerLine($0, depth: depth + 1) }
+        }
+        func viewLine(_ view: NSView, depth: Int) {
+            guard depth <= maxDepth else { return }
+            let pad = String(repeating: "  ", count: depth)
+            lines.append("\(pad)\(type(of: view)) \(rectText(view.frame))\(view.isHidden ? " hidden" : "")")
+            if let layer = view.layer, view.subviews.isEmpty { layer.sublayers?.forEach { layerLine($0, depth: depth + 1) } }
+            view.subviews.forEach { viewLine($0, depth: depth + 1) }
+        }
+        viewLine(root, depth: 0)
+        return lines
+    }
+
+    nonisolated static func sizeText(_ size: CGSize) -> String { "\(Int(size.width))x\(Int(size.height))" }
+    nonisolated static func rectText(_ rect: CGRect) -> String {
+        "(\(Int(rect.minX)), \(Int(rect.minY)), \(Int(rect.width))x\(Int(rect.height)))"
     }
 }

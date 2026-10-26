@@ -44,7 +44,7 @@ private final class AVPictureInPictureCALayerHostView: NSView {}
         let original = CGRect(x: 100, y: 500, width: 1280, height: 720)
         let window = makeWindow(original)
         let (panel, overlay, host) = makePanel(size: CGSize(width: 480, height: 270))
-        let source = PiPSourceWindow(findPanel: { panel }, later: { $0() })
+        let source = PiPSourceWindow(findPanel: { panel }, later: { _, work in work() })
 
         source.begin(window: window)
         #expect(source.isActive)
@@ -66,7 +66,7 @@ private final class AVPictureInPictureCALayerHostView: NSView {}
     @Test func followsThePanelWhenItIsResized() throws {
         let window = makeWindow(CGRect(x: 0, y: 0, width: 1920, height: 1080))
         let (panel, _, _) = makePanel(size: CGSize(width: 480, height: 270))
-        let source = PiPSourceWindow(findPanel: { panel }, later: { $0() })
+        let source = PiPSourceWindow(findPanel: { panel }, later: { _, work in work() })
         source.begin(window: window)
         try #require(panel.contentView).setFrameSize(CGSize(width: 640, height: 360))
         #expect(window.contentRect(forFrameRect: window.frame).size == CGSize(width: 640, height: 360))
@@ -78,12 +78,48 @@ private final class AVPictureInPictureCALayerHostView: NSView {}
     @Test func withoutAPanelTheWindowIsLeftAlone() {
         let original = CGRect(x: 0, y: 0, width: 1280, height: 720)
         let window = makeWindow(original)
-        let source = PiPSourceWindow(findPanel: { nil }, later: { $0() })
+        let source = PiPSourceWindow(findPanel: { nil }, later: { _, work in work() })
         source.begin(window: window)
         #expect(window.frame == original)
         #expect(window.alphaValue == 1)
         source.end()
         #expect(window.frame == original)
+    }
+
+    @Test func followsThePanelWindowWhenItsContentIsResized() throws {
+        let window = makeWindow(CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let (panel, _, _) = makePanel(size: CGSize(width: 480, height: 270))
+        let source = PiPSourceWindow(findPanel: { panel }, later: { _, work in work() })
+        source.begin(window: window)
+        panel.setContentSize(CGSize(width: 720, height: 405))
+        #expect(window.contentRect(forFrameRect: window.frame).size == CGSize(width: 720, height: 405))
+        source.end()
+    }
+
+    @Test func refitsAfterThePanelSettles() {
+        // The panel can still be growing when PiP reports it started; later checks pick up its final size.
+        let window = makeWindow(CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        let (panel, _, _) = makePanel(size: CGSize(width: 420, height: 236))
+        var pending: [() -> Void] = []
+        let source = PiPSourceWindow(findPanel: { panel }, later: { _, work in pending.append(work) })
+        source.begin(window: window)
+        #expect(window.contentRect(forFrameRect: window.frame).size == CGSize(width: 420, height: 236))
+        panel.contentView?.postsFrameChangedNotifications = false
+        panel.contentView?.setFrameSize(CGSize(width: 480, height: 270))
+        pending.forEach { $0() }
+        #expect(window.contentRect(forFrameRect: window.frame).size == CGSize(width: 480, height: 270))
+        source.end()
+    }
+
+    @Test func logsSizesAndTheViewTree() throws {
+        let window = makeWindow(CGRect(x: 0, y: 0, width: 1280, height: 720))
+        let (panel, _, _) = makePanel(size: CGSize(width: 480, height: 270))
+        var lines: [String] = []
+        let source = PiPSourceWindow(findPanel: { panel }, later: { _, work in work() }, log: { lines.append($0) })
+        source.begin(window: window)
+        #expect(lines.contains { $0.hasPrefix("pip source: panel ") && $0.contains("480x270") })
+        #expect(lines.contains { $0.contains("AVPictureInPictureCALayerHostView") && $0.contains("hidden") })
+        source.end()
     }
 
     @Test func recognizesThePiPPanelByClassName() {
