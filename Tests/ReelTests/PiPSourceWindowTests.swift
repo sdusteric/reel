@@ -122,6 +122,27 @@ private final class AVPictureInPictureCALayerHostView: NSView {}
         source.end()
     }
 
+    @Test func sizesTheVideoLayerNotTheWindowToThePanel() {
+        // The video layer sits under the 32 pt title bar area, so it is 32 pt shorter than the
+        // window; PiP copies only the layer, so the layer is what must match the panel.
+        let window = makeWindow(CGRect(x: 0, y: 0, width: 1280, height: 720))
+        let (panel, _, _) = makePanel(size: CGSize(width: 446, height: 251))
+        let source = PiPSourceWindow(
+            findPanel: { panel }, later: { _, work in work() },
+            sourceSize: { [weak window] in
+                guard let window else { return nil }
+                let content = window.contentRect(forFrameRect: window.frame).size
+                return CGSize(width: content.width, height: content.height - 32)
+            }
+        )
+        source.begin(window: window)
+        #expect(window.contentRect(forFrameRect: window.frame).size == CGSize(width: 446, height: 283))
+        panel.setContentSize(CGSize(width: 501, height: 282))
+        #expect(window.contentRect(forFrameRect: window.frame).size == CGSize(width: 501, height: 314))
+        source.end()
+        #expect(window.frame.size == CGSize(width: 1280, height: 720))
+    }
+
     @Test func layerDumpShowsGeometryTransformsAndBackgrounds() {
         let root = CALayer()
         root.frame = CGRect(x: 0, y: 0, width: 446, height: 251)

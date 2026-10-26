@@ -28,6 +28,11 @@ final class PiPSourceWindow {
     private let findPanel: @MainActor () -> NSWindow?
     private let later: @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> Void
     private let log: @MainActor (String) -> Void
+    /// The video layer's size in window points. PiP copies only that layer, and it sits under the
+    /// title bar area, so the window is sized to make the layer (not the window) match the panel.
+    var sourceSize: @MainActor () -> CGSize?
+    /// Window content minus the video layer, measured when PiP starts.
+    private var chrome = CGSize.zero
     private weak var window: NSWindow?
     private weak var panel: NSWindow?
     private var saved: Saved?
@@ -36,11 +41,13 @@ final class PiPSourceWindow {
     init(
         findPanel: @escaping @MainActor () -> NSWindow? = PiPSourceWindow.systemPanel,
         later: @escaping @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> Void = PiPSourceWindow.after,
-        log: @escaping @MainActor (String) -> Void = { _ in }
+        log: @escaping @MainActor (String) -> Void = { _ in },
+        sourceSize: @escaping @MainActor () -> CGSize? = { nil }
     ) {
         self.findPanel = findPanel
         self.later = later
         self.log = log
+        self.sourceSize = sourceSize
     }
 
     var isActive: Bool { saved != nil }
@@ -63,6 +70,10 @@ final class PiPSourceWindow {
         guard !window.styleMask.contains(.fullScreen) else {
             log("pip source: fullscreen, window not resized")
             return
+        }
+        let windowContent = window.contentRect(forFrameRect: window.frame).size
+        if let layer = sourceSize() {
+            chrome = CGSize(width: max(0, windowContent.width - layer.width), height: max(0, windowContent.height - layer.height))
         }
         saved = Saved(frame: window.frame, minSize: window.minSize, alpha: window.alphaValue, ignoresMouseEvents: window.ignoresMouseEvents)
         window.minSize = NSSize(width: 1, height: 1)
@@ -93,6 +104,7 @@ final class PiPSourceWindow {
         defer {
             saved = nil
             panel = nil
+            chrome = .zero
         }
         guard let saved, let window else { return }
         window.setFrame(saved.frame, display: true)
@@ -104,7 +116,7 @@ final class PiPSourceWindow {
     private func panelResized() {
         guard saved != nil, let window, let size = panel?.contentView?.bounds.size else { return }
         let current = window.contentRect(forFrameRect: window.frame).size
-        guard current != size else { return }
+        guard current != CGSize(width: size.width + chrome.width, height: size.height + chrome.height) else { return }
         fit(window, to: size)
         log("pip source: panel now \(Self.sizeText(size)), window \(Self.sizeText(window.contentRect(forFrameRect: window.frame).size))")
         later(0.3) { [weak self] in self?.logTree("0.3 s after a resize") }
@@ -114,7 +126,8 @@ final class PiPSourceWindow {
     private func fit(_ window: NSWindow, to contentSize: CGSize) {
         guard contentSize.width > 0, contentSize.height > 0 else { return }
         let content = window.contentRect(forFrameRect: window.frame)
-        let target = PiPSourceWindow.shrunkFrame(current: content, contentSize: contentSize)
+        let wanted = CGSize(width: contentSize.width + chrome.width, height: contentSize.height + chrome.height)
+        let target = PiPSourceWindow.shrunkFrame(current: content, contentSize: wanted)
         window.setFrame(window.frameRect(forContentRect: target), display: true)
     }
 

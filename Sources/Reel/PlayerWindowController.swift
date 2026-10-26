@@ -75,6 +75,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         content.videoView.commandTarget = self
         content.videoView.onLayersResized = { [weak self] in self?.engine?.subtitleLayerDidLayout() }
         window.contentView = content
+        pipSource.sourceSize = { [weak content] in content?.videoView.displayLayer.bounds.size }
         contentView = content
         placeEmptyWindow()
 
