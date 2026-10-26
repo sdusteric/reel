@@ -269,7 +269,8 @@ func makeAppModel(engines: EngineList = EngineList()) -> PlayerModel {
         handler(.changePosition(30))
         await eventually("seek to 30 s") { engine.calls.contains { if case .seek(let request) = $0 { request.target == .seconds(30) } else { false } } }
         handler(.nextTrack)
-        await eventually("next episode opened") { engines.all.count == 2 }
+        // The second engine exists before its open call lands; wait for the call, not the engine.
+        await eventually("next episode opened") { engines.all.count == 2 && engines.all.last?.calls.isEmpty == false }
         guard case .open(let opened)? = engines.all.last?.calls.first else {
             Issue.record("the second engine did not open a file")
             return

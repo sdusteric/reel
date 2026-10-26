@@ -122,6 +122,21 @@ private final class AVPictureInPictureCALayerHostView: NSView {}
         source.end()
     }
 
+    @Test func layerDumpShowsGeometryTransformsAndBackgrounds() {
+        let root = CALayer()
+        root.frame = CGRect(x: 0, y: 0, width: 446, height: 251)
+        root.backgroundColor = CGColor(gray: 1, alpha: 1)
+        let child = CALayer()
+        child.bounds = CGRect(x: 0, y: 0, width: 1599, height: 899)
+        child.position = CGPoint(x: 223, y: 125)
+        child.transform = CATransform3DMakeScale(0.25, 0.25, 1)
+        root.addSublayer(child)
+        let lines = PiPSourceWindow.describeLayers(root)
+        #expect(lines.count == 2)
+        #expect(lines[0].contains("background 1.00 1.00 1.00 1.00"))
+        #expect(lines[1].contains("bounds 1599x899") && lines[1].contains("position (223, 125)") && lines[1].contains("transform 0.25 0.25 move 0 0"))
+    }
+
     @Test func recognizesThePiPPanelByClassName() {
         #expect(PiPSourceWindow.isPiPPanel(className: "PIPPanel"))
         #expect(PiPSourceWindow.isPiPPanel(className: "PIPKit.PIPPanel"))

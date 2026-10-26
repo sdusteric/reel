@@ -53,9 +53,11 @@ final class PiPSourceWindow {
         self.window = window
         self.panel = panel
         log("pip source: panel \(Self.sizeText(content.bounds.size)) at \(panel.backingScaleFactor)x, frame \(Self.rectText(panel.frame)); window \(Self.sizeText(window.contentRect(forFrameRect: window.frame).size)) at \(window.backingScaleFactor)x")
+        logTree("at start")
+        later(0.05) { [weak self] in self?.logTree("at 0.05 s") }
         later(Self.overlayDelay) { [weak self] in
             self?.hideBlankOverlays()
-            self?.logTree("after start")
+            self?.logTree("at 0.1 s, blank view hidden")
         }
         // A fullscreen window cannot be resized; only the blank view is hidden then.
         guard !window.styleMask.contains(.fullScreen) else {
@@ -80,7 +82,7 @@ final class PiPSourceWindow {
         for delay in Self.settleChecks {
             later(delay) { [weak self] in
                 self?.panelResized()
-                if delay == Self.settleChecks.last { self?.logTree("settled") }
+                self?.logTree("at \(delay) s")
             }
         }
     }
@@ -105,6 +107,7 @@ final class PiPSourceWindow {
         guard current != size else { return }
         fit(window, to: size)
         log("pip source: panel now \(Self.sizeText(size)), window \(Self.sizeText(window.contentRect(forFrameRect: window.frame).size))")
+        later(0.3) { [weak self] in self?.logTree("0.3 s after a resize") }
         later(Self.overlayDelay) { [weak self] in self?.hideBlankOverlays() }
     }
 
@@ -116,8 +119,10 @@ final class PiPSourceWindow {
     }
 
     private func logTree(_ moment: String) {
-        guard let root = panel?.contentView else { return }
-        log("pip source: panel tree \(moment)\n" + Self.describe(root).joined(separator: "\n"))
+        guard let panel, let root = panel.contentView else { return }
+        var text = "pip source: panel tree \(moment), panel frame \(Self.rectText(panel.frame))\n" + Self.describe(root).joined(separator: "\n")
+        if let layer = root.layer { text += "\nlayers:\n" + Self.describeLayers(layer).joined(separator: "\n") }
+        log(text)
     }
 
     private func hideBlankOverlays() {
@@ -178,6 +183,36 @@ final class PiPSourceWindow {
             view.subviews.forEach { viewLine($0, depth: depth + 1) }
         }
         viewLine(root, depth: 0)
+        return lines
+    }
+
+    /// Every layer under `root` with the geometry that decides where the picture lands. Log only.
+    static func describeLayers(_ root: CALayer, maxDepth: Int = 12) -> [String] {
+        var lines: [String] = []
+        func line(_ layer: CALayer, depth: Int) {
+            guard depth <= maxDepth else { return }
+            let t = layer.transform
+            var text = String(repeating: "  ", count: depth) + "\(type(of: layer))"
+            text += " bounds \(sizeText(layer.bounds.size)) position (\(Int(layer.position.x)), \(Int(layer.position.y)))"
+            text += String(format: " anchor %.2f %.2f", layer.anchorPoint.x, layer.anchorPoint.y)
+            if !CATransform3DIsIdentity(t) { text += String(format: " transform %.2f %.2f move %.0f %.0f", t.m11, t.m22, t.m41, t.m42) }
+            if !CATransform3DIsIdentity(layer.sublayerTransform) {
+                let s = layer.sublayerTransform
+                text += String(format: " sublayerTransform %.2f %.2f move %.0f %.0f", s.m11, s.m22, s.m41, s.m42)
+            }
+            text += " scale \(layer.contentsScale)"
+            if let color = layer.backgroundColor, let rgb = NSColor(cgColor: color)?.usingColorSpace(.sRGB) {
+                text += String(format: " background %.2f %.2f %.2f %.2f", rgb.redComponent, rgb.greenComponent, rgb.blueComponent, rgb.alphaComponent)
+            }
+            if layer.opacity < 1 { text += " opacity \(layer.opacity)" }
+            if layer.masksToBounds { text += " masks" }
+            if layer.isHidden { text += " hidden" }
+            if layer.contents != nil { text += " contents \(layer.contentsGravity.rawValue)" }
+            if layer.delegate is NSView { text += " (view)" }
+            lines.append(text)
+            layer.sublayers?.forEach { line($0, depth: depth + 1) }
+        }
+        line(root, depth: 0)
         return lines
     }
 
