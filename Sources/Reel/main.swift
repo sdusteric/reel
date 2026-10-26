@@ -10,6 +10,10 @@ if arguments.first == "--version" {
     exit(0)
 }
 
+if arguments.first == "--settings-shot" {
+    MainActor.assumeIsolated { SettingsShot.run(arguments: Array(arguments.dropFirst())) }
+}
+
 let currentDirectory = URL(filePath: FileManager.default.currentDirectoryPath, directoryHint: .isDirectory)
 switch LaunchRequest.parse(arguments, currentDirectory: currentDirectory) {
 case .shot(let options):

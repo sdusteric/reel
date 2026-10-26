@@ -126,6 +126,8 @@ public final class PlayerModel {
         public var settings: () -> Settings
         public var resumeStore: ResumeStore?
         public var stateStore: StateStore?
+        /// Shelf's status file. Nil writes nothing (tests and tools pass a writer on a temp folder).
+        public var shelfStatus: ShelfStatusWriter?
         public var iina: IINAWatchLater
         public var contentKey: @Sendable (URL) throws -> ContentKey
         public var log: ReelLog
@@ -150,6 +152,7 @@ public final class PlayerModel {
             settings: @escaping () -> Settings = { Settings() },
             resumeStore: ResumeStore? = nil,
             stateStore: StateStore? = nil,
+            shelfStatus: ShelfStatusWriter? = nil,
             iina: IINAWatchLater = IINAWatchLater(directory: nil),
             contentKey: @escaping @Sendable (URL) throws -> ContentKey = { try ContentKey(contentsOf: $0) },
             log: ReelLog = .disabled,
@@ -166,6 +169,7 @@ public final class PlayerModel {
             self.settings = settings
             self.resumeStore = resumeStore
             self.stateStore = stateStore
+            self.shelfStatus = shelfStatus
             self.iina = iina
             self.contentKey = contentKey
             self.log = log
@@ -335,6 +339,9 @@ public final class PlayerModel {
     @ObservationIgnored private var lastAvoidance: Double?
     @ObservationIgnored private var lastScreenshot: URL?
     @ObservationIgnored private var currentURL: URL?
+    /// The file the Shelf poster was made (or is being made) for.
+    @ObservationIgnored private var posterURL: URL?
+    @ObservationIgnored var shelfPosterTask: Task<Void, Never>?
     @ObservationIgnored private var noteTask: Task<Void, Never>?
     /// Files whose profile 5 note was shown in this session (path), so it shows once per file.
     @ObservationIgnored private var notedFiles: Set<String> = []
@@ -532,6 +539,7 @@ public final class PlayerModel {
     /// Saves everything synchronously (quit and `applicationWillTerminate`).
     public func saveForTermination() {
         saveResume(flush: true)
+        publishShelfStatus()
         flushState()
     }
 
@@ -556,6 +564,7 @@ public final class PlayerModel {
         }
         setPlayIntent(true)
         session.send(.play)
+        publishShelfStatus()
     }
 
     public func pause() {
@@ -563,6 +572,7 @@ public final class PlayerModel {
         setPlayIntent(false)
         session.send(.pause)
         saveResume(flush: true)
+        publishShelfStatus()
     }
 
     // MARK: Seeking
@@ -709,7 +719,10 @@ public final class PlayerModel {
             case .playing:
                 autoAdvance.cancel()
                 setPlayIntent(true)
-            case .paused, .ended, .failed, .idle: setPlayIntent(false)
+                publishShelfStatus()
+            case .paused, .ended, .failed, .idle:
+                setPlayIntent(false)
+                if state == .paused || state == .ended { publishShelfStatus() }
             case .opening, .ready, .seeking:
                 // Transitional: the play intent the user set stays until the engine settles.
                 return
@@ -820,6 +833,54 @@ public final class PlayerModel {
         }
     }
 
+    // MARK: Shelf status (Shelf design section 14)
+
+    /// Writes the title, time left and position for Shelf. Called when playback pauses, stops,
+    /// resumes or the app quits. The poster is made only while "Show in Shelf" is on.
+    public func publishShelfStatus() {
+        guard let writer = dependencies.shelfStatus else { return }
+        guard dependencies.settings().showInShelf else {
+            writer.removePoster()
+            posterURL = nil
+            shelfPosterTask?.cancel()
+            return writeShelfStatus(writer)
+        }
+        writeShelfStatus(writer)
+        makeShelfPosterIfNeeded(writer)
+    }
+
+    private func writeShelfStatus(_ writer: ShelfStatusWriter) {
+        guard let title, let media, let duration = media.duration else { return }
+        do {
+            try writer.write(
+                title: title,
+                position: (pendingExact ?? position).seconds,
+                duration: (effectiveEnd ?? duration).seconds
+            )
+        } catch {
+            dependencies.log.error("shelf status write failed: \(error)")
+        }
+    }
+
+    private func makeShelfPosterIfNeeded(_ writer: ShelfStatusWriter) {
+        guard let url = currentURL, posterURL != url else { return }
+        if posterURL != nil { writer.removePoster() }
+        posterURL = url
+        shelfPosterTask?.cancel()
+        let frame = dependencies.episodeThumbnail
+        shelfPosterTask = Task { [weak self] in
+            guard let image = await frame(url), !Task.isCancelled else { return }
+            guard let jpeg = ShelfPoster.jpeg(from: image) else { return }
+            guard let self, !Task.isCancelled, currentURL == url, dependencies.settings().showInShelf else { return }
+            do {
+                try writer.writePoster(jpeg)
+                writeShelfStatus(writer)
+            } catch {
+                dependencies.log.error("shelf poster write failed: \(error)")
+            }
+        }
+    }
+
     func resumePosition(for url: URL, duration: MediaTime?) -> MediaTime? {
         guard dependencies.settings().resumePlayback else { return nil }
         var candidate: MediaTime?
@@ -881,7 +942,10 @@ public final class PlayerModel {
 
     private func closeSession(saving: Bool) async {
         guard let session else { return }
-        if saving { saveResume(flush: true) }
+        if saving {
+            saveResume(flush: true)
+            publishShelfStatus()
+        }
         self.session = nil
         await session.close()
     }

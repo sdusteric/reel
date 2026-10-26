@@ -73,6 +73,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             settings: { settingsStore.settings },
             resumeStore: resumeStore,
             stateStore: stateStore,
+            shelfStatus: ShelfStatusWriter(
+                directory: environment.shelfStatusDirectory,
+                appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+            ),
             iina: IINAWatchLater(environment: environment),
             log: log,
             episodeList: EpisodeNavigator.scanner(log: log),
@@ -85,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         settingsModel.onChange = { [weak model] settings in
             model?.setShowRemainingTime(settings.showRemainingTime)
             model?.setHDRSetting(settings.highDynamicRange)
+            model?.publishShelfStatus()
         }
         let screenshots = ScreenshotSaver(environment: environment, log: log)
         self.screenshots = screenshots

@@ -647,15 +647,20 @@ func makeAppModel(engines: EngineList = EngineList()) -> PlayerModel {
 @Suite struct SettingsM3Tests {
     @Test func settingsHavePlaybackVideoAndAudioGroupsWithTheM3Rows() {
         let sections = SettingsSection.all
-        #expect(sections.map(\.title) == ["Playback", "Video", "Audio"])
+        #expect(sections.map(\.title) == ["Playback", "Video", "Audio", "Shelf"])
         #expect(sections[1].rows.contains(.highDynamicRange))
         #expect(sections[2].rows == [.outputDevice])
+        #expect(sections[3].rows == [.toggle(
+            "Show in Shelf",
+            detail: "Shelf shows a frame from the video. Off shows only the title and time left.",
+            \.showInShelf
+        )])
         #expect(SettingsRow.highDynamicRange.title == "High dynamic range")
         #expect(SettingsRow.outputDevice.title == "Output device")
         #expect(HDRSetting.allCases.map(\.title) == ["Full", "Limited", "Off"])
         #expect(SettingsRow.outputDevice.detail == "System Default follows the Sound settings.")
         let toggles = sections.flatMap(\.rows).filter { if case .toggle = $0 { true } else { false } }
-        #expect(toggles.count == 4, "the M1 four stay")
+        #expect(toggles.count == 5, "the M1 four stay, plus Show in Shelf")
     }
 
     @Test func highDynamicRangeIsSavedAndReachesThePlayer() throws {

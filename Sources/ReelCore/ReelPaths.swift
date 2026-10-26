@@ -110,6 +110,20 @@ public struct ReelEnvironment: Sendable, Hashable {
         return ReelPaths.userHome(environment: values).appending(path: "Pictures/Reel", directoryHint: .isDirectory)
     }
 
+    /// Shelf's status folder (Shelf design section 14): `REEL_SHELF_STATUS` when set, else
+    /// `REEL_HOME/Shelf/status` when `REEL_HOME` is set (so a test or tool with a temp home never
+    /// writes the real folder), else `~/Library/Application Support/Shelf/status`.
+    public var shelfStatusDirectory: URL {
+        if let value = values["REEL_SHELF_STATUS"], !value.isEmpty {
+            return URL(filePath: ReelPaths.expandTilde(value, environment: values), directoryHint: .isDirectory)
+        }
+        if let home = values["REEL_HOME"], !home.isEmpty {
+            return paths.home.appending(path: "Shelf/status", directoryHint: .isDirectory)
+        }
+        return ReelPaths.userHome(environment: values)
+            .appending(path: "Library/Application Support/Shelf/status", directoryHint: .isDirectory)
+    }
+
     /// `REEL_NO_THUMBNAILS=1` turns background thumbnail generation off (benches that measure
     /// seeks alone).
     public var thumbnailsDisabled: Bool { values["REEL_NO_THUMBNAILS"] == "1" }

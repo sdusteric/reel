@@ -16,6 +16,8 @@ public struct Settings: VersionedDocument {
     public var hardwareDecoding: Bool
     /// (M3) High dynamic range: Full, Limited or Off (section 7.7, D51).
     public var highDynamicRange: HDRSetting
+    /// Write a poster frame for Shelf's status panel (off by default, a frame can show private content).
+    public var showInShelf: Bool
 
     public init(
         version: Int = Settings.currentVersion,
@@ -23,7 +25,8 @@ public struct Settings: VersionedDocument {
         showRemainingTime: Bool = true,
         keyframePreview: Bool = true,
         hardwareDecoding: Bool = true,
-        highDynamicRange: HDRSetting = .default
+        highDynamicRange: HDRSetting = .default,
+        showInShelf: Bool = false
     ) {
         self.version = version
         self.resumePlayback = resumePlayback
@@ -31,6 +34,7 @@ public struct Settings: VersionedDocument {
         self.keyframePreview = keyframePreview
         self.hardwareDecoding = hardwareDecoding
         self.highDynamicRange = highDynamicRange
+        self.showInShelf = showInShelf
     }
 
     public init(from decoder: any Decoder) throws {
@@ -46,6 +50,7 @@ public struct Settings: VersionedDocument {
         // An unknown value (a newer build's) falls back to the default rather than failing the file.
         let hdr = try container.decodeIfPresent(String.self, forKey: .highDynamicRange)
         highDynamicRange = hdr.flatMap(HDRSetting.init(rawValue:)) ?? defaults.highDynamicRange
+        showInShelf = try container.decodeIfPresent(Bool.self, forKey: .showInShelf) ?? defaults.showInShelf
     }
 }
 

@@ -193,6 +193,13 @@ struct SettingsSection: Identifiable {
             .highDynamicRange,
         ]),
         SettingsSection(title: "Audio", rows: [.outputDevice]),
+        SettingsSection(title: "Shelf", rows: [
+            .toggle(
+                "Show in Shelf",
+                detail: "Shelf shows a frame from the video. Off shows only the title and time left.",
+                \.showInShelf
+            ),
+        ]),
     ]
 }
 
