@@ -23,7 +23,7 @@ import Testing
         Row(
             problem: .notMedia,
             title: "This file can't be played",
-            explanation: "Reel doesn't recognise this as a video or audio file.",
+            explanation: "Reel doesn't recognize this as a video or audio file.",
             buttons: ["Show in Finder", "Open Another File\u{2026}"]
         ),
         Row(

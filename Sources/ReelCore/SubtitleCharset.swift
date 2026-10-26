@@ -32,7 +32,7 @@ public struct DecodedSubtitleText: Sendable, Hashable {
     public var text: String
     public var charset: SubtitleCharset
     /// False when every candidate failed and the text was read as Latin-1, so the OSD should say
-    /// "Subtitle encoding not recognised".
+    /// "Subtitle encoding not recognized".
     public var recognised: Bool
 
     public init(text: String, charset: SubtitleCharset, recognised: Bool) {
@@ -45,7 +45,7 @@ public struct DecodedSubtitleText: Sendable, Hashable {
 /// The charset fallback: UTF-8 (UTF-16 by BOM), then Big5 when the name or title says
 /// Traditional, else GB18030, then Latin-1 (D30).
 public enum SubtitleCharsetDetector {
-    public static let unrecognisedMessage = "Subtitle encoding not recognised"
+    public static let unrecognisedMessage = "Subtitle encoding not recognized"
 
     /// True when the file name or track title marks Traditional Chinese
     /// (`cht`, `tc`, `big5`, `zh-Hant`, `zh-TW`, `zh-HK`, or 繁 in a title).

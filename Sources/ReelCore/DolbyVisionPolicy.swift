@@ -21,7 +21,7 @@ public enum DolbyVisionBase: String, Sendable, Codable, Hashable, CaseIterable {
 public enum DolbyVisionPolicy {
     /// The note shown on open for a stream without a compatible base (section 9.13).
     public static let noteTitle = "Dolby Vision profile 5 can't be shown correctly"
-    public static let noteBody = "Reel plays the picture without its Dolby Vision colour data, so colours look wrong, "
+    public static let noteBody = "Reel plays the picture without its Dolby Vision color data, so colors look wrong, "
         + "often green or purple. Profile 8 files play correctly."
     public static let noteShowInfoButton = "Show Info"
     public static let noteOKButton = "OK"
@@ -53,7 +53,7 @@ public enum DolbyVisionPolicy {
         case .hdr10: "Playing the HDR10 base layer. The Dolby Vision layer is not applied."
         case .hlg: "Playing the HLG base layer. The Dolby Vision layer is not applied."
         case .sdr: "Playing the SDR base layer. The Dolby Vision layer is not applied."
-        case .unsupported: "Playing the base layer without its Dolby Vision colour data, so colours are wrong."
+        case .unsupported: "Playing the base layer without its Dolby Vision color data, so colors are wrong."
         }
     }
 }

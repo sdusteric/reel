@@ -28,7 +28,7 @@ enum VideoInfoContent {
         if let first = plan.videoInfo.first { range.append(first) }
         let color = stream?.video?.color
         let hasColor = color?.primaries != nil || color?.transfer != nil
-        range.append(VideoInfoRow(key: "Colour", value: hasColor ? (color?.videoInfoDescription ?? "") : "Unspecified"))
+        range.append(VideoInfoRow(key: "Color", value: hasColor ? (color?.videoInfoDescription ?? "") : "Unspecified"))
         if let mastering = color?.mastering {
             range.append(VideoInfoRow(key: "Mastering", value: mastering.videoInfoDescription))
         }

@@ -10,7 +10,7 @@ public struct LoadedExternalSubtitle: Sendable {
     public var header: String
     /// The charset the file was read as: UTF-16 by its byte order mark, else the decoder's.
     public var charset: SubtitleCharset
-    /// False when the text fell through to Latin-1 ("Subtitle encoding not recognised").
+    /// False when the text fell through to Latin-1 ("Subtitle encoding not recognized").
     public var charsetRecognised: Bool
     /// Time-ordered events.
     public var events: [SubtitleTextEvent]

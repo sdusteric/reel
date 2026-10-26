@@ -151,7 +151,7 @@ public final class MediaSource {
         let probe = contentProbe(url)
         let size = fileSizeDescription(url)
         guard probe.score > confidentProbeScore, let name = format ?? probe.name else {
-            return .notMedia("no demuxer recognised this file (\(size); FFmpeg: \(error.message))")
+            return .notMedia("no demuxer recognized this file (\(size); FFmpeg: \(error.message))")
         }
         if error.isEndOfFile || error.isInvalidData {
             return .cutShort("\(displayFormatName(name)) header found, then the file ends after \(size) (FFmpeg: \(error.message)).")

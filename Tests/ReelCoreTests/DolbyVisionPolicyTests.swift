@@ -32,9 +32,9 @@ import Testing
         Row(profile: 9, compatibility: 2, base: .sdr, tag: "Dolby Vision", warning: false,
             line: "Playing the SDR base layer. The Dolby Vision layer is not applied."),
         Row(profile: 5, compatibility: 0, base: .unsupported, tag: "Dolby Vision 5", warning: true,
-            line: "Playing the base layer without its Dolby Vision colour data, so colours are wrong."),
+            line: "Playing the base layer without its Dolby Vision color data, so colors are wrong."),
         Row(profile: 10, compatibility: 0, base: .unsupported, tag: "Dolby Vision 10", warning: true,
-            line: "Playing the base layer without its Dolby Vision colour data, so colours are wrong."),
+            line: "Playing the base layer without its Dolby Vision color data, so colors are wrong."),
     ]
 
     @Test(arguments: table)
@@ -59,7 +59,7 @@ import Testing
 
     @Test func noteCopyMatchesTheDesign() {
         #expect(DolbyVisionPolicy.noteTitle == "Dolby Vision profile 5 can't be shown correctly")
-        #expect(DolbyVisionPolicy.noteBody == "Reel plays the picture without its Dolby Vision colour data, so colours look wrong, "
+        #expect(DolbyVisionPolicy.noteBody == "Reel plays the picture without its Dolby Vision color data, so colors look wrong, "
             + "often green or purple. Profile 8 files play correctly.")
         #expect(DolbyVisionPolicy.noteShowInfoButton == "Show Info")
         #expect(DolbyVisionPolicy.noteOKButton == "OK")

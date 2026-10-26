@@ -43,7 +43,7 @@ public enum MediaProblem: Sendable, Hashable {
         case .cutShort:
             "The file ends before its first video frame. It may still be downloading, or the copy was cut short."
         case .notMedia:
-            "Reel doesn't recognise this as a video or audio file."
+            "Reel doesn't recognize this as a video or audio file."
         case .noPlayableStream:
             "The file has no video or audio that Reel can play."
         case .unsupportedCodec(let name):

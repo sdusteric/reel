@@ -173,7 +173,7 @@ public final class SubtitleDecoder {
     }
 
     /// True when the text fell through to Latin-1, so the OSD should say
-    /// "Subtitle encoding not recognised".
+    /// "Subtitle encoding not recognized".
     public var charsetRecognised: Bool { isBitmap || charset != .latin1 }
 
     /// The canvas bitmap positions refer to: the decoder's size (PGS sets it from the

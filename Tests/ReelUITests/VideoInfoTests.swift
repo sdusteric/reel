@@ -57,7 +57,7 @@ import Testing
         let result = groups(media(color: hdr10Color, dolbyVision: config))
         #expect(result.map { $0.map(\.key) } == [
             ["Video", "Decoder"],
-            ["Range", "Colour", "Mastering", "Light level"],
+            ["Range", "Color", "Mastering", "Light level"],
             ["Display", "Headroom"],
             ["Audio", "Frames"],
         ])
@@ -65,7 +65,7 @@ import Testing
         #expect(value("Decoder", in: result)?.value == "VideoToolbox, hardware")
         #expect(value("Range", in: result)?.value == "Dolby Vision 8.1")
         #expect(value("Range", in: result)?.detail == "Playing the HDR10 base layer. The Dolby Vision layer is not applied.")
-        #expect(value("Colour", in: result)?.value == "BT.2020, PQ, limited range")
+        #expect(value("Color", in: result)?.value == "BT.2020, PQ, limited range")
         #expect(value("Mastering", in: result)?.value == "1000 nits peak, P3 D65")
         #expect(value("Light level", in: result)?.value == "MaxCLL 1000, MaxFALL 400 nits")
         #expect(value("Display", in: result)?.value == "Built-in XDR display, HDR")
@@ -88,8 +88,8 @@ import Testing
         let config = DolbyVisionConfig(profile: 5, level: 6, rpu: true, el: false, bl: true, compatibilityID: 0)
         let result = groups(media(color: ColorInfo(), dolbyVision: config, profile: nil))
         #expect(value("Range", in: result)?.value == "Dolby Vision 5")
-        #expect(value("Range", in: result)?.detail?.contains("colours are wrong") == true)
-        #expect(value("Colour", in: result)?.value == "Unspecified")
+        #expect(value("Range", in: result)?.detail?.contains("colors are wrong") == true)
+        #expect(value("Color", in: result)?.value == "Unspecified")
         #expect(value("Mastering", in: result) == nil)
         #expect(value("Video", in: result)?.value == "HEVC 10-bit, 3840 \u{00D7} 2160, 23.976 fps")
     }
@@ -98,7 +98,7 @@ import Testing
         let color = ColorInfo(primaries: "bt709", transfer: "bt709", matrix: "bt709")
         let result = groups(media(color: color, width: 1_920, height: 1_080))
         #expect(value("Range", in: result)?.value == "SDR")
-        #expect(value("Colour", in: result)?.value == "BT.709, BT.709, limited range")
+        #expect(value("Color", in: result)?.value == "BT.709, BT.709, limited range")
         #expect(value("Mastering", in: result) == nil)
         #expect(value("Light level", in: result) == nil)
     }
