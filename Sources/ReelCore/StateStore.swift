@@ -37,6 +37,19 @@ public struct RememberedState: VersionedDocument {
     public var autoAdvance: Bool
     /// (M3) Output device: System Default or a device by UID with its name (section 7.11).
     public var outputDevice: OutputDeviceChoice
+    /// Paths of the files opened most recently, newest first, for `reel://open-recent`.
+    public var recentFiles: [String]
+
+    public static let maximumRecentFiles = 10
+
+    /// Puts `path` first, drops an older copy and keeps the newest `maximumRecentFiles`.
+    public mutating func noteRecent(_ path: String) {
+        recentFiles.removeAll { $0 == path }
+        recentFiles.insert(path, at: 0)
+        if recentFiles.count > RememberedState.maximumRecentFiles {
+            recentFiles.removeLast(recentFiles.count - RememberedState.maximumRecentFiles)
+        }
+    }
 
     public init(
         version: Int = RememberedState.currentVersion,
@@ -47,7 +60,8 @@ public struct RememberedState: VersionedDocument {
         controllerBottomY: Double = RememberedState.defaultControllerBottomY,
         subtitleSize: Double = SubtitleStyle.baseSize,
         autoAdvance: Bool = true,
-        outputDevice: OutputDeviceChoice = .systemDefault
+        outputDevice: OutputDeviceChoice = .systemDefault,
+        recentFiles: [String] = []
     ) {
         self.version = version
         self.volume = RememberedState.clampVolume(volume)
@@ -58,6 +72,7 @@ public struct RememberedState: VersionedDocument {
         self.subtitleSize = SubtitleStyle(size: subtitleSize).size
         self.autoAdvance = autoAdvance
         self.outputDevice = outputDevice
+        self.recentFiles = Array(recentFiles.prefix(RememberedState.maximumRecentFiles))
     }
 
     public init(from decoder: any Decoder) throws {
@@ -75,7 +90,8 @@ public struct RememberedState: VersionedDocument {
                 ?? defaults.controllerBottomY,
             subtitleSize: try container.decodeIfPresent(Double.self, forKey: .subtitleSize) ?? defaults.subtitleSize,
             autoAdvance: try container.decodeIfPresent(Bool.self, forKey: .autoAdvance) ?? defaults.autoAdvance,
-            outputDevice: try container.decodeIfPresent(OutputDeviceChoice.self, forKey: .outputDevice) ?? defaults.outputDevice
+            outputDevice: try container.decodeIfPresent(OutputDeviceChoice.self, forKey: .outputDevice) ?? defaults.outputDevice,
+            recentFiles: try container.decodeIfPresent([String].self, forKey: .recentFiles) ?? defaults.recentFiles
         )
     }
 
@@ -131,7 +147,8 @@ public final class StateStore: Sendable {
                 controllerBottomY: state.controllerBottomY,
                 subtitleSize: state.subtitleSize,
                 autoAdvance: state.autoAdvance,
-                outputDevice: state.outputDevice
+                outputDevice: state.outputDevice,
+                recentFiles: state.recentFiles
             )
         }
         try store.flushIfDue()

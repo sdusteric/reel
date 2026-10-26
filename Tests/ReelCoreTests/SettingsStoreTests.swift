@@ -206,3 +206,42 @@ import Testing
         #expect(store.state == RememberedState())
     }
 }
+
+@Suite struct RecentFilesTests {
+    @Test func newestFirstWithoutDuplicates() {
+        var state = RememberedState()
+        state.noteRecent("/v/a.mkv")
+        state.noteRecent("/v/b.mkv")
+        state.noteRecent("/v/a.mkv")
+        #expect(state.recentFiles == ["/v/a.mkv", "/v/b.mkv"])
+    }
+
+    @Test func keepsOnlyTheNewestTen() {
+        var state = RememberedState()
+        for index in 0..<15 { state.noteRecent("/v/\(index).mkv") }
+        #expect(state.recentFiles.count == RememberedState.maximumRecentFiles)
+        #expect(state.recentFiles.first == "/v/14.mkv")
+        #expect(state.recentFiles.last == "/v/5.mkv")
+    }
+
+    @Test func recentsSurviveSaveAndLoad() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.remove() }
+        let store = StateStore(fileURL: scratch.file("state.json"))
+        try store.update { $0.noteRecent("/v/a.mkv") }
+        try store.flush()
+        let reloaded = StateStore(fileURL: scratch.file("state.json"))
+        try reloaded.load()
+        #expect(reloaded.state.recentFiles == ["/v/a.mkv"])
+    }
+
+    @Test func olderStateFilesWithoutRecentsLoadEmpty() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.remove() }
+        try #"{"version":1,"volume":30}"#.write(to: scratch.file("state.json"), atomically: true, encoding: .utf8)
+        let store = StateStore(fileURL: scratch.file("state.json"))
+        try store.load()
+        #expect(store.state.recentFiles.isEmpty)
+        #expect(store.state.volume == 30)
+    }
+}

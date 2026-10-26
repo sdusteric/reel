@@ -478,6 +478,10 @@ public final class PlayerModel {
         }
         guard token == openToken else { return .superseded }
         apply(info)
+        if url.isFileURL {
+            let path = url.path(percentEncoded: false)
+            persistState { $0.noteRecent(path) }
+        }
         if playbackState == .opening { playbackState = .ready }
         session.send(.volume(volume))
         session.send(.muted(isMuted))

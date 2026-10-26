@@ -200,6 +200,12 @@ if bad:
     print("document types lack LSHandlerRank Default for: " + " ".join(bad))
     sys.exit(1)
 ' "$types" || return 1
+  local scheme actions
+  scheme="$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
+  [ "$scheme" = reel ] || { echo "CFBundleURLTypes scheme is '$scheme', expected reel"; return 1; }
+  actions="$(plutil -extract SDShelfActions json -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
+  [ "$actions" = '["open-recent","check-for-updates"]' ] || { echo "SDShelfActions is '$actions'"; return 1; }
+  echo "URL scheme reel, SDShelfActions $actions"
   local usage
   usage="$(plutil -extract NSDocumentsFolderUsageDescription raw -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
   [ -n "$usage" ] || { echo "NSDocumentsFolderUsageDescription missing"; return 1; }

@@ -7,7 +7,7 @@ import ReelUI
 /// AppKit lifecycle (design 9.1, D2): one window, the menu bar, the Settings window, Now Playing,
 /// the episode folder watch and saving on quit. Reel never activates itself; the system does that
 /// when the user launches it.
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, ShelfActionHandling {
     private let initialFile: URL?
     private let environment = ReelEnvironment()
     private let log: ReelLog
@@ -101,7 +101,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = SupportedMedia.firstPlayable(in: urls) else { return }
+        let router = ShelfRouter(handler: self) { [log] in log.info($0) }
+        for url in urls where ShelfURL.isShelfURL(url) { router.handle(url) }
+        guard let url = SupportedMedia.firstPlayable(in: urls.filter { !ShelfURL.isShelfURL($0) }) else { return }
         guard let windowController else {
             pendingOpen = url
             return
@@ -112,6 +114,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return
         }
         windowController.open(url)
+    }
+
+    // MARK: Shelf quick actions
+
+    func perform(_ action: ShelfAction) {
+        switch action {
+        case .checkForUpdates:
+            updater?.checkForUpdates()
+        case .openRecent:
+            guard let path = stateStore.state.recentFiles.first else { return }
+            let url = URL(fileURLWithPath: path)
+            // A moved or deleted file goes through the normal open and shows the missing-file card.
+            if let windowController {
+                windowController.open(url)
+            } else {
+                pendingOpen = url
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
