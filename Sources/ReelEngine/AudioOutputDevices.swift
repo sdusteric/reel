@@ -27,6 +27,12 @@ public enum AudioOutputDevices {
         return id
     }
 
+    /// The UID of the system default output device (a property read), nil when unavailable.
+    public static func defaultOutputUID() -> String? {
+        guard let id = defaultOutputDeviceID() else { return nil }
+        return string(id, selector: kAudioDevicePropertyDeviceUID).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     static func deviceIDs() -> [AudioObjectID] {
         var address = globalAddress(kAudioHardwarePropertyDevices)
         let system = AudioObjectID(kAudioObjectSystemObject)

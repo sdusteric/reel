@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import Foundation
 import ReelCore
+import ReelObjCSupport
 import Synchronization
 
 /// The audio renderer and its macOS 27 receiver on the shared synchronizer (design section 7.4).
@@ -57,6 +58,7 @@ public actor AudioOutput {
     private let eventTask: Task<Void, Never>
     private var volume: Double = VolumeCurve.firstRunVolume
     private var muted = false
+    private var deviceSlot: RendererDeviceSlot
 
     /// Attaches an audio renderer to `synchronizer`, or returns nil when this process must stay
     /// silent. Call before the first video enqueue so the clock follows the audio device.
@@ -71,7 +73,8 @@ public actor AudioOutput {
             isTestProcess: isTestProcess(environment: environment.values)
         )
         guard decision != .none else { return nil }
-        let output = AudioOutput(synchronizer: synchronizer, decision: decision, deviceUID: preferredOutputDevice)
+        let (output, result) = AudioOutput.make(synchronizer: synchronizer, decision: decision, deviceUID: preferredOutputDevice)
+        report(result)
         routing.withLock { state in
             state.outputs.removeAll { $0.output == nil }
             state.outputs.append(WeakOutput(output: output))
@@ -113,9 +116,29 @@ public actor AudioOutput {
 
     /// `audioOutputDeviceUniqueID`; nil plays on the system default. The renderer flushes itself
     /// after a change, which reaches the engine as a suggested flush.
+    /// A device the renderer refuses (an Objective-C exception, e.g. a Bluetooth device that is
+    /// reconnecting) leaves the system default playing and is reported to the refusal handler; the
+    /// next call with the same UID tries it again.
     public func setOutputDevice(_ uid: String?) {
-        guard renderer.audioOutputDeviceUniqueID != uid else { return }
-        renderer.audioOutputDeviceUniqueID = uid
+        let renderer = renderer
+        let result = deviceSlot.request(uid, defaultUID: AudioOutputDevices.defaultOutputUID) {
+            try ReelObjCSupport.setOutputDevice(on: renderer, uid: $0)
+        }
+        AudioOutput.report(result)
+    }
+
+    /// Called (from any thread) when a renderer refuses a chosen device and plays on the system
+    /// default instead, or when the default output cannot be read. The app logs and shows the OSD.
+    public static func setOutputRouteHandler(_ handler: (@Sendable (OutputRouteEvent) -> Void)?) {
+        routeHandler.withLock { $0 = handler }
+    }
+
+    private static let routeHandler = Mutex<(@Sendable (OutputRouteEvent) -> Void)?>(nil)
+
+    fileprivate static func report(_ result: DeviceRouteResult) {
+        let handler = routeHandler.withLock { $0 }
+        if let refusal = result.refusal { handler?(.refused(refusal)) }
+        if result.defaultUnreadable { handler?(.defaultUnreadable) }
     }
 
     /// The device this renderer plays on; nil is the system default.
@@ -170,10 +193,23 @@ public actor AudioOutput {
         }
     }
 
-    private init(synchronizer: AVSampleBufferRenderSynchronizer, decision: AttachDecision, deviceUID: String?) {
+    private static func make(
+        synchronizer: AVSampleBufferRenderSynchronizer, decision: AttachDecision, deviceUID: String?
+    ) -> (AudioOutput, DeviceRouteResult) {
         let renderer = AVSampleBufferAudioRenderer()
+        var slot = RendererDeviceSlot()
+        let result = slot.request(deviceUID, defaultUID: AudioOutputDevices.defaultOutputUID) {
+            try ReelObjCSupport.setOutputDevice(on: renderer, uid: $0)
+        }
+        return (AudioOutput(synchronizer: synchronizer, decision: decision, renderer: renderer, deviceSlot: slot), result)
+    }
+
+    private init(
+        synchronizer: AVSampleBufferRenderSynchronizer, decision: AttachDecision,
+        renderer: AVSampleBufferAudioRenderer, deviceSlot: RendererDeviceSlot
+    ) {
+        self.deviceSlot = deviceSlot
         renderer.audioTimePitchAlgorithm = .timeDomain
-        renderer.audioOutputDeviceUniqueID = deviceUID
         let settings = AudioOutput.rendererSettings(volume: VolumeCurve.firstRunVolume, muted: false, decision: decision)
         renderer.volume = settings.gain
         renderer.isMuted = settings.muted
@@ -265,5 +301,84 @@ public actor AudioOutput {
     private static func mediaTime(_ time: CMTime) -> MediaTime? {
         guard time.isValid, time.isNumeric else { return nil }
         return MediaTime(seconds: time.seconds)
+    }
+}
+
+/// Reported by the audio routing to the app.
+public enum OutputRouteEvent: Sendable, Hashable {
+    case refused(OutputRefusal)
+    /// The system default output could not be read, so the renderer was left as it is.
+    case defaultUnreadable
+}
+
+/// A chosen output device the renderer refused.
+public struct OutputRefusal: Sendable, Hashable {
+    public var uid: String
+    public var reason: String
+
+    public init(uid: String, reason: String) {
+        self.uid = uid
+        self.reason = reason
+    }
+
+    /// The log line; it names the device and the exception, never a path.
+    public func logLine(deviceName: String) -> String {
+        "audio output: \(deviceName) refused, using system output (\(reason))"
+    }
+}
+
+/// What a request to the slot changed or could not do.
+struct DeviceRouteResult: Equatable {
+    var refusal: OutputRefusal?
+    /// The default output could not be read and a pin was needed; true once per streak.
+    var defaultUnreadable = false
+}
+
+/// Which device a renderer plays on, and the fallback when it refuses one. AVFoundation raises
+/// when the device is set to nil, so the system default is followed by pinning the current default
+/// output's UID, re-pinned when the default changes. `setter` is the exception-guarded property
+/// set and `defaultUID` the Core Audio read; tests pass fakes. Nil or "" never reaches `setter`.
+struct RendererDeviceSlot {
+    /// The device last set; nil while the renderer is untouched (it follows the default itself).
+    private(set) var applied: String?
+    private var reportedUnreadable = false
+
+    /// Routes to `wanted` (nil: the system default). A refused device falls back to the default
+    /// output and is returned as a refusal; the next request with the same `wanted` tries it again.
+    mutating func request(
+        _ wanted: String?,
+        defaultUID: () -> String?,
+        _ setter: (String?) throws -> Void
+    ) -> DeviceRouteResult {
+        var result = DeviceRouteResult()
+        if let wanted, !wanted.isEmpty {
+            if applied == wanted { return result }
+            do {
+                try setter(wanted)
+                applied = wanted
+                return result
+            } catch {
+                let nsError = error as NSError
+                let reason = nsError.domain == ReelObjCSupportErrorDomain ? nsError.localizedDescription : String(describing: error)
+                result.refusal = OutputRefusal(uid: wanted, reason: reason)
+            }
+        }
+        // The system default: an untouched renderer already follows it.
+        guard applied != nil || result.refusal != nil else { return result }
+        guard let target = defaultUID(), !target.isEmpty else {
+            result.defaultUnreadable = !reportedUnreadable
+            reportedUnreadable = true
+            return result
+        }
+        reportedUnreadable = false
+        if applied != target {
+            do {
+                try setter(target)
+                applied = target
+            } catch {
+                // The default device refuses too: leave the renderer as it is.
+            }
+        }
+        return result
     }
 }

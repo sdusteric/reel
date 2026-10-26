@@ -52,7 +52,11 @@ let package = Package(
             ]
         ),
         .target(name: "ReelCore"),
-        .target(name: "ReelEngine", dependencies: ["CReelDeps", "ReelCore"]),
+        // Objective-C exception guards for AVFoundation (Swift cannot catch NSException).
+        .target(name: "ReelObjCSupport"),
+        // Test doubles that raise; linked by tests only.
+        .target(name: "ReelObjCTestSupport"),
+        .target(name: "ReelEngine", dependencies: ["CReelDeps", "ReelCore", "ReelObjCSupport"]),
         .target(name: "ReelUI", dependencies: ["ReelCore"], swiftSettings: mainActorByDefault),
         .executableTarget(
             name: "Reel",
@@ -61,7 +65,7 @@ let package = Package(
         ),
         .executableTarget(name: "reelctl", dependencies: ["ReelEngine", "ReelCore", "CReelDeps"]),
         .testTarget(name: "ReelCoreTests", dependencies: ["ReelCore"]),
-        .testTarget(name: "ReelEngineTests", dependencies: ["ReelEngine", "ReelCore", "CReelDeps"]),
+        .testTarget(name: "ReelEngineTests", dependencies: ["ReelEngine", "ReelCore", "CReelDeps", "ReelObjCSupport", "ReelObjCTestSupport"]),
         .testTarget(name: "ReelUITests", dependencies: ["ReelUI", "ReelCore"]),
         // The app's own wiring (Now Playing, media keys, Picture in Picture) through fakes only.
         // It links Sparkle through Reel but never creates an Updater.

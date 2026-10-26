@@ -3,6 +3,7 @@ import Observation
 import ReelCore
 import ReelEngine
 import ReelUI
+import Synchronization
 
 /// AppKit lifecycle (design 9.1, D2): one window, the menu bar, the Settings window, Now Playing,
 /// the episode folder watch and saving on quit. Reel never activates itself; the system does that
@@ -192,13 +193,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// the system default with an OSD, and the choice returns when the device does.
     private func startOutputDevices(_ model: PlayerModel) {
         let outputDevices = outputDevices
+        let refusals = RefusalAnnouncer()
         outputDevices.onResolve = { [weak self, weak model] resolution, announce in
+            refusals.resolved(resolution.uid)
             AudioOutput.setPreferredOutputDevice(resolution.uid)
             if let engine = self?.windowController?.engine {
                 Task { await engine.setOutputDevice(resolution.uid) }
             }
             guard announce, let model, model.hasMedia, let text = resolution.osdText else { return }
             model.postOSD(OSDMessage(kind: .track, text: text, symbol: "speaker.wave.2"))
+        }
+        // A renderer that refuses the chosen device (e.g. Bluetooth mid-reconnect) plays on the
+        // system default; the choice stays saved and is tried again on the next device change or open.
+        AudioOutput.setOutputRouteHandler { [weak self, weak model, weak outputDevices] event in
+            Task { @MainActor in
+                guard case .refused(let refusal) = event else {
+                    self?.log.error("audio output: default output device unreadable, output left as is")
+                    return
+                }
+                guard let outputDevices, refusals.shouldAnnounce(refusal.uid) else { return }
+                let name = outputDevices.choice.uid == refusal.uid ? outputDevices.choice.title : refusal.uid
+                self?.log.info(refusal.logLine(deviceName: name))
+                guard let model, model.hasMedia else { return }
+                let fallback = OutputDeviceResolution(uid: nil, name: outputDevices.systemDefaultName, isFallback: true)
+                if let text = fallback.osdText {
+                    model.postOSD(OSDMessage(kind: .track, text: text, symbol: "speaker.wave.2"))
+                }
+            }
         }
         AudioOutput.setPreferredOutputDevice(outputDevices.resolution.uid)
         deviceListener = AudioOutputDeviceListener { [weak outputDevices] in
@@ -426,6 +447,25 @@ private struct NowPlayingKey: Equatable {
         hasNext = model.hasNextEpisode
         hasPrevious = model.hasPreviousEpisode
         duration = model.duration
+    }
+}
+
+/// Announces a refused output device once until the routing moves to a different device.
+final class RefusalAnnouncer: @unchecked Sendable {
+    private let last = Mutex<String?>(nil)
+
+    func shouldAnnounce(_ uid: String) -> Bool {
+        last.withLock { value in
+            if value == uid { return false }
+            value = uid
+            return true
+        }
+    }
+
+    func resolved(_ uid: String?) {
+        last.withLock { value in
+            if value != uid { value = nil }
+        }
     }
 }
 
