@@ -1,0 +1,289 @@
+import AppKit
+import CoreGraphics
+import ReelCore
+import ReelUI
+
+/// A display as the mini player sees it; `id` is the display's UUID, stored in `state.json`.
+struct ScreenInfo: Equatable {
+    let id: String
+    let visibleFrame: CGRect
+    let isMain: Bool
+
+    static func current() -> [ScreenInfo] {
+        let main = NSScreen.main
+        return NSScreen.screens.map { ScreenInfo(id: $0.reelID, visibleFrame: $0.visibleFrame, isMain: $0 == main) }
+    }
+}
+
+extension NSScreen {
+    /// The display's UUID string, stable across launches and arrangement changes.
+    var reelID: String {
+        guard let number = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+              let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue(),
+              let text = CFUUIDCreateString(nil, uuid) else { return localizedName }
+        return text as String
+    }
+}
+
+/// How the mini player was asked to close: Back to Window activates Reel, Close pauses and
+/// leaves Reel in the background.
+enum LeaveKind: Equatable {
+    case backToWindow, close
+}
+
+/// A drag on the picture in the mini player. `moved` carries the translation since `began`, in
+/// screen points; `ended` the pointer's velocity in points per second.
+enum DragPhase: Equatable {
+    case began
+    case moved(CGVector)
+    case ended(velocity: CGVector)
+}
+
+/// Moves the panel to its corner after a drag. Tests set the frame at once.
+@MainActor
+protocol PanelSnapping: AnyObject {
+    func snap(_ window: NSWindow, to frame: CGRect, velocity: CGVector, completion: @escaping () -> Void)
+    func stop()
+}
+
+/// The snap of mini player design section 8 row 2: the panel's origin follows `SnapSpring`, driven
+/// by a display link that runs only until the spring settles.
+@MainActor
+final class SpringSnapper: NSObject, PanelSnapping {
+    private var link: CADisplayLink?
+    private weak var window: NSWindow?
+    private var from = CGPoint.zero
+    private var target = CGRect.zero
+    private var started: CFTimeInterval = 0
+    private var spring = SnapSpring(reduceMotion: false)
+    private var initialVelocity = 0.0
+    private var distance = 0.0
+    private var completion: (() -> Void)?
+
+    func snap(_ window: NSWindow, to frame: CGRect, velocity: CGVector, completion: @escaping () -> Void) {
+        stop()
+        from = window.frame.origin
+        target = frame
+        let dx = Double(frame.minX - from.x), dy = Double(frame.minY - from.y)
+        distance = (dx * dx + dy * dy).squareRoot()
+        guard distance > SnapSpring.settledDistance, let view = window.contentView else {
+            window.setFrame(frame, display: true)
+            completion()
+            return
+        }
+        // The release speed toward the corner, as a fraction of the distance per second.
+        initialVelocity = (Double(velocity.dx) * dx + Double(velocity.dy) * dy) / (distance * distance)
+        spring = SnapSpring(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        self.window = window
+        self.completion = completion
+        started = CACurrentMediaTime()
+        let link = view.displayLink(target: self, selector: #selector(step(_:)))
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    func stop() {
+        link?.invalidate()
+        link = nil
+        completion = nil
+    }
+
+    @objc private func step(_ link: CADisplayLink) {
+        guard let window else {
+            stop()
+            return
+        }
+        let elapsed = CACurrentMediaTime() - started
+        let progress = CGFloat(spring.progress(at: elapsed, initialVelocity: initialVelocity))
+        window.setFrameOrigin(CGPoint(x: from.x + (target.minX - from.x) * progress, y: from.y + (target.minY - from.y) * progress))
+        guard spring.isSettled(at: elapsed, initialVelocity: initialVelocity, distance: distance) else { return }
+        window.setFrame(target, display: true)
+        let done = completion
+        stop()
+        done?()
+    }
+}
+
+/// Owns the mini player panel and hands the window's video surface to it and back (mini player
+/// design sections 3 to 6). The engine is never touched: the surface keeps its layers.
+@MainActor
+final class MiniPlayerController: NSObject, NSWindowDelegate {
+    private let model: PlayerModel
+    private let surface: VideoSurfaceView
+    private let home: SurfaceSlotView
+    private let stateStore: StateStore
+    private let screens: @MainActor () -> [ScreenInfo]
+    private let show: @MainActor (NSPanel) -> Void
+    private let snapper: any PanelSnapping
+    private let log: ReelLog
+
+    private(set) var panel: MiniPlayerPanel?
+    private var content: MiniPlayerContentView?
+    private var aspect: CGFloat = 16 / 9
+    private var dragStart: CGPoint?
+    private var windowDoubleClick: (() -> Void)?
+    /// Close and Back to Window from the panel's buttons; the window controller decides what follows.
+    var onLeaveRequest: ((LeaveKind) -> Void)?
+
+    var isActive: Bool { panel != nil }
+
+    init(
+        model: PlayerModel,
+        surface: VideoSurfaceView,
+        home: SurfaceSlotView,
+        stateStore: StateStore,
+        screens: @escaping @MainActor () -> [ScreenInfo] = ScreenInfo.current,
+        show: @escaping @MainActor (NSPanel) -> Void = { $0.orderFrontRegardless() },
+        snapper: any PanelSnapping = SpringSnapper(),
+        log: ReelLog = .disabled
+    ) {
+        self.model = model
+        self.surface = surface
+        self.home = home
+        self.stateStore = stateStore
+        self.screens = screens
+        self.show = show
+        self.snapper = snapper
+        self.log = log
+    }
+
+    // MARK: Placement
+
+    private var placement: MiniPlayerPlacement { stateStore.state.miniPlayer }
+
+    private var mainScreen: ScreenInfo {
+        let list = screens()
+        return list.first(where: \.isMain) ?? list.first ?? ScreenInfo(id: "", visibleFrame: CGRect(x: 0, y: 0, width: 1440, height: 900), isMain: true)
+    }
+
+    /// The saved display if it is still connected, else the main one.
+    private var savedScreen: ScreenInfo {
+        let list = screens()
+        let id = MiniPlayerGeometry.screen(saved: placement.screen, available: list.map(\.id), fallback: mainScreen.id)
+        return list.first { $0.id == id } ?? mainScreen
+    }
+
+    /// The display holding most of `frame`, for snapping after a drag across displays.
+    private func screen(containing frame: CGRect) -> ScreenInfo {
+        let list = screens()
+        let centre = CGPoint(x: frame.midX, y: frame.midY)
+        if let hit = list.first(where: { $0.visibleFrame.contains(centre) }) { return hit }
+        return list.min { distance(centre, $0.visibleFrame) < distance(centre, $1.visibleFrame) } ?? mainScreen
+    }
+
+    private func distance(_ point: CGPoint, _ rect: CGRect) -> CGFloat {
+        let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
+        let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
+        return (dx * dx + dy * dy).squareRoot()
+    }
+
+    func targetFrame(aspect: CGFloat) -> CGRect {
+        let screen = savedScreen
+        let size = MiniPlayerGeometry.size(aspect: aspect, boxScale: placement.boxScale, visible: screen.visibleFrame)
+        return MiniPlayerGeometry.frame(size: size, corner: placement.corner, visible: screen.visibleFrame)
+    }
+
+    // MARK: Enter and leave
+
+    func enter(from sourceRect: CGRect, aspect: CGFloat) {
+        guard panel == nil else { return }
+        self.aspect = aspect > 0 && aspect.isFinite ? aspect : 16 / 9
+        let frame = targetFrame(aspect: self.aspect)
+        let panel = MiniPlayerPanel(contentRect: frame)
+        let actions = MiniPlayerActions(
+            close: { [weak self] in self?.onLeaveRequest?(.close) },
+            backToWindow: { [weak self] in self?.onLeaveRequest?(.backToWindow) }
+        )
+        let content = MiniPlayerContentView(model: model, actions: actions)
+        content.onMagnify = { [weak self] factor in self?.magnify(by: factor) }
+        panel.contentView = content
+        panel.setFrame(frame, display: false)
+        applyLimits(to: panel, visible: savedScreen.visibleFrame)
+        panel.delegate = self
+        content.layoutSubtreeIfNeeded()
+
+        content.slot.host(surface)
+        windowDoubleClick = surface.onDoubleClick
+        surface.onDoubleClick = { [weak self] in self?.onLeaveRequest?(.backToWindow) }
+        surface.onPanelDrag = { [weak self] phase in self?.drag(phase) }
+        surface.mode = .mini
+
+        self.panel = panel
+        self.content = content
+        model.miniChrome.pointerExited()
+        model.setMiniPlayer(active: true)
+        show(panel)
+    }
+
+    func leave(to targetRect: CGRect, completion: @escaping () -> Void) {
+        guard let panel else {
+            completion()
+            return
+        }
+        snapper.stop()
+        home.host(surface)
+        surface.mode = .window
+        surface.onDoubleClick = windowDoubleClick
+        surface.onPanelDrag = nil
+        windowDoubleClick = nil
+        panel.delegate = nil
+        panel.close()
+        self.panel = nil
+        content = nil
+        model.setMiniPlayer(active: false)
+        completion()
+    }
+
+    private func applyLimits(to panel: NSPanel, visible: CGRect) {
+        panel.contentAspectRatio = NSSize(width: aspect, height: 1)
+        panel.contentMinSize = MiniPlayerGeometry.size(aspect: aspect, boxScale: 0, visible: visible)
+        panel.contentMaxSize = MiniPlayerGeometry.size(aspect: aspect, boxScale: .greatestFiniteMagnitude, visible: visible)
+    }
+
+    // MARK: Drag, pinch and resize
+
+    func drag(_ phase: DragPhase) {
+        guard let panel else { return }
+        switch phase {
+        case .began:
+            snapper.stop()
+            dragStart = panel.frame.origin
+        case .moved(let translation):
+            let start = dragStart ?? panel.frame.origin
+            panel.setFrameOrigin(CGPoint(x: start.x + translation.dx, y: start.y + translation.dy))
+        case .ended(let velocity):
+            dragStart = nil
+            let screen = screen(containing: panel.frame)
+            let corner = MiniPlayerGeometry.corner(releasing: panel.frame, velocity: velocity, visible: screen.visibleFrame)
+            let target = MiniPlayerGeometry.frame(size: panel.frame.size, corner: corner, visible: screen.visibleFrame)
+            save { $0.corner = corner; $0.screen = screen.id }
+            applyLimits(to: panel, visible: screen.visibleFrame)
+            snapper.snap(panel, to: target, velocity: velocity) {}
+        }
+    }
+
+    /// A pinch scales the panel about its corner, within the box limits.
+    func magnify(by factor: CGFloat) {
+        guard let panel, factor.isFinite, factor > 0 else { return }
+        let screen = screen(containing: panel.frame)
+        let scale = MiniPlayerGeometry.boxScale(for: panel.frame.size, aspect: aspect) * Double(factor)
+        let size = MiniPlayerGeometry.size(aspect: aspect, boxScale: scale, visible: screen.visibleFrame)
+        panel.setFrame(MiniPlayerGeometry.frame(size: size, corner: placement.corner, visible: screen.visibleFrame), display: true)
+        let stored = MiniPlayerGeometry.boxScale(for: size, aspect: aspect)
+        save { $0.boxScale = stored }
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard let panel, notification.object as? NSWindow === panel else { return }
+        let stored = MiniPlayerGeometry.boxScale(for: panel.frame.size, aspect: aspect)
+        save { $0.boxScale = stored }
+    }
+
+    private func save(_ change: (inout MiniPlayerPlacement) -> Void) {
+        do {
+            try stateStore.update { change(&$0.miniPlayer) }
+        } catch {
+            log.error("mini player placement save failed: \(error)")
+        }
+    }
+}

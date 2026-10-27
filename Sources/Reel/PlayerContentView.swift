@@ -10,7 +10,9 @@ import SwiftUI
 final class PlayerContentView: DropAcceptingView {
     let model: PlayerModel
     let videoView: VideoSurfaceView
-    private var hostingView: NSHostingView<PlayerSceneView<VideoSurface>>?
+    /// Where the surface sits in the window's scene; the mini player borrows the surface from it.
+    let videoSlot = SurfaceSlotView()
+    private var hostingView: NSHostingView<PlayerSceneView<SurfaceSlot>>?
     private weak var commandTarget: (any PlayerCommandTarget)?
     /// The pointer moved in the window (the paused thumbnail rule, section 7.9).
     var onPointerActivity: (() -> Void)?
@@ -22,9 +24,10 @@ final class PlayerContentView: DropAcceptingView {
         super.init(frame: NSRect(origin: .zero, size: WindowSizing.emptySize))
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
-        let videoView = videoView
+        videoSlot.host(videoView)
+        let slot = videoSlot
         let hosting = NSHostingView(rootView: PlayerSceneView(model: model, actions: actions) {
-            VideoSurface(view: videoView)
+            SurfaceSlot(view: slot)
         })
         hosting.sizingOptions = []
         hosting.frame = bounds
@@ -112,16 +115,13 @@ final class PlayerContentView: DropAcceptingView {
     }
 }
 
-/// Hosts the display layer inside the SwiftUI scene.
-struct VideoSurface: NSViewRepresentable {
-    let view: VideoSurfaceView
-
-    func makeNSView(context: Context) -> VideoSurfaceView { view }
-    func updateNSView(_ nsView: VideoSurfaceView, context: Context) {}
+/// Where the surface is: in the window's scene, or in the mini player panel.
+enum VideoSurfaceMode {
+    case window, mini
 }
 
 /// The picture: an `AVSampleBufferDisplayLayer` (`.resizeAspect`, black) plus the pointer
-/// gestures of design 9.6.
+/// gestures of design 9.6. In the mini player a drag moves the panel and scrolls do nothing.
 final class VideoSurfaceView: DropAcceptingView {
     static let clickDelay: Duration = .milliseconds(250)
     /// Media seconds per point of horizontal scroll.
@@ -134,6 +134,9 @@ final class VideoSurfaceView: DropAcceptingView {
     /// Above the display layer, sized like it; the engine draws subtitles into a sublayer (8.6).
     private(set) var subtitleLayer = CALayer()
     var onDoubleClick: (() -> Void)?
+    var mode = VideoSurfaceMode.window
+    /// The mini player's drag (`mode == .mini`).
+    var onPanelDrag: ((DragPhase) -> Void)?
     var contextMenuProvider: (() -> NSMenu?)?
     /// Called after the layers changed size or backing scale (window resize, fullscreen, display).
     var onLayersResized: (() -> Void)?
@@ -220,6 +223,8 @@ final class VideoSurfaceView: DropAcceptingView {
 
     override var isOpaque: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
+    /// A click on the inactive mini player acts at once; the window keeps the usual first click.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { mode == .mini }
 
     override func layout() {
         super.layout()
@@ -247,7 +252,11 @@ final class VideoSurfaceView: DropAcceptingView {
             inMode: .eventTracking,
             dequeue: false
         ), next.type == .leftMouseDragged {
-            window.performDrag(with: event)
+            if mode == .mini {
+                trackPanelDrag(from: event, in: window)
+            } else {
+                window.performDrag(with: event)
+            }
             return
         }
         pendingClick?.cancel()
@@ -256,6 +265,23 @@ final class VideoSurfaceView: DropAcceptingView {
             guard !Task.isCancelled, let self else { return }
             self.model.togglePause()
             self.pendingClick = nil
+        }
+    }
+
+    /// Follows the pointer in screen points until the button goes up, then reports its velocity.
+    private func trackPanelDrag(from event: NSEvent, in window: NSWindow) {
+        let start = NSEvent.mouseLocation
+        var velocity = PointerVelocity()
+        velocity.add(start, at: event.timestamp)
+        onPanelDrag?(.began)
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            let point = NSEvent.mouseLocation
+            velocity.add(point, at: next.timestamp)
+            if next.type == .leftMouseUp {
+                onPanelDrag?(.ended(velocity: velocity.velocity))
+                return
+            }
+            onPanelDrag?(.moved(CGVector(dx: point.x - start.x, dy: point.y - start.y)))
         }
     }
 
@@ -282,6 +308,8 @@ final class VideoSurfaceView: DropAcceptingView {
     // MARK: Scroll: horizontal seeks (scrubs, then exact at the end), vertical sets the volume.
 
     override func scrollWheel(with event: NSEvent) {
+        // Scrolling the document under the mini player must not change the volume or seek.
+        guard mode == .window else { return }
         guard model.hasMedia || abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX) else { return }
         if event.phase == [] && event.momentumPhase == [] {
             discreteScroll(event)

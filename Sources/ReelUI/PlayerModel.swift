@@ -506,6 +506,10 @@ public final class PlayerModel {
             let scale = subtitleStyle.scale
             session.send(.run { await $0.setSubtitleScale(scale) })
         }
+        if isMiniPlayerActive {
+            let floor = Double(MiniPlayerGeometry.subtitleFloorHeight)
+            session.send(.run { await $0.setSubtitleMinimumHeight(floor) })
+        }
         if let resume = resumePosition(for: url, duration: info.duration) {
             resumeMarker = resume
             requestExact(resume, source: .resume)
@@ -1495,9 +1499,13 @@ extension PlayerModel {
         onMiniPlayerRequest?(!isMiniPlayerActive)
     }
 
-    /// The app reports the real state once the video surface has moved.
+    /// The app reports the real state once the video surface has moved. The engine keeps text
+    /// subtitles readable in the small panel.
     public func setMiniPlayer(active: Bool) {
+        guard active != isMiniPlayerActive else { return }
         isMiniPlayerActive = active
+        let floor = active ? Double(MiniPlayerGeometry.subtitleFloorHeight) : nil
+        send { await $0.setSubtitleMinimumHeight(floor) }
     }
 
     public func setFullscreen(_ fullscreen: Bool) {

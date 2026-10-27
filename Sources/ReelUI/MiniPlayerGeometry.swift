@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import ReelCore
 
 /// Size and place of the mini player (mini player design section 4). AppKit screen
@@ -73,5 +74,26 @@ nonisolated public enum MiniPlayerGeometry {
 
     private static func rounded(_ value: CGFloat) -> CGFloat {
         (value * 1000).rounded() / 1000
+    }
+}
+
+/// The pointer's velocity at the end of a drag, from the samples of the last 0.1 s, so a pause
+/// before release throws nothing. Points per second.
+nonisolated public struct PointerVelocity: Sendable {
+    public static let window: TimeInterval = 0.1
+
+    private var samples: [(point: CGPoint, time: TimeInterval)] = []
+
+    public init() {}
+
+    public mutating func add(_ point: CGPoint, at time: TimeInterval) {
+        samples.append((point, time))
+        samples.removeAll { $0.time < time - PointerVelocity.window - 1e-9 }
+    }
+
+    public var velocity: CGVector {
+        guard let first = samples.first, let last = samples.last, last.time > first.time else { return .zero }
+        let elapsed = CGFloat(last.time - first.time)
+        return CGVector(dx: (last.point.x - first.point.x) / elapsed, dy: (last.point.y - first.point.y) / elapsed)
     }
 }

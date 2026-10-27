@@ -102,4 +102,18 @@ import Testing
         let darkBar = try #require(ShotRenderer.luminance(of: dark, in: bar))
         #expect(abs(lightBar.mean - darkBar.mean) < 2, "light \(lightBar.mean) vs dark \(darkBar.mean)")
     }
+
+    @Test func subtitleFloorFollowsTheMiniPlayerAcrossFiles() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        let box = EngineBox()
+        let (model, _, _) = makeModel(engineFactory: { box.make($0) }, scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        model.setMiniPlayer(active: true)
+        await waitUntil("floor on") { box.all.first?.calls.contains(.subtitleMinimumHeight(208)) == true }
+        await openAndSettle(model, try scratch.makeMediaFile("b.mkv"))
+        await waitUntil("floor on the next engine") { box.all.count == 2 && box.all[1].calls.contains(.subtitleMinimumHeight(208)) }
+        model.setMiniPlayer(active: false)
+        await waitUntil("floor off") { box.all[1].calls.contains(.subtitleMinimumHeight(nil)) }
+    }
 }

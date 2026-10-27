@@ -13,6 +13,7 @@ import Testing
 nonisolated final class StubEngine: PlayerEngine {
     enum Call: Equatable {
         case open(URL), play, pause, seek(SeekRequest), close
+        case subtitleMinimumHeight(Double?)
     }
 
     let events: AsyncStream<EngineEvent>
@@ -61,6 +62,7 @@ nonisolated final class StubEngine: PlayerEngine {
     }
 
     func seek(_ request: SeekRequest) async { record(.seek(request)) }
+    func setSubtitleMinimumHeight(_ points: Double?) async { record(.subtitleMinimumHeight(points)) }
     func setVolume(_ volume: Double) async {}
     func setMuted(_ muted: Bool) async {}
     func setTimeUpdateInterval(_ seconds: Double) async {}
