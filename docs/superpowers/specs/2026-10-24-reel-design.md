@@ -216,7 +216,7 @@ User research (section 16, M3) found that no Mac player is trusted with HDR: VLC
   The plan depends on the content and the setting only; the display changes only the tag detail and Video Info. So moving the window between displays never reconfigures the layer, and a headroom change (brightness, ambient light) never touches Reel at all.
 - **No whole-screen dimming.** Reel never asks for more than the layer property above: no `NSScreen` brightness tricks, no EDR on SDR content, no EDR on the chrome. If the user still sees the desktop dim on some display, Limited (`.constrainedHigh`, "brightness is modulated to optimize for co-existence with other composited content") or Off is the fix, one popup away in Settings (11.1). The hands-on check below asks for exactly this comparison.
 - **Chrome and subtitles stay at SDR white.** The subtitle `CALayer`, the hosting view of the SwiftUI chrome and every panel keep `preferredDynamicRange = .standard` (set explicitly, so a future default change cannot raise them), and their contents are untagged sRGB `CGImage`s with no headroom. White text is therefore SDR reference white whatever the video does. A test reads these properties back.
-- **Picture in Picture.** PiP shows only the display layer, so subtitles are composited into the frames (8.6). For HDR frames the compositor (Core Image, extended linear working space) draws subtitle white at 1.0, which is reference white: 203 nits in PQ (10-bit limited code 573) and 75% signal in HLG (code 721), never the signal peak. A test decodes the composited frame and checks those codes.
+- **Mini player.** The mini player shows the same display layer and subtitle layer as the window (it borrows the surface), so HDR, EDR and the SDR-white subtitles need nothing extra there. The PiP frame compositor was removed with Picture in Picture (2026-10-26).
 
 **Display state.** `DisplayRangeMonitor` (app target) reads `maximumPotentialExtendedDynamicRangeColorComponentValue`, `maximumExtendedDynamicRangeColorComponentValue` and `maximumReferenceExtendedDynamicRangeColorComponentValue` of the window's screen on `NSWindow.didChangeScreenNotification` and `NSApplication.didChangeScreenParametersNotification`, and polls the current value at 2 Hz only while Video Info is open **(my call; nothing else needs it, and polling costs wakeups)**. It feeds the tag and Video Info. The macOS "High Dynamic Range" switch for an external display shows up here as a potential headroom of 1.0 or more.
 
@@ -279,9 +279,9 @@ What runs in each state (`EnergyPolicy`, pure, in ReelCore; the engine and app r
 | Thumbnail generation | yes (utility QoS) | continues while the pointer moved in the window in the last 10 s, then suspends | suspended | suspended |
 | Display sleep assertion and App Nap activity | held | released | released | released |
 
-- **Occlusion** (my call): `NSWindow.occlusionState` without `.visible` (fully covered, minimised, another Space) for 1 s while playing, and PiP not active, stops video decode and enqueue; audio keeps playing. When the window becomes visible, the engine runs an exact seek to the synchronizer's current time with the keyframe preview, so a picture appears within the scrub budget and the exact frame within 300 ms for the HEVC fixture. This saves the whole video decode for people who listen with the window hidden; the cost is a short preview on return.
+- **Occlusion** (my call): `NSWindow.occlusionState` without `.visible` (fully covered, minimised, another Space) for 1 s while playing stops video decode and enqueue (while the mini player is up, the panel is the window that counts, since the main window is ordered out); audio keeps playing. When the window becomes visible, the engine runs an exact seek to the synchronizer's current time with the keyframe preview, so a picture appears within the scrub budget and the exact frame within 300 ms for the HEVC fixture. This saves the whole video decode for people who listen with the window hidden; the cost is a short preview on return.
 - Every dispatch timer gets a leeway of 10% of its interval so the system can coalesce wakeups. In Low Power Mode (`ProcessInfo.isLowPowerModeEnabled`) thumbnail generation stops after the coarse pass (every 8th position).
-- There is no `CADisplayLink` in Reel; the subtitle renderer is a dispatch timer (8.6), and the rules above gate it.
+- No display link runs during playback; the subtitle renderer is a dispatch timer (8.6), and the rules above gate it. The mini player's snap after a drag runs one until the spring settles (well under a second).
 - The VP9 tile check (7.10) runs only while VP9 video is fed to VideoToolbox, so never while paused or occluded, and is held to 2% of one core on average by a `CheckBudget`. `energy-bench` reports its share (`vp9TileCheck`) and `--no-tile-check` turns it off for a comparison.
 
 **Measurement.** `reelctl energy-bench <file> --mode play|paused|occluded --seconds 20 [--warmup 5] --json` runs one `PlaybackEngine` headless with no audio renderer (the synchronizer follows the host clock) and a standalone display layer. If that layer does not consume frames at the clock rate off screen, the bench uses a `ClockedVideoSink` that releases frames at their presentation time and says so in the report. It reads `proc_pid_rusage(RUSAGE_INFO_V6)` for its own process before and after the window: CPU time, interrupt wakeups, package idle wakeups, billed energy, instructions. Hardware decode runs in a `VTDecoderXPCService` process, so the bench also records the PIDs of `VTDecoderXPCService` processes that appeared after its session was created and reads their usage the same way (same user, no privileges; reported as `xpc` and left out when not found). Engine counters (frames decoded, packets read, subtitle renders, time events, thumbnails decoded) are reported per window. `occluded` mode sets the engine's occluded flag after warm-up and, at the end, clears it and reports the resync latency.
@@ -373,7 +373,7 @@ The user watches with Chinese subtitles first and English second, at IINA size 4
 - Seeking: on `.scrub(t)` the subtitle shown is the one at t (from the prefetched events), so scrubbing shows the right line next to the keyframe preview. On `.exact(t)` it updates when the target frame lands, never before, so text and picture change together.
 - Next and previous line (Shift+Right / Shift+Left): an exact seek to the start of the next or previous text event of the selected track (`ass_step_sub`), using the prefetched events.
 - Screenshots (Cmd+S) include the subtitles, composited at the video's native resolution (IINA's default `screenshot` includes them).
-- Picture in Picture: the PiP window shows only the display layer, so subtitles would vanish. While PiP is active and a subtitle is visible, the engine composites the subtitle bitmap onto a pooled copy of each video frame (Core Image source-over on the GPU) before enqueueing; frames without a visible subtitle pass through untouched **(my call; if this cannot hold 60 fps at 4K, M2 ships PiP without subtitles for 4K and logs it)**.
+- Mini player: subtitles render at the panel's pixel size with a floor, so a size 45 line stays as large as it is at a 208 pt tall layer (`setSubtitleMinimumHeight`, mini player design section 5). No frames are copied.
 
 ### 8.7 Fallbacks and failures
 
@@ -399,7 +399,7 @@ All sizes in points.
   - `presentationOptions` `[.fullScreen, .autoHideMenuBar, .autoHideDock]`; the menu bar and the cursor hide with the chrome (cursor through `NSCursor.setHiddenUntilMouseMoves`), and the menu bar can still be revealed by moving to the top edge.
   - The title shows at the top centre over the scrim, and "Ends at 22:47" (wall-clock end time at the current speed, 12 pt medium, white 72%) at the top right, 24 pt in. Fullscreen only: in a window the remaining time is enough, but in fullscreen the system clock is hidden **(my call)**.
   - Entering and leaving fullscreen keeps the subtitle size relative to the video (size 45 is 6.25% of the video height, so 90 pt on the 1440 pt display).
-- Picture in Picture (M2, section 9.9): `AVPictureInPictureController` with `ContentSource(sampleBufferDisplayLayer:playbackDelegate:)` on the existing display layer.
+- Mini player (section 9.9): a floating, non-activating panel that borrows the window's video surface; the window is ordered out while it is up.
 - Display sleep: `IOPMAssertionCreateWithName(PreventUserIdleDisplaySleep, "Reel is playing video")` while playing, released on pause, close and quit.
 
 ### 9.2 Chrome visibility
@@ -422,10 +422,10 @@ All sizes in points.
   - Width becomes `clamp(0.45 x window width, 440, 600)`, still at most 70% of the window: 576 pt in a 1280 pt window, 600 pt in the user's usual 1920 pt window and in fullscreen.
   - Left cluster: volume button, 6 pt, slider 72 pt that widens to 104 pt on hover (was 120; the centre cluster needs the room).
   - Centre cluster, centred in the row: previous episode, 16, back 10, 20, play/pause, 20, forward 10, 16, next episode (216 pt). Transport spacing goes from 22 to 20 pt.
-  - Right cluster, flush right: speed label button (min 36 pt wide), 6 pt, subtitles, audio, Picture in Picture, fullscreen (28 pt hit targets, no gaps; the glyphs are 17 pt so the visual gap is 11 pt).
+  - Right cluster, flush right: speed label button (min 36 pt wide), 6 pt, subtitles, audio, mini player, fullscreen (28 pt hit targets, no gaps; the glyphs are 17 pt so the visual gap is 11 pt).
   - Previous and next are hidden when the file is alone in its folder, and the transport re-centres; previous is disabled (55%) on the first episode and next on the last (mockup `png/18`).
-  - Below 568 pt of controller width the controller drops previous, next and Picture in Picture (they stay in the menus and keys); below 480 pt it also drops the audio button and the speed label. Priority from first kept to first dropped: play/pause, back and forward 10, fullscreen, volume, subtitles, audio, speed, next, previous, PiP.
-  - Subtitle glyph: `captions.bubble.fill` while a subtitle track is on, `captions.bubble` while off. Audio: `waveform`. PiP: `pip.enter`, and `pip.exit` in the accent colour while PiP is active. Speed: the current rate as text ("1×", "1.5×", 13 pt semibold rounded, monospaced digits); when the rate is not 1 it turns accent on an accent 16 to 22% capsule so a changed speed is never missed.
+  - Below 568 pt of controller width the controller drops previous, next and the mini player button (they stay in the menus and keys); below 480 pt it also drops the audio button and the speed label. Priority from first kept to first dropped: play/pause, back and forward 10, fullscreen, volume, subtitles, audio, speed, next, previous, mini player.
+  - Subtitle glyph: `captions.bubble.fill` while a subtitle track is on, `captions.bubble` while off. Audio: `waveform`. Mini player: `pip.enter`, and `pip.exit` in the accent colour while the mini player is up; tooltip "Mini Player, ⌃⌘P". Speed: the current rate as text ("1×", "1.5×", 13 pt semibold rounded, monospaced digits); when the rate is not 1 it turns accent on an accent 16 to 22% capsule so a changed speed is never missed.
   - Every button has a tooltip naming the action and its key ("Subtitles, Ctrl+Cmd+S" spelled with the system glyphs).
 - Times: `.system(size: 12, weight: .medium).monospacedDigit()`, primary at 85%. Hours shown only when duration is 1 h or more.
 - Icons: SF Symbols, medium weight, drawn at 14 pt (play 18 pt) so the glyphs fill the 17 pt (play 22 pt) boxes of the mockup, `.primary` at 90%, 55% disabled. Hit targets at least 28 pt; hover background `Color.primary.opacity(0.1)` circle fading in over 0.12 s; press feedback is a 0.94 scale over 0.1 s on pointer-down (none with Reduce Motion). Transport buttons are 22 pt apart. Play/pause swaps with `.contentTransition(.symbolEffect(.replace))`.
@@ -459,7 +459,7 @@ All sizes in points.
 
 - Single click on the video: toggle pause, delayed 250 ms to allow a double click. Double click: toggle fullscreen.
 - Two-finger horizontal scroll: seek. Continuous scroll sends scrubs (1 s of media per 8 pt of scroll, my default) and an exact seek when the gesture ends **(my call)**. Vertical scroll: volume, 1 step per 6 pt. Natural scrolling is respected.
-- Drag on the video moves the window. Right click: context menu with Open, Play/Pause, Show in Finder. M2 adds Subtitles and Audio submenus (the same items as the menu bar), Speed, Take Screenshot and Picture in Picture.
+- Drag on the video moves the window. Right click: context menu with Open, Play/Pause, Show in Finder. M2 adds Subtitles and Audio submenus (the same items as the menu bar), Speed, Take Screenshot and Enter Mini Player. In the mini player the menu is Play/Pause, Back to Window, Close Mini Player and the Subtitles, Audio and Speed submenus, and scrolling does nothing.
 - M2: mouse back and forward buttons go to the previous and next episode (IINA's `MBTN_BACK` / `MBTN_FORWARD`).
 
 ### 9.7 Track and speed panels (M2)
@@ -482,15 +482,16 @@ All sizes in points.
   - No card when file loop is on (the file restarts), when an A-B loop is set, or when the next file cannot be opened (it is skipped and the one after is tried, up to 3, with an OSD naming the skipped file).
   - The resume entry of the finished file is deleted as in M1 (less than 30 s from the end).
 
-### 9.9 Picture in Picture (M2)
+### 9.9 Mini player (replaces Picture in Picture, 2026-10-26)
 
-**Pending replacement (2026-10-26).** Reel's own mini player is designed in `2026-10-26-reel-mini-player-design.md` (mockups `png/28` to `png/34`). Once the owner approves and it is built, it replaces this section and the PiP placeholder (`png/16`; its frame is gone from `index.html`, and the PNG stays until the mini player ships); until then the text below describes what ships.
+Designed and specified in `2026-10-26-reel-mini-player-design.md` (mockups `png/28` to `png/34`); that document is the source of truth for it. In short:
 
-- Started from the controller button, the Video menu or Ctrl+Cmd+P. `AVPictureInPictureController` with the sample buffer display layer content source; the playback delegate maps play, pause, skip by interval (10 s) and the time range to the engine.
-- The main window keeps its size and shows the PiP state (mockup `png/16`): the frame at the moment PiP started, blurred (48 pt radius) and darkened to 42% brightness, a 60 pt tile with the PiP glyph, "Playing in Picture in Picture" (15 pt semibold, white 78%), "Playback controls here still work." (12 pt, white 50%), and an "Exit Picture in Picture" capsule button. The controller and title keep working; the PiP button shows `pip.exit` in the accent colour.
-- Subtitles are composited into the frames while PiP is active (8.6).
-- Closing the main window while PiP is active stops PiP and closes the file (one window, one file).
-- **macOS crop workaround (2026-10-26).** On macOS 26.4 and later, PiP with a sample buffer display layer copies the source at 1:1 pixels instead of scaling it (FB22411168), so a window larger than the PiP panel showed only its bottom-left corner, and AVKit draws a blank black view over the picture. While PiP runs, `PiPSourceWindow` shrinks the player window to the panel's content size (top-left corner kept), makes it invisible and click-through, follows panel resizes, and hides the blank view (`AVPictureInPictureCALayerHostView`, found by class name). Ending PiP restores the frame, minimum size, alpha and clicks; the shrunk size is never saved as the window frame. This replaces "the main window keeps its size" above while the bug exists: the placeholder is no longer seen. A fullscreen window is not resized. If a macOS update renames the private classes, nothing changes and PiP falls back to the cropped picture.
+- Apple's Picture in Picture was removed: on macOS 26.4 and later it copies a sample buffer layer at 1:1 (FB22411168), and even with the crop worked around, AVKit placed its panel at the window's size and jumped it to the corner with no animation.
+- `MiniPlayerPanel` is a non-activating, floating panel on every Space and over fullscreen apps. Clicking it never activates Reel; the keys work after Cmd+Tab, and media keys always.
+- The window's `VideoSurfaceView` (display layer and subtitle layer) moves between a slot in the window's scene and a slot in the panel; the engine sees only a size change and a subtitle floor. The window is ordered out while the mini player is up and never resized.
+- Default size fits a 480 x 360 box (480 x 270 for 16:9), smallest 256 x 192, largest half the visible frame, 20 pt from the corner, bottom right by default. A drag snaps to the nearest corner (a flick lands where it was thrown); edges and pinch resize. Corner, box scale and display are saved in `state.json`.
+- Enter and leave are one 0.3 s move on the shared ease-out between the window's video area and the corner; with Reduce Motion, 0.15 s fades.
+- Close pauses and orders the window in behind other apps; Back to Window, a double click and a Dock click bring it back and activate Reel. A failure card, closing the file or closing the window leave the mini player at once.
 
 ### 9.10 Now Playing and media keys (M2)
 
@@ -502,7 +503,7 @@ All sizes in points.
 Native `NSMenu`s, mockup `png/17`. Items with a Command or Control shortcut show it; plain-key bindings stay out of the menus as in M1 (the content view handles them, so they never fire twice).
 
 - Playback: Play/Pause; Forward 5 Seconds, Back 5 Seconds; Next Frame, Previous Frame; separator; Next Episode (Cmd+Right), Previous Episode (Cmd+Left), Auto-Advance to Next Episode (checkmark, on); separator; Speed submenu (Double Cmd+], Half Cmd+[, Faster Alt+Cmd+], Slower Alt+Cmd+[, Normal Cmd+\, then the presets with a checkmark); separator; Set Loop Start / Set Loop End / Clear Loop (one item whose title follows the state, Cmd+L), Loop File (checkmark, Shift+Cmd+L).
-- Video: Half Size, Actual Size, Double Size, Fit to Screen (Cmd+0 to 3); Enter Full Screen (Ctrl+Cmd+F); Enter Picture in Picture (Ctrl+Cmd+P); Video Track submenu and Next Video Track (Ctrl+Cmd+V, disabled with one video track); Take Screenshot (Cmd+S); Show Screenshots in Finder.
+- Video: Half Size, Actual Size, Double Size, Fit to Screen (Cmd+0 to 3); Enter Full Screen (Ctrl+Cmd+F); Enter Mini Player / Exit Mini Player (Ctrl+Cmd+P); Video Track submenu and Next Video Track (Ctrl+Cmd+V, disabled with one video track); Take Screenshot (Cmd+S); Show Screenshots in Finder.
 - Audio: the audio tracks with a checkmark; Next Audio Track (Ctrl+Cmd+A); Volume Up, Volume Down, Mute (Cmd+/); Increase Audio Delay, Decrease Audio Delay, Reset Audio Delay (disabled at 0).
 - Subtitles: Off and the subtitle tracks with a checkmark (disabled items for unsupported external files, with the reason as a tooltip); Next Subtitle Track (Ctrl+Cmd+S); Add Subtitle File; Show Subtitles (checkmark); Delay submenu (Increase, Decrease, Reset); Size and Position submenu (Larger, Smaller, Move Up, Move Down, Reset).
 
@@ -574,7 +575,7 @@ IINA's defaults, because the user never changed them. M1 binds the items without
 | r / Shift+R, t (M2) | Move subtitles up / down by 1% |
 | Shift+G / Shift+F (M2) | Subtitle size +10% / -10% (45 to 50, 45 to 40) |
 | Ctrl+Cmd+S / Ctrl+Cmd+A / Ctrl+Cmd+V (M2) | Cycle subtitle / audio / video track |
-| Ctrl+Cmd+P (M2) | Picture in Picture (Reel's choice; IINA's input.conf has no binding) |
+| Ctrl+Cmd+P (M2) | Mini player (Reel's choice; IINA's `toggle-pip` command maps to it) |
 | Cmd+S (M2) | Screenshot to ~/Pictures/Reel |
 | Cmd+L (M2) | A-B loop: set A, set B, clear |
 | Cmd+I (M3) | Video Info (IINA: Inspector) |
@@ -661,8 +662,8 @@ Sources/reelctl/                   CLI: probe, decode-bench, seek-bench, av-sync
 (M2) ReelCore adds Tracks, ExternalSubtitles, SubtitleCharset, EpisodeList, PlaybackSpeed, LoopState,
      SubtitleStyle, ThumbnailPack; ReelEngine adds SubtitleDecoder, SubtitleRenderer, SubtitleCompositor,
      BitmapSubtitles, SubtitleTrackStore, SubtitlePrefetcher, ExternalSubtitleLoader, ThumbnailGenerator,
-     ThumbnailCache, Screenshot, PiPFrameCompositor; ReelUI adds TrackPanels, SpeedPanel, ThumbnailPill,
-     NextEpisodeCard, PiPPlaceholder, SubtitleOverlay, AutoAdvance; Reel adds NowPlaying,
+     ThumbnailCache, Screenshot; ReelUI adds TrackPanels, SpeedPanel, ThumbnailPill,
+     NextEpisodeCard, SubtitleOverlay, AutoAdvance, MiniPlayerView, MiniPlayerGeometry, SnapSpring; Reel adds NowPlaying,
      PictureInPicture, EpisodeNavigator, ScreenshotSaver. scripts/make-pgs.swift writes the PGS fixture.
 docs/mockup/                       (M2) static mockup of the M2 surfaces, render.sh, png/
 Tests/ReelCoreTests/, Tests/ReelEngineTests/, Tests/ReelUITests/
@@ -785,7 +786,7 @@ Secondary text is 68% in light because the impeccable measurement found M1's 55%
 
 **Radii** (concentric where nested: inner = outer minus padding): controller 24; next card 20 with a 12 pt pad, so its thumbnail is 8; panels 16 with a 6 pt pad, so rows are 10; OSD 14; pill 12 with a 4 pt pad, so the thumbnail is 8; steppers 8; speed segments 7 inside a 9 track; format tags 5; buttons and capsules fully round.
 
-**Type** (SF Pro; rounded where noted): panel header 13 semibold, count 11 medium; row label 13 medium; row detail 11.5 regular (Chinese titles in PingFang SC at the same size); tag 10.5 semibold with +3% tracking; speed label 13 semibold rounded with monospaced digits; speed presets 12 semibold rounded; stepper values 13 medium monospaced digits; next card title 13 semibold, episode name 13 medium, countdown 12 medium monospaced digits; capsule buttons 12 semibold; PiP placeholder 15 semibold and 12 regular; fullscreen end time 12 medium. OSD stays 20 semibold rounded.
+**Type** (SF Pro; rounded where noted): panel header 13 semibold, count 11 medium; row label 13 medium; row detail 11.5 regular (Chinese titles in PingFang SC at the same size); tag 10.5 semibold with +3% tracking; speed label 13 semibold rounded with monospaced digits; speed presets 12 semibold rounded; stepper values 13 medium monospaced digits; next card title 13 semibold, episode name 13 medium, countdown 12 medium monospaced digits; capsule buttons 12 semibold; fullscreen end time 12 medium. OSD stays 20 semibold rounded.
 
 **Sizes per surface.**
 
@@ -799,7 +800,6 @@ Secondary text is 68% in light because the impeccable measurement found M1's 55%
 | Loop marks | 3 x 14 capsules on the track, range tint full track height |
 | OSD | unchanged (padding 16 x 10, radius 14, 20 pt from the corner, +28 under visible chrome) |
 | Next card | 360 wide, padding 12, gap 12, thumbnail 128 x 72, ring 34 (stroke 2.5, track white 30%, progress white), buttons 26 tall; 12 pt above the controller, right edge on the controller's right edge |
-| PiP placeholder | tile 60 (radius 16, white 10% fill, white 14% hairline, glyph 28 at white 62%), 18 pt to the title, 6 to the line, 16 to the button; backdrop blur 48, brightness 42% |
 | Subtitles | 8.4 and 8.5: size 45 on the 720 reference, outline 2.5, shadow 1.4 down, margin 40, lift to 12 pt above the controller |
 
 **Motion.** From a `find-animation-opportunities` pass over the M2 surfaces, gated on frequency, purpose, budget and function. Curves: ease-out is `cubic-bezier(0.23, 1, 0.32, 1)` (SwiftUI `.timingCurve(0.23, 1, 0.32, 1, duration:)`), ease-in is `(0.4, 0, 1, 1)`, ease-in-out is `(0.65, 0, 0.35, 1)`. With Reduce Motion every movement below becomes an opacity change of 0.1 s.
@@ -822,9 +822,9 @@ Secondary text is 68% in light because the impeccable measurement found M1's 55%
 | Next card, enter | opacity and translate y 12 to 0 | 0.32 s ease-out | a rare, end-of-episode moment |
 | Next card, exit | same path back | 0.2 s ease-in | symmetric exit |
 | Countdown ring | stroke end 0 to 1 | 5 s linear, paused while hovered | state (time left) |
-| PiP placeholder | opacity | 0.2 s ease-out in, 0.15 s ease-in out; the system animates the video itself | bridge while the picture leaves |
+| Mini player | enter and leave, corner snap, chrome | mini player design section 8 | spatial consistency |
 
-Reduce Motion, per surface: the chrome fade, the OSD (no scale), the panels and Video Info (no scale), the PiP placeholder and the empty-state tile become a 0.1 s linear opacity change; the seek track uses the same 0.1 s instead of its spring; the volume slider width and the window frame change (a new video, Cmd+0 to 3) jump with no animation; the stepper fill is a colour change and stays.
+Reduce Motion, per surface: the chrome fade, the OSD (no scale), the panels and Video Info (no scale) and the empty-state tile become a 0.1 s linear opacity change; the seek track uses the same 0.1 s instead of its spring; the volume slider width and the window frame change (a new video, Cmd+0 to 3) jump with no animation; the stepper fill is a colour change and stays.
 
 Rejected, on purpose: OSD text on repeated key presses (changes in place, M1 rule; keyboard actions run hundreds of times); keyboard track cycling (OSD only, no panel); individual subtitle lines (never animated by Reel; ASS `\fad` stays authored); the thumbnail pill following the pointer (1:1, no smoothing); switching episodes (the old frame stays until the new first frame, like a seek; no cross-fade); controller relayout on window resize (resizing is direct manipulation); the speed preset selection (instant).
 
@@ -894,7 +894,7 @@ Scope (unchanged from the M1 plan, detailed in sections 8, 9.3 to 9.12, 10 and 1
 - Next and previous episode in the folder (natural sort), Cmd+Right/Left, controller buttons, media keys, mouse side buttons; auto-advance at the end with a 5 s card. Folder access usage strings.
 - Playback speed 0.25 to 4 with pitch preservation, presets and fine steps.
 - VP9 hybrid decoder (software for long exact seeks, hardware for playback, hand-off at the next keyframe).
-- Picture in Picture with the sample buffer layer content source, subtitles composited while active, a main-window placeholder.
+- Picture in Picture with the sample buffer layer content source, subtitles composited while active, a main-window placeholder (replaced by the mini player on 2026-10-26, section 9.9).
 - Fullscreen polish: controller 56 pt from the bottom, menu bar and cursor hide with the chrome, end time at the top right.
 - Now Playing and media keys (`MPRemoteCommandCenter`, `MPNowPlayingInfoCenter`).
 - Default-app document types: `CFBundleDocumentTypes` (Viewer, rank Default) and `UTImportedTypeDeclarations`; the user sets Reel as default in Finder.
@@ -1028,9 +1028,9 @@ Energy (from 7.9): open `build/fixtures/h264_1080p30.mp4` and `build/fixtures/hd
 - Requesting `420v`/`x420` from VideoToolbox may cost bandwidth at 4K60 versus the native compressed formats. If 4K60 playback drops frames, try the native formats and verify the layer accepts them.
 - The 4 failed frames per run in the spike's VT bench were not explained. The engine test that compares seeked frames against software decode will catch real corruption.
 - Audio device behaviour (Bluetooth, device switches, multichannel downmix) cannot be verified while the user is away and tests must stay silent. It is logged and left for the user to check.
-- HDR on-screen output, PiP start and fullscreen cannot be verified without showing a window; they need a hands-on check by the user.
+- HDR on-screen output, the mini player and fullscreen cannot be verified without showing a window; they need a hands-on check by the user.
 - `ImageRenderer` shots approximate the material blur; they check layout, type and appearance, not the exact blur.
-- (M2) Picture in Picture, media keys, Now Playing and the folder-access prompt cannot be exercised without a visible app; they are covered by unit tests of the wiring and need a hands-on check by the user.
+- (M2) The mini player (formerly Picture in Picture), media keys, Now Playing and the folder-access prompt cannot be exercised without a visible app; they are covered by unit tests of the wiring and need a hands-on check by the user.
 - (M2) libass first-frame cost (46 ms in the spike) lands on the subtitle queue, never on the video path, but a track switch may show the new subtitle one frame late.
 - (M3) Whether `AVSampleBufferDisplayLayer` honours `preferredDynamicRange` the way a plain `CALayer` does is not documented; if it ignores it, the layer behaves as AVPlayerLayer does (EDR for tagged HDR buffers) and the setting only affects screenshots. The hands-on check finds out; the plan and tests stay valid either way.
 - (M3) The tone-mapping thresholds (203-nit patch at 190 to 250) assume Core Image's current curve; a macOS update may move values within the range, and the test checks properties rather than exact values for that reason.
@@ -1069,7 +1069,7 @@ All mine, made while the user was away.
 M2 design pass (2026-10-24), also all mine:
 
 - D26. Track and speed menus in the controller are SwiftUI panels on the controller's material, anchored above their buttons, not `NSMenu` or `NSPopover`: they match the chrome, show two-line rows with format tags, and render in the background screenshots. The menu bar carries the same items as native menus.
-- D27. The controller widens to `clamp(0.45 x window width, 440, 600)` to fit previous, next, speed, subtitles, audio and PiP; transport spacing 20 pt instead of 22; the volume slider widens to 104 pt on hover instead of 120; below 568 and 480 pt buttons drop in a fixed priority order.
+- D27. The controller widens to `clamp(0.45 x window width, 440, 600)` to fit previous, next, speed, subtitles, audio and the mini player button (then PiP); transport spacing 20 pt instead of 22; the volume slider widens to 104 pt on hover instead of 120; below 568 and 480 pt buttons drop in a fixed priority order.
 - D28. Previous and next are hidden, not disabled, when the file is alone in its folder; disabled only at the ends of a season.
 - D29. An external subtitle file beats an embedded track of the same language and rank.
 - D30. Charset fallback for text subtitles: UTF-8, then Big5 if the file name or title says Traditional, else GB18030, then Latin-1 with an OSD.
@@ -1079,12 +1079,12 @@ M2 design pass (2026-10-24), also all mine:
 - D34. A background second demux pass collects every text subtitle event after open, so a line that started before the seek keyframe still shows after a seek.
 - D35. The subtitle size factor applies to text subtitles only; PGS and DVD bitmaps are drawn as authored.
 - D36. External VobSub (`.idx`/`.sub`) and `.sup` files are listed but disabled in M2, because the LGPL FFmpeg build has no `vobsub` or `sup` demuxer.
-- D37. Subtitles are composited into the video frames only while Picture in Picture is active (PiP shows only the display layer); if 4K cannot keep up, 4K PiP runs without subtitles and logs it.
+- D37. (Superseded 2026-10-26 by D70.) Subtitles were composited into the video frames while Picture in Picture was active.
 - D38. Thumbnails: keyframes only, at most 400 per file, 384 x 216 JPEG in one pack per content key, 500 MB cache cap, generated coarse to fine on a separate demuxer and VideoToolbox session that pauses during seeks.
 - D39. Auto-advance shows a card only at the end of the file, counts down 5 s, pauses while hovered, and uses a frame 30 s into the next episode as its thumbnail so the cold open is not shown.
 - D40. The next episode inherits speed (for the session), subtitle and audio choice by language and title, changed delays and size, and volume; its own resume entry still wins.
 - D41. In fullscreen the controller keeps its window size (600 pt) with its bottom 56 pt from the screen edge, and an "Ends at" wall-clock time shows at the top right; the clock is not shown in a window.
-- D42. Picture in Picture is Ctrl+Cmd+P (IINA's input.conf has no binding for it). The key table's delay rows now follow IINA's own file (Shift+Z / Shift+X / Shift+C for subtitles, ( ) _ for audio), correcting the M1 draft's lowercase z / x / c.
+- D42. The mini player (formerly Picture in Picture) is Ctrl+Cmd+P (IINA's input.conf has no binding for it). The key table's delay rows now follow IINA's own file (Shift+Z / Shift+X / Shift+C for subtitles, ( ) _ for audio), correcting the M1 draft's lowercase z / x / c.
 - D43. Cmd+S writes a PNG at the video's native size, with subtitles, to `~/Pictures/Reel/`, silently, confirmed by the OSD.
 - D44. Reel registers with Now Playing only while a file is open, so it releases the media keys when idle.
 - D45. Speed range 0.25 to 4 with presets 0.5 to 2; the speed carries across episodes within a session but resets to 1 on launch.
@@ -1097,14 +1097,14 @@ M3 design pass (2026-10-25), from the user-research P1s, also all mine:
 
 - D50. HDR presentation stays with the system: Reel tags every decoded buffer completely and sets the display layer's `preferredDynamicRange`; the layer and window server do EDR, headroom changes, display moves and SDR tone mapping, as for QuickTime. No Metal renderer and no on-screen tone mapper of Reel's own.
 - D51. A three-value setting, High dynamic range: Full (`.high`, default), Limited (`.constrainedHigh`), Off (`.standard`, the system tone-maps to SDR). SDR content is always `.standard`. Limited and Off are the remedy if a display dims the desktop.
-- D52. Controller, panels, OSD and subtitles stay at SDR white: their layers are explicitly `.standard` with untagged sRGB contents. Subtitles composited into HDR frames for PiP use reference white (203 nits PQ, 75% HLG), never the peak.
+- D52. Controller, panels, OSD and subtitles stay at SDR white: their layers are explicitly `.standard` with untagged sRGB contents. (The PiP compositing half of this decision went with D70.)
 - D53. Screenshots, thumbnails, the next-episode image, Now Playing artwork and shot mode tone-map HDR to 8-bit sRGB through Core Image and ColorSync's PQ to SDR conversion (as built: identical to `AVAssetImageGenerator` for PQ; `CIToneMapHeadroom` put reference white at 188, under the floor). HLG is written as PQ first (the BT.2100 transcode at 1000 nits) and then goes through the same Apple PQ tone map, so HLG reference white is 229 like PQ's; that is about 74 codes brighter than QuickTime's own HLG conversion, which would fail the fixed floors of AC-M3-2 and AC-M3-9 (resolved in the third fix round, 7.7). No HDR or gain-map files.
 - D54. Display headroom is read on screen-change notifications and polled at 2 Hz only while Video Info is open.
 - D55. A dynamic range tag after the title (HDR10, HLG, Dolby Vision, with "SDR" when tone-mapped; none for SDR) that opens Video Info; Video Info is a read-only panel at the top right on Cmd+I, IINA's Inspector key.
 - D56. Dolby Vision follows `dv_bl_signal_compatibility_id`: 1 and 6 play the HDR10 base, 4 the HLG base, 2 the SDR base; 0 (profile 5 and 10.0) plays the decoded base with a two-line note (until OK or 10 s) and a warning tag. No RPU reshaping in M3; a `reelctl probe --dovi-session` lets the user test VideoToolbox's own handling on a real file.
 - D57. HDR is verified offline with generated lossless patch ramps (PQ and HLG; HEVC, AV1, VP9; Dolby Vision records inserted into the containers) and numeric checks of decoded codes, attachments, plans, tone-mapped values and layer properties; on-screen EDR, dimming and the external display are a short hands-on checklist for the user.
 - D58. Paused means idle: no decode, no read-ahead polling, no periodic time events, no subtitle renders, thumbnails suspended 10 s after the last pointer movement, and the display sleep assertion and App Nap activity released.
-- D59. While playing with the window occluded for 1 s (not in PiP), video decode stops and audio continues; on reveal an exact seek to the clock time with the keyframe preview resyncs within 300 ms.
+- D59. While playing with the window (or, while it is up, the mini player panel) occluded for 1 s, video decode stops and audio continues; on reveal an exact seek to the clock time with the keyframe preview resyncs within 300 ms.
 - D60. Every dispatch timer gets 10% leeway; Low Power Mode limits thumbnails to the coarse pass.
 - D61. Energy is gated headless by `reelctl energy-bench` (`proc_pid_rusage` of Reel and of the `VTDecoderXPCService` it started, plus engine counters), with budgets per mode; the QuickTime comparison (at most 1.5 times its Energy Impact on the same mp4) is a hands-on Activity Monitor or Instruments check.
 - D62. Damaged media never stops playback: bad packets are skipped to the next decodable frame with one OSD per region (at most one per 10 s) and a counter; truncated files keep the header duration with a faint missing tail and times counting to the end of the data.
@@ -1115,3 +1115,4 @@ M3 design pass (2026-10-25), from the user-research P1s, also all mine:
 - D67. Output device: System Default or a device chosen by UID, in Settings and in the Audio menu, falling back to the system default with an OSD when it is missing. No passthrough or spatial audio work.
 - D68. Settings gains only High dynamic range and Output device; energy behaviour is not a setting.
 - D69. (Third fix round, for review.) VP9 played on VideoToolbox is checked for tile damage by a parse-only libavcodec pass (patched FFmpeg, the spec's zero-padding rule), held to 2% of one core on average; streams whose parse costs more are checked by whole GOPs as the budget allows. The alternative was no check (AC-M3-5 fails on one file) or a full check (about 23% of a core on 4K60 VP9). It is not a setting (D68).
+- D70. Reel's own mini player replaces Apple's Picture in Picture (2026-10-26, owner's request after the macOS crop bug and the lag): a non-activating panel that borrows the window's video surface, so there is no second pipeline and no frame compositor. Design: `2026-10-26-reel-mini-player-design.md`.

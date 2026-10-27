@@ -1,6 +1,6 @@
 # Reel mini player
 
-Status: design, waiting for the owner's approval. Nothing is built. When built, it replaces section 9.9 (Picture in Picture) of `2026-10-24-reel-design.md` and removes the macOS crop workaround (`PiPSourceWindow`).
+Status: built on the `mini-player` branch (2026-10-27), plan `docs/superpowers/plans/2026-10-26-reel-mini-player.md`. It replaces section 9.9 (Picture in Picture) of `2026-10-24-reel-design.md` and removed the macOS crop workaround (`PiPSourceWindow`). The owner's hands-on check (section 10) is still to do.
 
 Mockups: `docs/mockup/index.html` frames 28 to 34, rendered to `docs/mockup/png/28-*.png` to `34-*.png` by `docs/mockup/render.sh`. All sizes are points.
 
@@ -87,8 +87,8 @@ Entering:
 
 Leaving:
 
-- Back to Window, a double click, a click on Reel's Dock icon (`applicationShouldHandleReopen`), or Video, Exit Mini Player (Ctrl+Cmd+P while Reel is active). Reel activates and the window returns at its saved frame; playback carries on unchanged.
-- Close pauses, returns the picture to the main window, and orders the window in behind the app in front without activating Reel **(my call)**. Nothing is lost, and Cmd+Tab finds it.
+- Back to Window, a double click, a click on Reel's Dock icon (`applicationShouldHandleReopen`), or Video, Exit Mini Player (Ctrl+Cmd+P while Reel is active). Reel activates and the window returns at its saved frame; playback carries on unchanged. Fullscreen keys while the mini player is up leave it first, then go fullscreen.
+- Close pauses, returns the picture to the main window, and orders the window in behind other apps' windows (`orderBack`) without activating Reel **(my call)**. Nothing is lost, and Cmd+Tab finds it.
 - Closing the file (Cmd+W while active) leaves the mini player and closes the file.
 - Opening another file from Finder while the mini player is up plays it in the mini player **(my call)**.
 - A failure card (9.14: the file can't be played, the drive was disconnected) leaves the mini player and shows in the window, ordered in without activating Reel.
@@ -109,7 +109,7 @@ Checked against `app-updates/docs/motion-gate.md` and the find-animation-opportu
 
 | # | Moment | Today | Purpose | Frequency | Motion |
 |---|---|---|---|---|---|
-| 1 | Enter and leave (34) | AVKit jumps its panel with no animation and a lag | Spatial consistency: the picture goes where it went | Occasional (a few times a day) | The window's title bar and controller fade out over 0.1 s ease-in. The panel's frame moves from the window's video rect to its corner in 0.3 s on the shared ease-out (`0.23, 1, 0.32, 1`), no bounce, the layer resizing with it. Leaving runs the same path backwards, and the window's chrome fades in over 0.16 s at the end. A new request during the move retargets from the current frame. Reduce Motion: the window fades out and the panel fades in at its corner, 0.15 s each, no travel. |
+| 1 | Enter and leave (34) | AVKit jumps its panel with no animation and a lag | Spatial consistency: the picture goes where it went | Occasional (a few times a day) | The window's title bar and controller fade out over 0.1 s ease-in. The panel's frame moves from the window's video rect to its corner in 0.3 s on the shared ease-out (`0.23, 1, 0.32, 1`), no bounce, the layer resizing with it. Leaving runs the same path backwards; the window is ordered in behind the panel just before the picture moves home, at full opacity, and its chrome then follows its usual rules (shown on pointer movement with the 0.16 s fade) **(build call: the window has no pointer state to show the chrome for)**. A new request during the move retargets from the current frame. Reduce Motion: the window fades out and the panel fades in at its corner, 0.15 s each, no travel. |
 | 2 | Release after dragging the panel | none (new) | Spatial consistency, with physics for a gesture | Occasional | Spring to the nearest corner, bounce 0.15, response 0.35 s, starting at the release velocity. The corner is chosen from the release point projected by the velocity (deceleration rate 0.998), so a flick toward a corner lands there. Grabbing it mid-flight stops the spring and the panel follows the pointer. Reduce Motion: 0.2 s ease-out, no overshoot. |
 | 3 | Chrome over the picture | the window's chrome fade | State indication | Tens a day | The existing chrome tokens: 0.16 s ease-out in, 0.35 s ease-in out. The pause mark fades in the same transaction as the chrome fade-out, so it adds no motion of its own. Reduce Motion: 0.1 s opacity (as 9.2). |
 | 4 | New video with a different aspect | the window's 0.2 s resize | Preventing a jarring change | Rare (auto-advance) | The existing window-resize token, 0.2 s, anchored at the panel's corner. Reduce Motion: no animation (as 15.2). |
@@ -123,6 +123,8 @@ Rejected:
 - Play/pause glyph morph beyond the existing `.symbolEffect(.replace)`: already covered by 9.3.
 
 Verdict: the mini player needs one authored move, the enter and leave path in row 1, and it is the highest-leverage item because it is the thing AVKit gets wrong today. Everything else reuses existing tokens or follows the hand.
+
+Second pass (2026-10-27, on the built code and the `mini-*` shots): the built motion is exactly the rows above. `AppKitPanelAnimator` moves the panel over `MotionTiming.miniPlayerMove` (0.3 s, `MotionCurve.easeOut`); the window fades out over `miniPlayerChromeOut` (0.1 s, ease-in) or 0.15 s with Reduce Motion; `SpringSnapper` runs `SnapSpring` (bounce 0.15, response 0.35 s, 0.2 s ease-out with Reduce Motion) from a display link that stops when settled; a new aspect uses `windowResizeDuration` (0.2 s). Hover circles (0.12 s), the 0.94 press, the seek track spring and the countdown ring reuse the window's tokens. Nothing new survived the gate, and nothing was added.
 
 ## 9. Copy
 
