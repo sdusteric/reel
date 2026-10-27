@@ -245,3 +245,23 @@ import Testing
         #expect(store.state.volume == 30)
     }
 }
+
+@Suite struct MiniPlayerPlacementTests {
+    @Test func miniPlayerPlacementRoundTripsAndDefaults() throws {
+        let scratch = try ScratchDirectory()
+        defer { scratch.remove() }
+        let placement = MiniPlayerPlacement(corner: .topLeft, boxScale: 1.25, screen: "ABC")
+        let store = StateStore(fileURL: scratch.file("state.json"))
+        try store.update { $0.miniPlayer = placement }
+        try store.flush()
+        let reopened = StateStore(fileURL: scratch.file("state.json"))
+        try reopened.load()
+        #expect(reopened.state.miniPlayer == placement)
+
+        try #"{"version":1,"volume":30}"#.write(to: scratch.file("old.json"), atomically: true, encoding: .utf8)
+        let old = StateStore(fileURL: scratch.file("old.json"))
+        try old.load()
+        #expect(old.state.miniPlayer == MiniPlayerPlacement())
+        #expect(old.state.miniPlayer.corner == .bottomRight && old.state.miniPlayer.boxScale == 1 && old.state.miniPlayer.screen == nil)
+    }
+}

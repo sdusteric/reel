@@ -15,6 +15,25 @@ public struct WindowFrame: Codable, Sendable, Hashable {
     }
 }
 
+/// Which corner of the screen's visible frame the mini player sits in.
+public enum MiniPlayerCorner: String, Codable, Sendable, CaseIterable {
+    case topLeft, topRight, bottomLeft, bottomRight
+}
+
+/// Where the mini player goes (mini player design section 4). `boxScale` multiplies the default
+/// 480 x 360 box; `screen` is the display's UUID.
+public struct MiniPlayerPlacement: Codable, Sendable, Hashable {
+    public var corner: MiniPlayerCorner
+    public var boxScale: Double
+    public var screen: String?
+
+    public init(corner: MiniPlayerCorner = .bottomRight, boxScale: Double = 1, screen: String? = nil) {
+        self.corner = corner
+        self.boxScale = boxScale
+        self.screen = screen
+    }
+}
+
 /// Remembered state, not settings (design sections 11.1 and 11.3).
 public struct RememberedState: VersionedDocument {
     public static let currentVersion = 1
@@ -39,6 +58,8 @@ public struct RememberedState: VersionedDocument {
     public var outputDevice: OutputDeviceChoice
     /// Paths of the files opened most recently, newest first, for `reel://open-recent`.
     public var recentFiles: [String]
+    /// The mini player's corner, size and display.
+    public var miniPlayer: MiniPlayerPlacement
 
     public static let maximumRecentFiles = 10
 
@@ -61,7 +82,8 @@ public struct RememberedState: VersionedDocument {
         subtitleSize: Double = SubtitleStyle.baseSize,
         autoAdvance: Bool = true,
         outputDevice: OutputDeviceChoice = .systemDefault,
-        recentFiles: [String] = []
+        recentFiles: [String] = [],
+        miniPlayer: MiniPlayerPlacement = MiniPlayerPlacement()
     ) {
         self.version = version
         self.volume = RememberedState.clampVolume(volume)
@@ -73,6 +95,9 @@ public struct RememberedState: VersionedDocument {
         self.autoAdvance = autoAdvance
         self.outputDevice = outputDevice
         self.recentFiles = Array(recentFiles.prefix(RememberedState.maximumRecentFiles))
+        var placement = miniPlayer
+        if !placement.boxScale.isFinite || placement.boxScale <= 0 { placement.boxScale = 1 }
+        self.miniPlayer = placement
     }
 
     public init(from decoder: any Decoder) throws {
@@ -91,7 +116,8 @@ public struct RememberedState: VersionedDocument {
             subtitleSize: try container.decodeIfPresent(Double.self, forKey: .subtitleSize) ?? defaults.subtitleSize,
             autoAdvance: try container.decodeIfPresent(Bool.self, forKey: .autoAdvance) ?? defaults.autoAdvance,
             outputDevice: try container.decodeIfPresent(OutputDeviceChoice.self, forKey: .outputDevice) ?? defaults.outputDevice,
-            recentFiles: try container.decodeIfPresent([String].self, forKey: .recentFiles) ?? defaults.recentFiles
+            recentFiles: try container.decodeIfPresent([String].self, forKey: .recentFiles) ?? defaults.recentFiles,
+            miniPlayer: try container.decodeIfPresent(MiniPlayerPlacement.self, forKey: .miniPlayer) ?? defaults.miniPlayer
         )
     }
 
@@ -148,7 +174,8 @@ public final class StateStore: Sendable {
                 subtitleSize: state.subtitleSize,
                 autoAdvance: state.autoAdvance,
                 outputDevice: state.outputDevice,
-                recentFiles: state.recentFiles
+                recentFiles: state.recentFiles,
+                miniPlayer: state.miniPlayer
             )
         }
         try store.flushIfDue()
