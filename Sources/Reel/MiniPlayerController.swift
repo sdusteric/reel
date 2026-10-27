@@ -159,6 +159,12 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
     private var windowDoubleClick: (() -> Void)?
     /// Close and Back to Window from the panel's buttons; the window controller decides what follows.
     var onLeaveRequest: ((LeaveKind) -> Void)?
+    /// The panel's occlusion changed; while it is up, energy follows the panel (section 7.9).
+    var onOcclusionChange: (() -> Void)?
+    weak var commandTarget: (any PlayerCommandTarget)?
+
+    /// The window whose visibility decides whether video decodes: the panel while it is up.
+    var occlusionWindow: NSWindow? { panel }
 
     var isActive: Bool { panel != nil }
 
@@ -239,6 +245,7 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
             backToWindow: { [weak self] in self?.onLeaveRequest?(.backToWindow) }
         )
         let content = MiniPlayerContentView(model: model, actions: actions)
+        content.commandTarget = commandTarget
         content.onMagnify = { [weak self] factor in self?.magnify(by: factor) }
         panel.contentView = content
         applyLimits(to: panel, visible: savedScreen.visibleFrame)
@@ -276,7 +283,8 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
 
     /// The panel travels back to the window's video area (`targetRect`), then `beforeSwap` orders
     /// the window in behind it, the surface goes home and the panel closes.
-    func leave(to targetRect: CGRect, beforeSwap: @escaping () -> Void = {}, completion: @escaping () -> Void) {
+    /// `animated: false` swaps at once (the file or the window went away).
+    func leave(to targetRect: CGRect, animated: Bool = true, beforeSwap: @escaping () -> Void = {}, completion: @escaping () -> Void) {
         guard let panel else {
             completion()
             return
@@ -291,7 +299,9 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
             self.swapHome(panel)
             completion()
         }
-        if motion.travels, !targetRect.isEmpty {
+        if !animated {
+            finish()
+        } else if motion.travels, !targetRect.isEmpty {
             panel.contentMinSize = NSSize(width: 1, height: 1)
             panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
             panel.contentAspectRatio = NSSize(width: 0, height: 0)
@@ -355,6 +365,45 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         panel.setFrame(MiniPlayerGeometry.frame(size: size, corner: placement.corner, visible: screen.visibleFrame), display: true)
         let stored = MiniPlayerGeometry.boxScale(for: size, aspect: aspect)
         save { $0.boxScale = stored }
+    }
+
+    /// A new video with another aspect keeps the corner and the box (mini player design 4).
+    func resize(aspect newAspect: CGFloat) {
+        guard let panel, newAspect.isFinite, newAspect > 0 else { return }
+        aspect = newAspect
+        let screen = screen(containing: panel.frame)
+        let size = MiniPlayerGeometry.size(aspect: aspect, boxScale: placement.boxScale, visible: screen.visibleFrame)
+        let target = MiniPlayerGeometry.frame(size: size, corner: placement.corner, visible: screen.visibleFrame)
+        let duration = MotionTiming.windowResizeDuration(reduceMotion: reduceMotion())
+        guard duration > 0 else {
+            panel.setFrame(target, display: true)
+            applyLimits(to: panel, visible: screen.visibleFrame)
+            return
+        }
+        panel.contentAspectRatio = NSSize(width: 0, height: 0)
+        panel.contentMinSize = NSSize(width: 1, height: 1)
+        panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        animator.move(panel, to: target, duration: duration) { [weak self, weak panel] in
+            guard let self, let panel, self.panel === panel else { return }
+            self.applyLimits(to: panel, visible: screen.visibleFrame)
+        }
+    }
+
+    /// Displays were added, removed or rearranged: a panel left on no display moves to the main
+    /// one's same corner, without animation.
+    func screensChanged() {
+        guard let panel else { return }
+        let list = screens()
+        guard !list.contains(where: { $0.visibleFrame.intersects(panel.frame) }) else { return }
+        let main = mainScreen
+        let size = MiniPlayerGeometry.size(aspect: aspect, boxScale: placement.boxScale, visible: main.visibleFrame)
+        panel.setFrame(MiniPlayerGeometry.frame(size: size, corner: placement.corner, visible: main.visibleFrame), display: true)
+        applyLimits(to: panel, visible: main.visibleFrame)
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard let panel, notification.object as? NSWindow === panel else { return }
+        onOcclusionChange?()
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {

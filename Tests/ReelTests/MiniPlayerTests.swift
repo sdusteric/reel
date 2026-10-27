@@ -43,6 +43,32 @@ final class RecordingAnimator: PanelAnimating {
     }
 }
 
+/// Displays a test can change while the mini player is up.
+@MainActor
+final class ScreenList {
+    var screens: [ScreenInfo]
+    init(_ screens: [ScreenInfo]) { self.screens = screens }
+}
+
+/// The window side of the flow, recorded.
+@MainActor
+final class FakeWindowOps {
+    var fullscreen = false
+    private(set) var log: [String] = []
+
+    var ops: MiniPlayerFlow.WindowOps {
+        MiniPlayerFlow.WindowOps(
+            isFullscreen: { self.fullscreen },
+            exitFullscreen: { self.log.append("exitFullscreen") },
+            toggleFullscreen: { self.log.append("toggleFullscreen") },
+            videoRect: { CGRect(x: 320, y: 193, width: 1920, height: 1080) },
+            aspect: { 16 / 9 },
+            hide: { duration in self.log.append("hide \(duration)") },
+            show: { activate in self.log.append(activate ? "show active" : "show behind") }
+        )
+    }
+}
+
 /// The mini player panel and the hand-off of the video surface (mini player design 3 and 4).
 /// Panels are created but never shown: `show` only records.
 @MainActor
@@ -63,12 +89,16 @@ final class RecordingAnimator: PanelAnimating {
     }
 
     static func rig(
-        scratch: AppScratch, screens: [ScreenInfo] = [screenA], placement: MiniPlayerPlacement? = nil, reduceMotion: Bool = false
+        scratch: AppScratch, screens: [ScreenInfo] = [screenA], placement: MiniPlayerPlacement? = nil, reduceMotion: Bool = false,
+        list: ScreenList? = nil, withMedia: Bool = true
     ) async throws -> Rig {
+        let list = list ?? ScreenList(screens)
         let engines = EngineList()
         let model = makeAppModel(engines: engines)
-        await model.open(try scratch.makeFile("movie.mkv"))
-        await eventually("playing") { model.playbackState == .playing }
+        if withMedia {
+            await model.open(try scratch.makeFile("movie.mkv"))
+            await eventually("playing") { model.playbackState == .playing }
+        }
         let surface = VideoSurfaceView(model: model)
         let home = SurfaceSlotView()
         home.host(surface)
@@ -79,7 +109,7 @@ final class RecordingAnimator: PanelAnimating {
         let animator = RecordingAnimator()
         let controller = MiniPlayerController(
             model: model, surface: surface, home: home, stateStore: store,
-            screens: { screens }, show: { shown.append($0) }, snapper: snapper,
+            screens: { list.screens }, show: { shown.append($0) }, snapper: snapper,
             animator: animator, reduceMotion: { reduceMotion }
         )
         return Rig(
@@ -261,5 +291,204 @@ final class RecordingAnimator: PanelAnimating {
         #expect(left)
         #expect(rig.surface.superview === rig.home, "the enter's late completion does not pull the surface back")
         #expect(!rig.model.isMiniPlayerActive)
+    }
+
+    // MARK: App wiring (MiniPlayerFlow)
+
+    static func flow(_ rig: Rig, window: FakeWindowOps, reduceMotion: Bool = false) -> MiniPlayerFlow {
+        MiniPlayerFlow(model: rig.model, controller: rig.controller, window: window.ops, reduceMotion: { reduceMotion })
+    }
+
+    @Test func requestWithoutMediaDoesNothing() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch, withMedia: false)
+        let window = FakeWindowOps()
+        Self.flow(rig, window: window).request(true)
+        #expect(rig.controller.panel == nil && window.log.isEmpty)
+    }
+
+    @Test func enteringFromFullscreenLeavesFullscreenFirst() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let window = FakeWindowOps()
+        window.fullscreen = true
+        let flow = Self.flow(rig, window: window)
+        flow.request(true)
+        #expect(window.log == ["exitFullscreen"] && rig.controller.panel == nil, "one move at a time")
+        window.fullscreen = false
+        flow.windowDidExitFullScreen()
+        #expect(rig.controller.panel != nil)
+        #expect(window.log == ["exitFullscreen", "hide 0.1"], "the window's chrome fades out over 0.1 s")
+        flow.windowDidExitFullScreen()
+        #expect(rig.shown().count == 1, "a later exit does not enter again")
+    }
+
+    @Test func reduceMotionFadesTheWindowOutOverAFifteenth() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch, reduceMotion: true)
+        let window = FakeWindowOps()
+        Self.flow(rig, window: window, reduceMotion: true).request(true)
+        #expect(window.log == ["hide 0.15"])
+    }
+
+    @Test func fullscreenKeysLeaveTheMiniPlayerFirst() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let window = FakeWindowOps()
+        let flow = Self.flow(rig, window: window)
+        flow.request(true)
+        rig.animator.finishAll()
+        flow.requestFullscreen()
+        #expect(!window.log.contains("toggleFullscreen"), "not while the picture is still in the panel")
+        rig.animator.finishAll()
+        #expect(window.log.suffix(2) == ["show active", "toggleFullscreen"])
+        #expect(rig.controller.panel == nil)
+    }
+
+    @Test func closeButtonPausesAndKeepsReelInactive() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let engine = try #require(rig.engines.all.first)
+        let window = FakeWindowOps()
+        let flow = Self.flow(rig, window: window)
+        flow.request(true)
+        rig.animator.finishAll()
+        rig.controller.onLeaveRequest?(.close)
+        await eventually("paused") { engine.calls.contains(.pause) }
+        rig.animator.finishAll()
+        #expect(window.log.last == "show behind")
+        #expect(rig.controller.panel == nil)
+    }
+
+    @Test func backToWindowActivates() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let window = FakeWindowOps()
+        let flow = Self.flow(rig, window: window)
+        #expect(!flow.reopen(), "nothing to bring back")
+        flow.request(true)
+        rig.animator.finishAll()
+        #expect(flow.reopen(), "a Dock click brings the window back")
+        rig.animator.finishAll()
+        #expect(window.log.last == "show active")
+        flow.request(true)
+        rig.animator.finishAll()
+        rig.controller.onLeaveRequest?(.backToWindow)
+        rig.animator.finishAll()
+        #expect(window.log.last == "show active")
+        #expect(!(rig.engines.all.first?.calls.contains(.pause) ?? true), "playback carries on")
+    }
+
+    @Test func aNewEngineKeepsTheSurfaceInThePanel() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        Self.flow(rig, window: FakeWindowOps()).request(true)
+        rig.animator.finishAll()
+        let layers = rig.surface.prepareLayers()
+        #expect(rig.surface.window === rig.controller.panel)
+        #expect(layers.display.superlayer === rig.surface.layer && layers.subtitles.superlayer === rig.surface.layer)
+    }
+
+    @Test func closingTheWindowOrTheFileClosesThePanel() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let window = FakeWindowOps()
+        let flow = Self.flow(rig, window: window)
+        flow.request(true)
+        rig.animator.finishAll()
+        flow.leaveAtOnce()
+        #expect(rig.controller.panel == nil, "no animation when the file or window goes away")
+        #expect(rig.surface.superview === rig.home)
+        #expect(window.log.last == "show behind")
+    }
+
+    @Test func aFailureCardLeavesTheMiniPlayer() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let window = FakeWindowOps()
+        let flow = Self.flow(rig, window: window)
+        flow.request(true)
+        rig.animator.finishAll()
+        rig.model.problem = .cutShort
+        flow.problemChanged()
+        rig.animator.finishAll()
+        #expect(rig.controller.panel == nil)
+        #expect(window.log.last == "show behind", "the card shows without taking focus")
+    }
+
+    @Test func occlusionFollowsThePanel() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        var changes = 0
+        rig.controller.onOcclusionChange = { changes += 1 }
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        let panel = try #require(rig.controller.panel)
+        rig.controller.windowDidChangeOcclusionState(Notification(name: NSWindow.didChangeOcclusionStateNotification, object: panel))
+        rig.controller.windowDidChangeOcclusionState(Notification(name: NSWindow.didChangeOcclusionStateNotification, object: NSWindow()))
+        #expect(changes == 1)
+        #expect(rig.controller.occlusionWindow === panel)
+    }
+
+    @Test func screenParametersChangeMovesThePanel() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let list = ScreenList([Self.screenA, Self.screenB])
+        let rig = try await Self.rig(scratch: scratch, placement: MiniPlayerPlacement(corner: .topRight, boxScale: 1, screen: "B"), list: list)
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        rig.animator.finishAll()
+        let moves = rig.animator.moves.count
+        list.screens = [Self.screenA]
+        rig.controller.screensChanged()
+        let size = CGSize(width: 480, height: 270)
+        #expect(rig.controller.panel?.frame == MiniPlayerGeometry.frame(size: size, corner: .topRight, visible: Self.screenA.visibleFrame))
+        #expect(rig.animator.moves.count == moves, "no animation")
+    }
+
+    @Test func aspectChangeKeepsTheCorner() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let flow = Self.flow(rig, window: FakeWindowOps())
+        flow.request(true)
+        rig.animator.finishAll()
+        let before = try #require(rig.controller.panel).frame
+        flow.mediaOpened(aspect: 4 / 3)
+        let target = MiniPlayerGeometry.frame(size: CGSize(width: 480, height: 360), corner: .bottomRight, visible: Self.screenA.visibleFrame)
+        #expect(rig.animator.moves.last == RecordingAnimator.Move(from: before, to: target, duration: MotionTiming.windowResizeDuration))
+    }
+
+    @Test func keysWorkWhileReelIsActive() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let engine = try #require(rig.engines.all.first)
+        let target = NullCommandTarget()
+        rig.controller.commandTarget = target
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        let content = try #require(rig.controller.panel?.contentView as? MiniPlayerContentView)
+        let space = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+            characters: " ", charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49
+        ))
+        content.keyDown(with: space)
+        await eventually("paused by Space") { engine.calls.contains(.pause) }
+    }
+
+    @Test func contextMenuInTheMiniPlayer() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let titles = MainMenu.miniPlayerContextMenu(model: rig.model).items.filter { !$0.isSeparatorItem }.map(\.title)
+        #expect(titles == ["Pause", "Back to Window", "Close Mini Player", "Subtitles", "Audio", "Speed"])
     }
 }

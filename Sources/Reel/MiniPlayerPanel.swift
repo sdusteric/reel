@@ -82,6 +82,8 @@ final class MiniPlayerContentView: NSView {
     let model: PlayerModel
     let slot = SurfaceSlotView()
     private var hosting: MiniHostingView?
+    /// The window controller: the keys of section 10 act on the mini player while Reel is active.
+    weak var commandTarget: (any PlayerCommandTarget)?
     /// A pinch: the factor since the last event.
     var onMagnify: ((CGFloat) -> Void)?
 
@@ -136,5 +138,12 @@ final class MiniPlayerContentView: NSView {
 
     override func magnify(with event: NSEvent) {
         onMagnify?(1 + event.magnification)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard let commandTarget, KeyHandling.handle(event, map: .standard, model: model, target: commandTarget) else {
+            super.keyDown(with: event)
+            return
+        }
     }
 }

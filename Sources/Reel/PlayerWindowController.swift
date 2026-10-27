@@ -24,6 +24,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private(set) var volumeWatcher: VolumeWatcher?
     private var observers: [AnyObject] = []
     private var spaceObserver: NSObjectProtocol?
+    private var screenObserver: NSObjectProtocol?
+    /// The mini player (mini player design): the panel and what happens around it.
+    private(set) var miniPlayer: MiniPlayerController?
+    private(set) var miniFlow: MiniPlayerFlow?
+    /// Bumped by every hide and show, so a fade that was overtaken does not order the window out.
+    private var windowFadeGeneration = 0
 
     init(
         model: PlayerModel,
@@ -66,12 +72,16 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         content.onSubtitleDrop = useSubtitle
         content.videoView.onSubtitleDrop = useSubtitle
         content.videoView.onDoubleClick = { [weak self] in self?.toggleFullscreen() }
-        content.videoView.contextMenuProvider = { [weak self] in self.map { MainMenu.contextMenu(model: $0.model) } }
+        content.videoView.contextMenuProvider = { [weak self] in
+            guard let self else { return nil }
+            return self.model.isMiniPlayerActive ? MainMenu.miniPlayerContextMenu(model: self.model) : MainMenu.contextMenu(model: self.model)
+        }
         content.videoView.commandTarget = self
         content.videoView.onLayersResized = { [weak self] in self?.engine?.subtitleLayerDidLayout() }
         window.contentView = content
         contentView = content
         placeEmptyWindow()
+        startMiniPlayer(window: window, content: content)
 
         model.onChromeVisibilityChange = { [weak self] visible in self?.chromeVisibilityChanged(visible) }
         model.onOpened = { [weak self] info in self?.fitWindow(to: info) }
@@ -88,12 +98,82 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         startM3Observers(window: window, content: content)
     }
 
+    private func startMiniPlayer(window: NSWindow, content: PlayerContentView) {
+        let mini = MiniPlayerController(model: model, surface: content.videoView, home: content.videoSlot, stateStore: stateStore, log: log)
+        mini.commandTarget = self
+        mini.onOcclusionChange = { [weak self] in self?.updateOcclusion() }
+        let ops = MiniPlayerFlow.WindowOps(
+            isFullscreen: { [weak self] in self?.isFullscreen == true },
+            exitFullscreen: { [weak window] in window?.toggleFullScreen(nil) },
+            toggleFullscreen: { [weak window] in window?.toggleFullScreen(nil) },
+            videoRect: { [weak window, weak content] in
+                guard let window, let slot = content?.videoSlot else { return .zero }
+                return window.convertToScreen(slot.convert(slot.bounds, to: nil))
+            },
+            aspect: { [weak self] in
+                guard let size = self?.videoSize, size.width > 0, size.height > 0 else { return 16 / 9 }
+                return size.width / size.height
+            },
+            hide: { [weak self] duration in self?.fadeOutWindow(over: duration) },
+            show: { [weak self] activate in self?.showWindow(activate: activate) }
+        )
+        let flow = MiniPlayerFlow(model: model, controller: mini, window: ops)
+        miniPlayer = mini
+        miniFlow = flow
+        model.onMiniPlayerRequest = { [weak flow] wanted in flow?.request(wanted) }
+        let model = model
+        observers.append(ModelObserver(read: { model.problem }, onChange: { [weak flow] _ in flow?.problemChanged() }))
+        observers.append(ModelObserver(read: { model.isMiniPlayerActive }, onChange: { [weak self] _ in
+            self?.displayMonitor?.refresh()
+            self?.updateOcclusion()
+        }))
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak mini] _ in
+            MainActor.assumeIsolated { mini?.screensChanged() }
+        }
+    }
+
+    private func fadeOutWindow(over duration: TimeInterval) {
+        guard let window else { return }
+        windowFadeGeneration += 1
+        let generation = windowFadeGeneration
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = MotionCurve.easeIn.timingFunction
+            window.animator().alphaValue = 0
+        } completionHandler: { [weak self, weak window] in
+            MainActor.assumeIsolated {
+                guard let self, let window, self.windowFadeGeneration == generation else { return }
+                window.orderOut(nil)
+                window.alphaValue = 1
+            }
+        }
+    }
+
+    private func showWindow(activate: Bool) {
+        guard let window else { return }
+        windowFadeGeneration += 1
+        window.alphaValue = 1
+        if activate {
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            window.orderBack(nil)
+        }
+    }
+
     private func startM3Observers(window: NSWindow, content: PlayerContentView) {
         let model = model
         observers.append(ModelObserver(read: { model.dynamicRangePlan }, onChange: { [weak content] plan in
             content?.apply(plan: plan)
         }))
-        let monitor = DisplayRangeMonitor(window: window, read: DisplayRangeMonitor.screenReader(for: window)) { [weak model] display in
+        // The panel's screen while the mini player is up; any window's screen change refreshes.
+        let read: DisplayRangeMonitor.ScreenReader = { [weak self, weak window] in
+            guard let screen = (self?.miniPlayer?.occlusionWindow ?? window)?.screen ?? NSScreen.main else { return nil }
+            return DisplayRangeMonitor.capabilities(of: screen)
+        }
+        let monitor = DisplayRangeMonitor(window: nil, read: read) { [weak model] display in
             model?.setDisplay(display)
         }
         displayMonitor = monitor
@@ -176,6 +256,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func closeFile() {
+        miniFlow?.leaveAtOnce()
         Task {
             await model.close()
             engine = nil
@@ -249,6 +330,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             target = WindowSizing.firstOpenFrame(videoSize: size, visible: visibleFrame)
         }
         window.contentAspectRatio = size
+        miniFlow?.mediaOpened(aspect: size.width / size.height)
         guard !window.styleMask.contains(.fullScreen) else { return }
         setWindowFrame(window.frameRect(forContentRect: target))
     }
@@ -284,7 +366,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     var isFullscreen: Bool { window?.styleMask.contains(.fullScreen) == true }
 
     func toggleFullscreen() {
-        window?.toggleFullScreen(nil)
+        guard let miniFlow, miniFlow.isActive else {
+            window?.toggleFullScreen(nil)
+            return
+        }
+        miniFlow.requestFullscreen()
     }
 
     func exitFullscreen() {
@@ -314,6 +400,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func windowDidExitFullScreen(_ notification: Notification) {
         model.setFullscreen(false)
         engine?.subtitleLayerDidLayout()
+        miniFlow?.windowDidExitFullScreen()
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
@@ -372,14 +459,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         updateOcclusion()
     }
 
-    /// Covered, minimised or on another Space counts as hidden.
+    /// Covered, minimised or on another Space counts as hidden. While the mini player is up the
+    /// panel decides, since the window is ordered out.
     private func updateOcclusion() {
-        guard let window else { return }
+        guard let window = miniPlayer?.occlusionWindow ?? window else { return }
         let visible = window.occlusionState.contains(.visible) && !window.isMiniaturized && window.isOnActiveSpace
         occlusion?.setWindowVisible(visible)
     }
 
     func windowWillClose(_ notification: Notification) {
+        miniFlow?.leaveAtOnce()
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        screenObserver = nil
         model.chrome.invalidate()
         displayMonitor?.stop()
         volumeWatcher?.stop()

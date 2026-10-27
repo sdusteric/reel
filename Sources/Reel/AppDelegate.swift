@@ -144,6 +144,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         true
     }
 
+    /// A Dock click while the mini player is up brings the window back (mini player design 6).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        windowController?.miniFlow?.reopen() != true
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model, !isTerminating else { return .terminateNow }
         isTerminating = true
@@ -307,6 +312,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func scaleFit(_ sender: Any?) { perform(.windowScale(.fitScreen)) }
     @objc func toggleFullscreen(_ sender: Any?) { perform(.toggleFullscreen) }
     @objc func toggleMiniPlayer(_ sender: Any?) { perform(.toggleMiniPlayer) }
+    @objc func backToWindow(_ sender: Any?) { windowController?.miniFlow?.leave(.backToWindow) }
+    @objc func closeMiniPlayer(_ sender: Any?) { windowController?.miniFlow?.leave(.close) }
     @objc func cycleVideoTrack(_ sender: Any?) { perform(.cycleTrack(.video)) }
 
     @objc func selectVideoTrack(_ sender: Any?) {

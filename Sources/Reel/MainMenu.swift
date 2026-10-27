@@ -240,6 +240,20 @@ enum MainMenu {
         return menu
     }
 
+    /// Right click in the mini player (mini player design section 5).
+    static func miniPlayerContextMenu(model: PlayerModel) -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(item(model.isPlaying ? "Pause" : "Play", #selector(AppDelegate.togglePause(_:))))
+        menu.addItem(item("Back to Window", #selector(AppDelegate.backToWindow(_:))))
+        menu.addItem(item("Close Mini Player", #selector(AppDelegate.closeMiniPlayer(_:))))
+        menu.addItem(.separator())
+        let subtitles = subtitleTrackItems(model.tracks) + [.separator()] + subtitleItems()
+        menu.addItem(submenu("Subtitles", items: subtitles))
+        menu.addItem(submenu("Audio", items: audioTrackItems(model.tracks) + [.separator()] + audioItems()))
+        menu.addItem(submenu("Speed", items: speedItems() + [.separator()] + speedPresetItems(rate: model.rate)))
+        return menu
+    }
+
     // MARK: Builders
 
     private static func submenu(_ title: String, items: [NSMenuItem]) -> NSMenuItem {
