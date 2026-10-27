@@ -5,16 +5,24 @@ import Testing
 @testable import Reel
 @testable import ReelUI
 
-/// Sets the panel's frame at once instead of running the spring.
+/// Sets the panel's frame at once instead of running the spring; with `holds` the snap waits for
+/// `finish()`, and `stop()` drops it, as the display link does.
 @MainActor
 final class ImmediateSnapper: PanelSnapping {
     private(set) var snaps: [(frame: CGRect, velocity: CGVector)] = []
+    var holds = false
+    private var pending: (() -> Void)?
     func snap(_ window: NSWindow, to frame: CGRect, velocity: CGVector, completion: @escaping () -> Void) {
         snaps.append((frame, velocity))
-        window.setFrame(frame, display: false)
-        completion()
+        let land = { window.setFrame(frame, display: false); completion() }
+        if holds { pending = land } else { land() }
     }
-    func stop() {}
+    func stop() { pending = nil }
+    func finish() {
+        let land = pending
+        pending = nil
+        land?()
+    }
 }
 
 /// Records panel moves and fades; each completes only when the test says so.
@@ -34,6 +42,11 @@ final class RecordingAnimator: PanelAnimating {
     func fade(_ window: NSWindow, to alpha: CGFloat, duration: TimeInterval, completion: @escaping () -> Void) {
         fades.append(Fade(to: alpha, duration: duration))
         pending.append { window.alphaValue = alpha; completion() }
+    }
+
+    func finishFirst() {
+        guard !pending.isEmpty else { return }
+        pending.removeFirst()()
     }
 
     func finishAll() {
@@ -295,8 +308,11 @@ final class FakeWindowOps {
 
     // MARK: App wiring (MiniPlayerFlow)
 
-    static func flow(_ rig: Rig, window: FakeWindowOps, reduceMotion: Bool = false) -> MiniPlayerFlow {
-        MiniPlayerFlow(model: rig.model, controller: rig.controller, window: window.ops, reduceMotion: { reduceMotion })
+    static func flow(_ rig: Rig, window: FakeWindowOps, reduceMotion: Bool = false, appActive: Bool = false) -> MiniPlayerFlow {
+        MiniPlayerFlow(
+            model: rig.model, controller: rig.controller, window: window.ops,
+            reduceMotion: { reduceMotion }, isAppActive: { appActive }
+        )
     }
 
     @Test func requestWithoutMediaDoesNothing() async throws {
@@ -603,5 +619,91 @@ final class FakeWindowOps {
         try await Task.sleep(for: .milliseconds(300))
         #expect(window.alphaValue == 1)
         #expect(orderedOut == 0)
+    }
+
+    // MARK: Deferred minors
+
+    @Test func anEnterMoveOvertakenByALeaveKeepsTheLeavesOpenLimits() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        rig.controller.enter(from: CGRect(x: 320, y: 193, width: 1920, height: 1080), aspect: 16 / 9)
+        let panel = try #require(rig.controller.panel)
+        rig.controller.leave(to: CGRect(x: 320, y: 193, width: 1920, height: 1080)) {}
+        rig.animator.finishFirst()
+        #expect(panel.contentMinSize == CGSize(width: 1, height: 1), "the overtaken enter move must not clamp the way back")
+    }
+
+    @Test func aPinchDuringASnapIsNotUndoneWhenTheSnapEnds() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        let panel = try #require(rig.controller.panel)
+        rig.snapper.holds = true
+        rig.controller.drag(.began)
+        rig.controller.drag(.moved(CGVector(dx: -40, dy: 30)))
+        rig.controller.drag(.ended(velocity: .zero))
+        rig.controller.magnify(by: 1.5)
+        let pinched = panel.frame
+        rig.snapper.finish()
+        #expect(panel.frame == pinched)
+
+        rig.controller.drag(.began)
+        rig.controller.drag(.moved(CGVector(dx: -40, dy: 30)))
+        rig.controller.drag(.ended(velocity: .zero))
+        rig.controller.resize(aspect: 4 / 3)
+        rig.animator.finishAll()
+        let resized = panel.frame
+        rig.snapper.finish()
+        #expect(panel.frame == resized, "a new episode's aspect change survives the snap")
+    }
+
+    @Test func closingTheFileWhileReelIsActiveBringsTheWindowToTheFront() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let window = FakeWindowOps()
+        let flow = Self.flow(rig, window: window, appActive: true)
+        flow.request(true)
+        rig.animator.finishAll()
+        flow.leaveAtOnce()
+        #expect(window.log.last == "show active")
+    }
+
+    @Test func aPinchSavesOnceWhenItEnds() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        rig.animator.finishAll()
+        rig.controller.magnify(by: 1.2)
+        rig.controller.magnify(by: 1.25)
+        #expect(rig.store.state.miniPlayer.boxScale == 1, "nothing is saved during the pinch")
+        rig.controller.magnifyEnded()
+        #expect(abs(rig.store.state.miniPlayer.boxScale - 1.5) < 0.001)
+    }
+
+    @Test func anEdgeResizeEndsBackOnTheCornerInset() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        rig.animator.finishAll()
+        let panel = try #require(rig.controller.panel)
+        panel.setFrame(CGRect(x: 1830, y: 4, width: 720, height: 405), display: false)
+        rig.controller.windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification, object: panel))
+        let corner = MiniPlayerGeometry.frame(size: CGSize(width: 720, height: 405), corner: .bottomRight, visible: Self.screenA.visibleFrame)
+        #expect(panel.frame == corner)
+    }
+
+    @Test func firstUseOpensOnTheWindowsDisplay() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch, screens: [Self.screenA, Self.screenB])
+        rig.controller.enter(from: CGRect(x: 2800, y: 100, width: 1280, height: 720), aspect: 16 / 9)
+        rig.animator.finishAll()
+        let size = MiniPlayerGeometry.size(aspect: 16 / 9, boxScale: 1, visible: Self.screenB.visibleFrame)
+        #expect(rig.controller.panel?.frame == MiniPlayerGeometry.frame(size: size, corner: .bottomRight, visible: Self.screenB.visibleFrame))
     }
 }

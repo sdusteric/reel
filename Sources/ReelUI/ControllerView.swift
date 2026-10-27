@@ -92,7 +92,7 @@ nonisolated public enum ControllerLayout {
     public static let maximumWindowFraction: CGFloat = 0.7
     /// In fullscreen the bottom edge sits this far from the screen bottom (D41).
     public static let fullscreenBottomInset: CGFloat = 56
-    /// Below this width previous, next and Picture in Picture are dropped.
+    /// Below this width previous, next and the mini player button are dropped.
     public static let compactWidth: CGFloat = 568
     /// Below this width the audio button and the speed label go too.
     public static let narrowWidth: CGFloat = 480

@@ -231,8 +231,7 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         return (dx * dx + dy * dy).squareRoot()
     }
 
-    func targetFrame(aspect: CGFloat) -> CGRect {
-        let screen = savedScreen
+    func targetFrame(aspect: CGFloat, on screen: ScreenInfo) -> CGRect {
         let size = MiniPlayerGeometry.size(aspect: aspect, boxScale: placement.boxScale, visible: screen.visibleFrame)
         return MiniPlayerGeometry.frame(size: size, corner: placement.corner, visible: screen.visibleFrame)
     }
@@ -244,8 +243,11 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
     func enter(from sourceRect: CGRect, aspect: CGFloat) {
         guard panel == nil else { return }
         generation += 1
+        let current = generation
         self.aspect = aspect > 0 && aspect.isFinite ? aspect : 16 / 9
-        let frame = targetFrame(aspect: self.aspect)
+        // First use opens on the window's display (mini player design 4).
+        let screen = placement.screen == nil && !sourceRect.isEmpty ? screen(containing: sourceRect) : savedScreen
+        let frame = targetFrame(aspect: self.aspect, on: screen)
         let motion = MotionTiming.miniPlayerMove(reduceMotion: reduceMotion())
         let travels = motion.travels && !sourceRect.isEmpty
         let panel = MiniPlayerPanel(contentRect: frame)
@@ -256,10 +258,11 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         let content = MiniPlayerContentView(model: model, actions: actions)
         content.commandTarget = commandTarget
         content.onMagnify = { [weak self] factor in self?.magnify(by: factor) }
+        content.onMagnifyEnd = { [weak self] in self?.magnifyEnded() }
         panel.contentView = content
         panel.initialFirstResponder = content
-        currentScreenID = savedScreen.id
-        applyLimits(to: panel, visible: savedScreen.visibleFrame)
+        currentScreenID = screen.id
+        applyLimits(to: panel, visible: screen.visibleFrame)
         // The limits would clamp the window-sized start of the move.
         if travels {
             panel.contentMinSize = NSSize(width: 1, height: 1)
@@ -282,10 +285,10 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         model.setMiniPlayer(active: true)
         show(panel)
         focus(panel, content)
-        let visible = savedScreen.visibleFrame
+        let visible = screen.visibleFrame
         if travels {
             animator.move(panel, to: frame, duration: motion.duration) { [weak self, weak panel] in
-                guard let self, let panel, self.panel === panel else { return }
+                guard let self, let panel, self.generation == current else { return }
                 self.applyLimits(to: panel, visible: visible)
             }
         } else if !motion.travels {
@@ -375,17 +378,25 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
     /// A pinch scales the panel about its corner, within the box limits.
     func magnify(by factor: CGFloat) {
         guard let panel, factor.isFinite, factor > 0 else { return }
+        snapper.stop()
         let screen = screen(containing: panel.frame)
         let scale = MiniPlayerGeometry.boxScale(for: panel.frame.size, aspect: aspect) * Double(factor)
         let size = MiniPlayerGeometry.size(aspect: aspect, boxScale: scale, visible: screen.visibleFrame)
         panel.setFrame(MiniPlayerGeometry.frame(size: size, corner: placement.corner, visible: screen.visibleFrame), display: true)
-        let stored = MiniPlayerGeometry.boxScale(for: size, aspect: aspect)
+    }
+
+    /// The pinch ended: its box is saved once.
+    func magnifyEnded() {
+        guard let panel else { return }
+        let stored = MiniPlayerGeometry.boxScale(for: panel.frame.size, aspect: aspect)
         save { $0.boxScale = stored }
     }
 
     /// A new video with another aspect keeps the corner and the box (mini player design 4).
     func resize(aspect newAspect: CGFloat) {
         guard let panel, newAspect.isFinite, newAspect > 0 else { return }
+        snapper.stop()
+        let current = generation
         aspect = newAspect
         let screen = screen(containing: panel.frame)
         let size = MiniPlayerGeometry.size(aspect: aspect, boxScale: placement.boxScale, visible: screen.visibleFrame)
@@ -400,7 +411,7 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         panel.contentMinSize = NSSize(width: 1, height: 1)
         panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         animator.move(panel, to: target, duration: duration) { [weak self, weak panel] in
-            guard let self, let panel, self.panel === panel else { return }
+            guard let self, let panel, self.generation == current else { return }
             self.applyLimits(to: panel, visible: screen.visibleFrame)
         }
     }
@@ -433,6 +444,11 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         guard let panel, notification.object as? NSWindow === panel else { return }
         let stored = MiniPlayerGeometry.boxScale(for: panel.frame.size, aspect: aspect)
         save { $0.boxScale = stored }
+        // Dragging the anchored edge moves the panel off its inset; it settles back.
+        let screen = screen(containing: panel.frame)
+        let target = MiniPlayerGeometry.frame(size: panel.frame.size, corner: placement.corner, visible: screen.visibleFrame)
+        guard target != panel.frame else { return }
+        snapper.snap(panel, to: target, velocity: .zero) {}
     }
 
     private func save(_ change: (inout MiniPlayerPlacement) -> Void) {

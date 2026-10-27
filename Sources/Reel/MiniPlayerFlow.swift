@@ -24,6 +24,7 @@ final class MiniPlayerFlow {
     private let controller: MiniPlayerController
     private let window: WindowOps
     private let reduceMotion: () -> Bool
+    private let isAppActive: () -> Bool
     private var pendingEnter = false
 
     var isActive: Bool { controller.isActive }
@@ -32,12 +33,14 @@ final class MiniPlayerFlow {
         model: PlayerModel,
         controller: MiniPlayerController,
         window: WindowOps,
-        reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+        reduceMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
+        isAppActive: @escaping () -> Bool = { NSApp.isActive }
     ) {
         self.model = model
         self.controller = controller
         self.window = window
         self.reduceMotion = reduceMotion
+        self.isAppActive = isAppActive
         controller.onLeaveRequest = { [weak self] kind in self?.leave(kind) }
     }
 
@@ -85,11 +88,13 @@ final class MiniPlayerFlow {
         controller.leave(to: window.videoRect(), beforeSwap: { window.show(activate) }) { next?() }
     }
 
-    /// The file closed or the window is closing: no move, and Reel stays where it is.
+    /// The file closed or the window is closing: no move, and Reel stays where it is (in front
+    /// when it was active, else behind).
     func leaveAtOnce() {
         guard controller.isActive else { return }
         let window = window
-        controller.leave(to: .zero, animated: false, beforeSwap: { window.show(false) }) {}
+        let activate = isAppActive()
+        controller.leave(to: .zero, animated: false, beforeSwap: { window.show(activate) }) {}
     }
 
     /// Fullscreen keys while the mini player is up: back to the window, then fullscreen.

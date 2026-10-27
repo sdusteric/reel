@@ -2823,7 +2823,7 @@ final class VideoLayerHolder {
 /// when the next frame is due makes the timer skip that frame. The subtitle clock is the
 /// synchronizer's time minus the subtitle delay. Text goes through libass (`SubtitleRenderer`),
 /// PGS and DVD sets through the bitmap timeline. The result is set as the contents of a sublayer
-/// of the app's subtitle layer (on the main actor), and kept for Picture in Picture and tests.
+/// of the app's subtitle layer (on the main actor), and kept for tests.
 public final class SubtitlePresenter: Sendable {
     /// The subtitle layer's size in pixels and its backing scale.
     public struct Viewport: Sendable, Hashable {

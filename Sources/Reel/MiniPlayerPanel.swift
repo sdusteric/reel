@@ -85,8 +85,9 @@ final class MiniPlayerContentView: NSView {
     private var hosting: MiniHostingView?
     /// The window controller: the keys of section 10 act on the mini player while Reel is active.
     weak var commandTarget: (any PlayerCommandTarget)?
-    /// A pinch: the factor since the last event.
+    /// A pinch: the factor since the last event, then its end.
     var onMagnify: ((CGFloat) -> Void)?
+    var onMagnifyEnd: (() -> Void)?
 
     init(model: PlayerModel, actions: MiniPlayerActions) {
         self.model = model
@@ -139,6 +140,7 @@ final class MiniPlayerContentView: NSView {
 
     override func magnify(with event: NSEvent) {
         onMagnify?(1 + event.magnification)
+        if !event.phase.isDisjoint(with: [.ended, .cancelled]) { onMagnifyEnd?() }
     }
 
     override func keyDown(with event: NSEvent) {
