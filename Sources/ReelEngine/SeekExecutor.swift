@@ -193,8 +193,6 @@ final class PipelineShared: Sendable {
     /// with a pts at or before the clock (up to `maxFramesAhead` are queued ahead of it).
     let recentFrames = Mutex<[DecodedFrame]>([])
     static let recentFrameLimit = VideoOutput.maxFramesAhead + 1
-    /// Applied to every frame before enqueue (subtitles composited while Picture in Picture runs).
-    let frameTransform = Mutex<FrameTransform?>(nil)
 
     // M3 robustness (section 7.10).
     /// Damaged frames and packets, and the rate-limited `.damaged` events.
@@ -266,15 +264,6 @@ final class PipelineShared: Sendable {
             body(&current)
             run = current
         }
-    }
-}
-
-/// A frame rewrite run by the presenter before enqueue (`PiPFrameCompositor`).
-final class FrameTransform: Sendable {
-    let apply: @Sendable (DecodedFrame) -> DecodedFrame
-
-    init(_ apply: @escaping @Sendable (DecodedFrame) -> DecodedFrame) {
-        self.apply = apply
     }
 }
 

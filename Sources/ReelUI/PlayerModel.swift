@@ -261,9 +261,8 @@ public final class PlayerModel {
     public internal(set) var panelHighlight: Int?
     /// The thumbnail under the seek bar's pointer; nil shows the time pill alone.
     public internal(set) var hoverThumbnail: CGImage?
-    public internal(set) var isPictureInPictureActive = false
-    /// The frame from when Picture in Picture started, for the window's placeholder.
-    public internal(set) var pictureInPictureSnapshot: CGImage?
+    /// The video plays in the mini player panel and the main window is hidden.
+    public internal(set) var isMiniPlayerActive = false
     public internal(set) var isFullscreen = false
     /// The Playback menu's "Auto-Advance to Next Episode".
     public internal(set) var autoAdvanceEnabled = true
@@ -305,8 +304,8 @@ public final class PlayerModel {
     @ObservationIgnored public var onChromeVisibilityChange: ((Bool) -> Void)?
     /// Called once a file has opened, with its info (the app sizes the window).
     @ObservationIgnored public var onOpened: ((MediaInfo) -> Void)?
-    /// Asks the app to enter or leave Picture in Picture (`true` enters).
-    @ObservationIgnored public var onPictureInPictureRequest: ((Bool) -> Void)?
+    /// Asks the app to enter or leave the mini player (`true` enters).
+    @ObservationIgnored public var onMiniPlayerRequest: ((Bool) -> Void)?
     /// Asks the app for an Open panel for a subtitle file (Add Subtitle File).
     @ObservationIgnored public var onAddSubtitleFile: (() -> Void)?
     /// Reveals a saved screenshot in Finder.
@@ -1484,18 +1483,17 @@ extension PlayerModel {
         }
     }
 
-    // MARK: Picture in Picture and fullscreen
+    // MARK: Mini player and fullscreen
 
     /// The controller button, the menu and Ctrl+Cmd+P.
-    public func togglePictureInPicture() {
+    public func toggleMiniPlayer() {
         guard hasMedia else { return }
-        onPictureInPictureRequest?(!isPictureInPictureActive)
+        onMiniPlayerRequest?(!isMiniPlayerActive)
     }
 
-    /// The app reports the real state, with the frame to blur for the window's placeholder.
-    public func setPictureInPicture(active: Bool, snapshot: CGImage? = nil) {
-        isPictureInPictureActive = active
-        pictureInPictureSnapshot = active ? snapshot : nil
+    /// The app reports the real state once the video surface has moved.
+    public func setMiniPlayer(active: Bool) {
+        isMiniPlayerActive = active
     }
 
     public func setFullscreen(_ fullscreen: Bool) {

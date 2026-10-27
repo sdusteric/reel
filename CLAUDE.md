@@ -13,7 +13,7 @@ swift build --scratch-path "$TMPDIR/reel-<task>"
 swift test --scratch-path "$TMPDIR/reel-<task>" --filter <Suite>
 swiftlint lint --strict
 REEL_SCRATCH="$TMPDIR/reel-check" scripts/check.sh   # every gate
-scripts/shots.sh                # 24 scenarios x light/dark background screenshots into build/shots
+scripts/shots.sh                # 23 scenarios x light/dark background screenshots into build/shots
 REEL_SCRATCH="$TMPDIR/reel-accept" scripts/accept.sh offline   # M1 criteria, then the M2 and M3 groups
 REEL_SCRATCH="$TMPDIR/reel-accept" scripts/accept.sh m3        # only AC-M3-1 to AC-M3-10
 scripts/release.sh [--notes <file.md>] [--dry-run <dir>]   # check.sh, release bundle, app-updates publish.sh
@@ -38,7 +38,7 @@ reelctl seek-bench <file> [--runs N] [--with-thumbs] --json   # M1 seek threshol
 The M3 ones (`probe --json` also prints `dolbyVision`):
 
 ```sh
-reelctl hdr <file> [--decoder hw|sw] [--display sdr|xdr|external|headroom=X] [--display-headroom X] [--setting full|limited|off] [--screenshot png] [--thumbnail] [--pip-check] --json   # kind, decoded patch codes, attachments, DynamicRangePlan, tone-mapped patches, screenshot, thumbnail and PiP readbacks
+reelctl hdr <file> [--decoder hw|sw] [--display sdr|xdr|external|headroom=X] [--display-headroom X] [--setting full|limited|off] [--screenshot png] [--thumbnail] --json   # kind, decoded patch codes, attachments, DynamicRangePlan, tone-mapped patches, screenshot and thumbnail readbacks
 reelctl energy-bench <file> --mode play|paused|occluded [--seconds N] [--warmup N] [--no-tile-check] --json   # cpuPercent, wakeupsPerSecond, engine counters, resyncMs, VP9 tile check share; no audio renderer
 reelctl soak <file|dir> [--seed S] [--ops N] [--seconds N] --json    # one child per file (soak-one): crashes, hangs, leaks, manifest mismatches, dataEnd
 reelctl soak --list <file>... [--seed S] [--ops N] --json            # the same on a list (the ASan run in accept.sh uses 24 files)

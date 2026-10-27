@@ -279,70 +279,6 @@ func makeAppModel(engines: EngineList = EngineList()) -> PlayerModel {
     }
 }
 
-@Suite struct PictureInPictureTests {
-    @Test func playbackDelegateMapsToThePlayerWithoutStartingPiP() async throws {
-        let scratch = try AppScratch()
-        defer { scratch.remove() }
-        let engines = EngineList()
-        let model = makeAppModel(engines: engines)
-        await model.open(try scratch.makeFile("movie.mkv"))
-        await eventually("playing") { model.playbackState == .playing }
-        let engine = try #require(engines.all.first)
-        let pip = PictureInPicture(model: model, log: .disabled)
-        #expect(!pip.isActive, "no controller exists until the user asks")
-
-        pip.refresh()
-        #expect(pip.currentSnapshot.duration == 600)
-        #expect(!pip.currentSnapshot.isPaused)
-        #expect(PictureInPicture.timeRange(duration: 600) == CMTimeRange(start: .zero, duration: CMTime(seconds: 600, preferredTimescale: 600)))
-        #expect(PictureInPicture.timeRange(duration: nil).duration == .positiveInfinity)
-
-        pip.setPlaying(false)
-        await eventually("paused") { engine.calls.contains(.pause) }
-        #expect(pip.currentSnapshot.isPaused)
-        pip.skip(by: 10)
-        await eventually("skip seek") { engine.calls.contains { if case .seek = $0 { true } else { false } } }
-
-        var reported: [Bool] = []
-        pip.onActiveChange = { reported.append($0) }
-        pip.didChange(active: true)
-        #expect(model.isPictureInPictureActive)
-        pip.didChange(active: false)
-        #expect(!model.isPictureInPictureActive)
-        #expect(reported == [true, false], "the engine is told to start and stop compositing subtitles")
-    }
-
-    @Test func theWindowIsHiddenBeforeThePlaceholderIsBuilt() async throws {
-        let scratch = try AppScratch()
-        defer { scratch.remove() }
-        let model = makeAppModel()
-        await model.open(try scratch.makeFile("movie.mkv"))
-        await eventually("playing") { model.playbackState == .playing }
-        let pip = PictureInPicture(model: model, log: .disabled)
-        pip.hidesWindowDuringPiP = { true }
-        var placeholderShownWhenReported: [Bool] = []
-        pip.onActiveChange = { _ in placeholderShownWhenReported.append(model.isPictureInPictureActive) }
-        pip.didChange(active: true)
-        #expect(placeholderShownWhenReported == [false], "the PiP crop workaround hides the window first")
-        #expect(model.isPictureInPictureActive)
-        #expect(model.pictureInPictureSnapshot == nil, "no blurred snapshot for a window nobody sees")
-    }
-
-    @Test func theToggleAsksTheAppOnlyWithAFileOpen() async throws {
-        let model = makeAppModel()
-        var requests: [Bool] = []
-        model.onPictureInPictureRequest = { requests.append($0) }
-        model.togglePictureInPicture()
-        #expect(requests.isEmpty)
-        let scratch = try AppScratch()
-        defer { scratch.remove() }
-        await model.open(try scratch.makeFile("movie.mkv"))
-        await eventually("playing") { model.playbackState == .playing }
-        model.togglePictureInPicture()
-        #expect(requests == [true])
-    }
-}
-
 // MARK: M3 app shell (design 7.7 to 7.11, 9.11, 9.13, 10, 11.1)
 
 @Suite struct MainMenuM3Tests {
@@ -456,21 +392,6 @@ func makeAppModel(engines: EngineList = EngineList()) -> PlayerModel {
         #expect(told == [true], "told once")
         gate.setWindowVisible(true)
         #expect(told == [true, false], "visible resyncs at once, without waiting")
-    }
-
-    @Test func pictureInPictureNeverCountsAsHidden() {
-        let clock = FakeScheduler()
-        var told: [Bool] = []
-        let gate = OcclusionGate(scheduler: clock) { told.append($0) }
-        gate.setPictureInPictureActive(true)
-        gate.setWindowVisible(false)
-        clock.advance(by: 10)
-        #expect(told.isEmpty, "PiP shows the display layer, so video keeps decoding")
-        gate.setPictureInPictureActive(false)
-        clock.advance(by: 1)
-        #expect(told == [true])
-        gate.setPictureInPictureActive(true)
-        #expect(told == [true, false], "PiP starting while hidden brings video back")
     }
 
     @Test func pointerActivityHoldsForTenSecondsWithOneTimer() {

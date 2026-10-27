@@ -563,20 +563,22 @@ extension PlayerModelTests {
         #expect(model.isFullscreen)
     }
 
-    @Test func pictureInPictureAndScreenshotHooks() async throws {
+    @Test func miniPlayerRequestNeedsMediaAndScreenshotHooks() async throws {
         let scratch = try UIScratch()
         defer { scratch.remove() }
         let (model, _, _) = makeModel(engine: FakeEngine(), scratch: scratch)
-        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
         var requests: [Bool] = []
-        model.onPictureInPictureRequest = { requests.append($0) }
-        model.togglePictureInPicture()
-        model.setPictureInPicture(active: true, snapshot: ShotRenderer.placeholderFrame(width: 8, height: 8))
-        model.togglePictureInPicture()
+        model.onMiniPlayerRequest = { requests.append($0) }
+        model.toggleMiniPlayer()
+        #expect(requests.isEmpty, "nothing to show without a file")
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        model.toggleMiniPlayer()
+        model.setMiniPlayer(active: true)
+        #expect(model.isMiniPlayerActive)
+        model.toggleMiniPlayer()
         #expect(requests == [true, false])
-        #expect(model.pictureInPictureSnapshot != nil)
-        model.setPictureInPicture(active: false)
-        #expect(model.pictureInPictureSnapshot == nil)
+        model.setMiniPlayer(active: false)
+        #expect(!model.isMiniPlayerActive)
 
         var revealed: [URL] = []
         model.onRevealScreenshot = { revealed.append($0) }

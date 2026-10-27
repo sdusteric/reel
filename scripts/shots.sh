@@ -5,8 +5,8 @@
 # Usage: scripts/shots.sh [scenario ...]
 #        default: the M1 four (empty playing paused-osd scrubbing), the M2 surfaces
 #        (subtitle-panel audio-panel speed-panel thumbnail subtitles subtitles-lifted osd-speed
-#        osd-loop next-episode pip fullscreen edge-states) and the M3 surfaces (hdr-badge
-#        video-info hdr-sdr dv-note open-failed truncated damaged-osd drive-gone), 24 scenarios
+#        osd-loop next-episode fullscreen edge-states) and the M3 surfaces (hdr-badge
+#        video-info hdr-sdr dv-note open-failed truncated damaged-osd drive-gone), 23 scenarios
 #        each scenario in light and dark -> build/shots/<scenario>-<light|dark>.png (2560x1440)
 # Env:   REEL_APP       bundle to run (default build/bundle/Reel.app, from scripts/bundle.sh)
 #        REEL_FIXTURES  fixture dir (default build/fixtures, from scripts/fixtures.sh)
@@ -40,7 +40,7 @@ SCENARIOS=("$@")
 [ ${#SCENARIOS[@]} -gt 0 ] || SCENARIOS=(
   empty playing paused-osd scrubbing
   subtitle-panel audio-panel speed-panel thumbnail subtitles subtitles-lifted
-  osd-speed osd-loop next-episode pip fullscreen edge-states
+  osd-speed osd-loop next-episode fullscreen edge-states
   hdr-badge video-info hdr-sdr dv-note open-failed truncated damaged-osd drive-gone
 )
 

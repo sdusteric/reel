@@ -124,16 +124,16 @@ nonisolated public enum ControllerLayout {
     }
 
     /// Which optional buttons fit (design 9.3). Priority from first kept to first dropped: play,
-    /// back and forward 10, fullscreen, volume, subtitles, audio, speed, next, previous, PiP.
+    /// back and forward 10, fullscreen, volume, subtitles, audio, speed, next, previous, mini player.
     public struct Buttons: Equatable, Sendable {
         public var previous: Bool
         public var next: Bool
-        public var pictureInPicture: Bool
+        public var miniPlayer: Bool
         public var audio: Bool
         public var speed: Bool
 
         public var count: Int {
-            [previous, next, pictureInPicture, audio, speed].filter(\.self).count
+            [previous, next, miniPlayer, audio, speed].filter(\.self).count
         }
     }
 
@@ -144,7 +144,7 @@ nonisolated public enum ControllerLayout {
         return Buttons(
             previous: roomy && hasEpisodes,
             next: roomy && hasEpisodes,
-            pictureInPicture: roomy,
+            miniPlayer: roomy,
             audio: wide,
             speed: wide
         )
@@ -365,14 +365,14 @@ struct ControllerView: View {
                     model.togglePanel(.audio)
                 }
             }
-            if buttons.pictureInPicture {
+            if buttons.miniPlayer {
                 ChromeButton(
-                    symbol: model.isPictureInPictureActive ? "pip.exit" : "pip.enter",
-                    help: "Picture in Picture, \u{2303}\u{2318}P",
+                    symbol: model.isMiniPlayerActive ? "pip.exit" : "pip.enter",
+                    help: "Mini Player, \u{2303}\u{2318}P",
                     enabled: model.hasMedia,
-                    tint: model.isPictureInPictureActive ? Color.accentColor : nil
+                    tint: model.isMiniPlayerActive ? Color.accentColor : nil
                 ) {
-                    model.togglePictureInPicture()
+                    model.toggleMiniPlayer()
                 }
             }
             ChromeButton(symbol: "arrow.up.left.and.arrow.down.right", help: "Full Screen, \u{2303}\u{2318}F") {

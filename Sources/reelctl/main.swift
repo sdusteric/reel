@@ -17,7 +17,7 @@ let usage = """
            reelctl thumbs <file> [--runs N] [--fresh-cache] [--cold] [--out-dir dir] [--decoder hw|sw|auto] [--json]
            reelctl episodes <file> [--json]
            reelctl hdr <file> [--decoder hw|sw] [--display sdr|xdr|external|headroom=X] [--display-headroom X]
-                       [--setting full|limited|off] [--screenshot png] [--thumbnail] [--pip-check] [--json]
+                       [--setting full|limited|off] [--screenshot png] [--thumbnail] [--json]
            reelctl energy-bench <file> --mode play|paused|occluded [--seconds N] [--warmup N] [--decoder hw|sw|auto]
                             [--no-tile-check] [--json]
            reelctl soak <file|dir> [--seed S] [--ops N] [--seconds N] [--asan-expected] [--json]

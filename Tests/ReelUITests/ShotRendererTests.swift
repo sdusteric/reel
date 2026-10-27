@@ -133,7 +133,7 @@ import Testing
         for name in names {
             #expect(ShotScenario(rawValue: name) != nil, Comment(rawValue: name))
         }
-        #expect(ShotScenario.allCases.count == 24)
+        #expect(ShotScenario.allCases.count == 23)
     }
 
     @Test func hdrShotsTakeTheirInputsFromTheCaller() throws {

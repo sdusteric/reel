@@ -58,7 +58,7 @@ public protocol PlayerEngine: AnyObject, Sendable {
 
     // MARK: M3 (sections 7.9 and 7.11). Each has a no-op default below.
 
-    /// The window became hidden (and PiP is off). Called as soon as the occlusion state changes:
+    /// The window became hidden. Called as soon as the occlusion state changes:
     /// the engine itself waits `EnergyPolicy.occlusionDelay` before it stops video decode (audio
     /// goes on). False resyncs with an exact seek to the clock time.
     func setOccluded(_ occluded: Bool) async

@@ -64,16 +64,6 @@ import Testing
         #expect(MotionTiming.windowResizeDuration(reduceMotion: true) == 0)
     }
 
-    @Test func pipPlaceholderIsOpacityOnlyAndReducedWhenAsked() {
-        let normal = Motion.pipPlaceholderSpec(reduceMotion: false)
-        #expect(normal.scale == nil)
-        #expect(normal.enter == MotionLeg(curve: .easeOut, duration: 0.2))
-        #expect(normal.exit == MotionLeg(curve: .easeIn, duration: 0.15))
-        let reduced = Motion.pipPlaceholderSpec(reduceMotion: true)
-        #expect(reduced.enter == .reduced)
-        #expect(reduced.exit == .reduced)
-    }
-
     @Test func panelSpecScalesOnlyWithoutReduceMotion() {
         #expect(Motion.panelSpec(reduceMotion: false).scale == 0.96)
         #expect(Motion.panelSpec(reduceMotion: true) == .reduced)

@@ -171,8 +171,8 @@ enum KeyHandling {
             model.toggleABLoop()
         case .toggleFileLoop:
             model.toggleFileLoop()
-        case .togglePictureInPicture:
-            model.togglePictureInPicture()
+        case .toggleMiniPlayer:
+            model.toggleMiniPlayer()
         // The M3 rows of section 10.
         case .addSubtitleFile:
             model.addSubtitleFile()

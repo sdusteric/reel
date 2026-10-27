@@ -59,11 +59,6 @@ public struct PlayerSceneView<Surface: View>: View {
                     .animation(Motion.driveGoneDimAnimation(reduceMotion: reduceMotion), value: dimsFrame)
                 SubtitleOverlay(model: model, windowSize: size, controllerFrame: showsEmptyState ? nil : frame, shot: subtitle)
                     .frame(width: size.width, height: size.height)
-                if model.isPictureInPictureActive {
-                    PiPPlaceholder(snapshot: model.pictureInPictureSnapshot) { model.togglePictureInPicture() }
-                        .frame(width: size.width, height: size.height)
-                        .transition(Motion.pipPlaceholderTransition(reduceMotion: reduceMotion))
-                }
                 if showsEmptyState {
                     // Clicks fall through to the video surface, which moves the window on drag.
                     EmptyStateView(dropTarget: actions.dropTarget, hasMedia: model.hasMedia)

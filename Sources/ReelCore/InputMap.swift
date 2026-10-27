@@ -48,8 +48,8 @@ public enum InputAction: Sendable, Hashable {
     case abLoop
     /// `cycle-values loop "inf" "no"`.
     case toggleFileLoop
-    /// `toggle-pip` (IINA's command name; Reel binds it to Ctrl+Cmd+P).
-    case togglePictureInPicture
+    /// `toggle-pip` (IINA's command name; Reel binds it to Ctrl+Cmd+P and opens its mini player).
+    case toggleMiniPlayer
     // M3 (design section 10).
     /// Video Info (Cmd+I, IINA's Inspector key): `script-message reel-video-info`, or
     /// `script-binding video-info`.
@@ -346,7 +346,7 @@ public struct InputMap: Sendable, Hashable {
         case "ab-loop":
             return .success(.abLoop)
         case "toggle-pip":
-            return .success(.togglePictureInPicture)
+            return .success(.toggleMiniPlayer)
         case "quit", "quit-watch-later":
             return .success(.quit)
         case "script-message":

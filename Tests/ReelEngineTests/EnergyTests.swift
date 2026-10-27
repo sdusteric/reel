@@ -254,26 +254,19 @@ import Testing
         await engine.close()
     }
 
-    @Test func occlusionHasNoEffectWhilePausedOrInPictureInPicture() async throws {
+    @Test func occlusionHasNoEffectWhilePaused() async throws {
         let engine = Self.make(occlusionDelay: .milliseconds(100))
         _ = try await engine.open(Fixture.h264.url())
         await engine.setOccluded(true)
         try await Task.sleep(for: .milliseconds(400))
         #expect(await engine.isVideoStoppedForOcclusion == false, "paused: nothing to stop")
-        await engine.setPictureInPictureActive(true)
         await engine.play()
-        try await Task.sleep(for: .milliseconds(500))
-        #expect(await engine.isVideoStoppedForOcclusion == false, "PiP shows the display layer")
-        let before = await engine.energyCounters()
-        try await Task.sleep(for: .milliseconds(500))
-        #expect((await engine.energyCounters() - before).framesDecoded > 5)
-        await engine.setPictureInPictureActive(false)
         var waited = 0
         while await !engine.isVideoStoppedForOcclusion, waited < 100 {
             try await Task.sleep(for: .milliseconds(20))
             waited += 1
         }
-        #expect(await engine.isVideoStoppedForOcclusion, "PiP ended while hidden: video stops")
+        #expect(await engine.isVideoStoppedForOcclusion, "playing while hidden: video stops")
         await engine.close()
     }
 

@@ -144,16 +144,6 @@ enum Motion {
         )
     }
 
-    /// The Picture in Picture placeholder: opacity only, 0.2 s in and 0.15 s out.
-    static func pipPlaceholderSpec(reduceMotion: Bool) -> EnterExit {
-        if reduceMotion { return .reduced }
-        return EnterExit(
-            scale: nil,
-            enter: MotionLeg(curve: .easeOut, duration: 0.2),
-            exit: MotionLeg(curve: .easeIn, duration: 0.15)
-        )
-    }
-
     // MARK: Transitions
 
     static func osdTransition(reduceMotion: Bool) -> AnyTransition {
@@ -163,10 +153,6 @@ enum Motion {
     /// Panel open from the point over its trigger (`anchor`), see `PanelAnchor`.
     static func panelTransition(reduceMotion: Bool, anchor: UnitPoint) -> AnyTransition {
         panelSpec(reduceMotion: reduceMotion).transition(anchor: anchor)
-    }
-
-    static func pipPlaceholderTransition(reduceMotion: Bool) -> AnyTransition {
-        pipPlaceholderSpec(reduceMotion: reduceMotion).transition(anchor: .center)
     }
 
     /// Next card: opacity and 12 pt of travel, 0.32 s in and 0.2 s out.

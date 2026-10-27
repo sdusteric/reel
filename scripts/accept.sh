@@ -33,8 +33,8 @@
 #   AC-M2-3  reelctl thumbs on four fixtures (budgets, setup, count, width, blankness, reload) and
 #            the HEVC seek thresholds with thumbnails generating.
 #   AC-M2-4  reelctl episodes order, and the EpisodeList and AutoAdvance tests by name.
-#   AC-M2-5  scripts/shots.sh (all 24 scenarios in light and dark, shared with AC-M3-6): the 32 PNGs
-#            of M2's 16 scenarios by name at 2560x1440, not blank, controller regions differ,
+#   AC-M2-5  scripts/shots.sh (all 23 scenarios in light and dark, shared with AC-M3-6): the 30 PNGs
+#            of M2's 15 scenarios by name at 2560x1440, not blank, controller regions differ,
 #            outlined subtitle ink, frontmost app unchanged.
 #   AC-M2-6  VP9 hybrid seek-bench thresholds, and M1's AC02 and AC03 passing in the same run.
 #
@@ -42,8 +42,8 @@
 #   AC-M3-1  scripts/check.sh exits 0 with the av-sync and soak-smoke gates in its output, and
 #            every M1 and M2 criterion passes (offline only; alone, m3 notes that they did not run).
 #   AC-M3-2  reelctl hdr on the six ramp files with --decoder hw and sw: kind, decoded codes,
-#            attachments, MDCV and CLL, tone-mapped and screenshot patches, thumbnail, PiP subtitle
-#            code; the SDR control; the plan for 3 displays x 3 settings; five suites.
+#            attachments, MDCV and CLL, tone-mapped and screenshot patches, thumbnail; the SDR
+#            control; the plan for 3 displays x 3 settings; five suites.
 #   AC-M3-3  Dolby Vision: probe profile and compatibility, dv81 codes against the PQ ramp, dv84
 #            HLG base, dv5 note, tag and warning; two suites and the NAL types 62 and 63 test.
 #   AC-M3-4  reelctl energy-bench: play, paused and occluded budgets, zero counters while paused,
@@ -354,7 +354,7 @@ ac04() {
 
 REQUIRED_SUITES="ResumeStoreTests IINAWatchLaterTests SeekPlannerTests KeyframeIndexTests InputMapTests PlayerModelTests ChromeVisibilityTests OpenAndDropTests SeekTests"
 M2_SUITES="SubtitleRenderTests SubtitleCharsetDecodeTests BitmapSubtitleTests EpisodeListTests AutoAdvanceTests"
-M3_SUITES="HDRDecodeTests HDRToneMapTests PiPCompositeHDRTests DynamicRangePlanTests DynamicRangeLayerTests DolbyVisionPolicyTests DolbyVisionProbeTests EnergyPolicyTests EnergyTests MediaProblemTests RobustnessTests OddFileTests OutputDeviceChoiceTests OutputDeviceTests AudioOutputDevicesTests DynamicRangeTagTests FailureStateTests VideoInfoTests NALUnitsTests MainMenuM3Tests KeyHandlingM3Tests OcclusionTests DisplayRangeMonitorTests VolumeWatcherTests PlayerModelM3Tests SettingsM3Tests"
+M3_SUITES="HDRDecodeTests HDRToneMapTests DynamicRangePlanTests DynamicRangeLayerTests DolbyVisionPolicyTests DolbyVisionProbeTests EnergyPolicyTests EnergyTests MediaProblemTests RobustnessTests OddFileTests OutputDeviceChoiceTests OutputDeviceTests AudioOutputDevicesTests DynamicRangeTagTests FailureStateTests VideoInfoTests NALUnitsTests MainMenuM3Tests KeyHandlingM3Tests OcclusionTests DisplayRangeMonitorTests VolumeWatcherTests PlayerModelM3Tests SettingsM3Tests"
 
 # Sets TEST_LOG to the full swift test log of this run: check.sh's when it is newer than this
 # run's start, else one run here. (Not a command substitution: the result is cached.)
@@ -717,7 +717,7 @@ if r.get("previous") != "Northern.Line.S01E01.mkv":
 # AC-M2-5
 # ---------------------------------------------------------------------------------------------
 
-# scripts/shots.sh runs once per accept run with all 24 scenarios; AC-M2-5 reads its 16 scenarios
+# scripts/shots.sh runs once per accept run with all 23 scenarios; AC-M2-5 reads its 15 scenarios
 # by name and AC-M3-6 the 8 new ones. The log is copied because the next shots.sh run rewrites it.
 SHOTS_RC=""
 SHOTS_BEFORE=""
@@ -734,7 +734,7 @@ run_shots_once() {
   cp "$REPO/build/shots/shots.log" "$RUN/shots-all.log" 2>/dev/null || : >"$RUN/shots-all.log"
 }
 
-M2_SCENARIOS="empty playing paused-osd scrubbing subtitle-panel audio-panel speed-panel thumbnail subtitles subtitles-lifted osd-speed osd-loop next-episode pip fullscreen edge-states"
+M2_SCENARIOS="empty playing paused-osd scrubbing subtitle-panel audio-panel speed-panel thumbnail subtitles subtitles-lifted osd-speed osd-loop next-episode fullscreen edge-states"
 # Pixel rectangles (2x, 1280x720 points) just inside the controller: the default position,
 # the subtitles scenario (controller near the top) and fullscreen (56 pt from the bottom).
 SUBTITLES_CTRL_RECT="800 108 960 144"
@@ -1046,11 +1046,6 @@ t = r.get("thumbnail") or {}
 parts.append("thumbnail white %s" % t.get("luma"))
 if t.get("luma") is None or not 185 <= t["luma"] <= 250:
     problems.append("thumbnail reference white outside 185 to 250")
-pip = r.get("pipCheck") or {}
-want_y = 721 if hlg else 573
-parts.append("PiP subtitle Y %s/%d" % (pip.get("y"), want_y))
-if not pip.get("composited") or pip.get("y") is None or abs(pip["y"] - want_y) > 8:
-    problems.append("PiP subtitle Y not within 8 of %d" % want_y)
 '
 
 ac_m3_2() {
@@ -1066,7 +1061,7 @@ ac_m3_2() {
     file=$1 kind=$2 tol=$3
     for decoder in hw sw; do
       tag="hdr-$file-$decoder"
-      run_ctl "$tag" hdr "$F/$file" --decoder $decoder --screenshot "$RUN/$tag.png" --thumbnail --pip-check --json || true
+      run_ctl "$tag" hdr "$F/$file" --decoder $decoder --screenshot "$RUN/$tag.png" --thumbnail --json || true
       m2_eval "$file $decoder" "$RUN/$tag.json" "$HDR_RAMP_CODE" "$kind" "$tol" "$file"
     done
   done
@@ -1103,7 +1098,7 @@ if detail != want_detail:
 ' "$display" "$setting"
     done
   done
-  for suite in HDRDecodeTests HDRToneMapTests PiPCompositeHDRTests DynamicRangePlanTests DynamicRangeLayerTests; do
+  for suite in HDRDecodeTests HDRToneMapTests DynamicRangePlanTests DynamicRangeLayerTests; do
     m2_suite "$suite"
   done
   m2_finish AC-M3-2 "HDR10 and HLG numbers"
@@ -1645,7 +1640,7 @@ if r.get("presentation") != "edr":
 ac_m3_10() {
   local t doc="$REPO/docs/superpowers/specs/2026-10-24-reel-design.md"
   for t in osdDropsItsScaleWithReduceMotion seekTrackSpringBecomesTheReducedFade volumeWidenJumpsWithReduceMotion \
-    windowFrameDoesNotAnimateWithReduceMotion pipPlaceholderIsOpacityOnlyAndReducedWhenAsked \
+    windowFrameDoesNotAnimateWithReduceMotion \
     anchorFollowsTheButtonWhenThePanelIsClamped dropTargetFollowsTheDragLifecycle chromeRevealIsMostlyOpaqueBy60Milliseconds; do
     m3_test MotionTests "$t"
   done

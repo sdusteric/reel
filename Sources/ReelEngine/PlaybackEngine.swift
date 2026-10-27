@@ -272,14 +272,12 @@ public actor PlaybackEngine: PlayerEngine {
     // M2 state (design sections 8, 9.7 to 9.12).
     /// Subtitle rendering on its own serial queue; the app's layer is attached to it.
     public nonisolated let subtitlePresenter: SubtitlePresenter
-    private let pipCompositor = PiPFrameCompositor()
     private var audioDelay = MediaTime.zero
     private var loop = LoopState.off
     private var loopBoundaryObserver: Any?
     /// B's boundary observer fires here rather than on the main queue, which the app's UI (and a
     /// test process's main-actor suites) can keep busy past B.
     private let loopBoundaryQueue = DispatchQueue(label: "reel.loop-boundary", qos: .userInitiated)
-    private var pictureInPicture = false
     private var thumbnailsPaused = false
     private var subtitleFeedTask: Task<Void, Never>?
     private var subtitleLoadTask: Task<Void, Never>?
@@ -837,7 +835,7 @@ public actor PlaybackEngine: PlayerEngine {
         await shared.audioOutput.withLock({ $0 })?.setOutputDevice(uid)
     }
 
-    /// True: the window has not been visible (and PiP is off). After `occlusionDelay` video
+    /// True: the window has not been visible. After `occlusionDelay` video
     /// decode stops while audio and the clock go on. False: an exact seek to the clock brings
     /// the picture back.
     public func setOccluded(_ occluded: Bool) async {
@@ -879,7 +877,7 @@ public actor PlaybackEngine: PlayerEngine {
     private var energyInputs: EnergyInputs {
         EnergyInputs(
             playback: EnergyPlayback(state, playIntent: resumeAfterSeek),
-            occluded: occlusionElapsed && !pictureInPicture,
+            occluded: occlusionElapsed,
             pointerRecent: pointerRecent,
             lowPower: isLowPower,
             chromeVisible: timeInterval <= EnergyPolicy.chromeVisibleTimeInterval
@@ -991,7 +989,7 @@ public actor PlaybackEngine: PlayerEngine {
         if !energyInputs.occluded { _ = await resyncAfterOcclusion() }
     }
 
-    /// The window is visible again (or PiP started): an exact seek to the clock with the keyframe
+    /// The window is visible again: an exact seek to the clock with the keyframe
     /// preview brings the picture back; its report is the resync latency.
     private func resyncAfterOcclusion() async -> UInt64? {
         guard videoStoppedForOcclusion else { return nil }
@@ -1263,30 +1261,6 @@ public actor PlaybackEngine: PlayerEngine {
         await seek(.exact(target))
         return target
     }
-
-    /// While Picture in Picture runs, a visible subtitle is composited into each frame before
-    /// enqueue, because the PiP window shows only the display layer (8.6, D37).
-    public func setPictureInPictureActive(_ active: Bool) {
-        guard active != pictureInPicture else { return }
-        pictureInPicture = active
-        subtitlePresenter.update { $0.pictureInPicture = active }
-        // The PiP window shows the display layer: occlusion no longer stops video (section 7.9).
-        applyEnergy()
-        guard active else {
-            shared.frameTransform.withLock { $0 = nil }
-            return
-        }
-        let presenter = subtitlePresenter
-        let compositor = pipCompositor
-        shared.frameTransform.withLock { transform in
-            transform = FrameTransform { frame in
-                guard let subtitle = presenter.pictureInPictureSubtitle() else { return frame }
-                return compositor.composite(frame, subtitle: subtitle.bitmap, renderedWidth: subtitle.width, renderedHeight: subtitle.height)
-            }
-        }
-    }
-
-    public var pictureInPictureCompositor: PiPFrameCompositor { pipCompositor }
 
     /// Cmd+S: the frame on screen at its native size with the subtitle composited, as a PNG in
     /// `ReelEnvironment.screenshotsDirectory` (design section 9.12). Never waits for a decode.
@@ -2614,10 +2588,7 @@ public actor PlaybackEngine: PlayerEngine {
             guard shared.isCurrent(frame.generation), let output = shared.videoOutput.withLock({ $0 }) else {
                 continue
             }
-            // Picture in Picture composites the subtitle into a pooled copy; the original is kept
-            // for screenshots and landing checks.
-            let shown = shared.frameTransform.withLock { $0 }?.apply(frame) ?? frame
-            let outcome = await output.enqueue(shown, releasingSlot: false)
+            let outcome = await output.enqueue(frame, releasingSlot: false)
             let now = monotonicNanos()
             credits.release(generation: frame.generation)
             guard outcome == .enqueued || outcome == .enqueuedWithDecodeFailures else {
@@ -2878,7 +2849,6 @@ public final class SubtitlePresenter: Sendable {
         /// A scrub shows the line at the pointer, not at the keyframe on screen.
         var scrubTime: MediaTime?
         var playing = false
-        var pictureInPicture = false
         /// The window is hidden while playing: nothing renders (section 7.9).
         var suspended = false
         /// The playback rate, to turn media time until the next event into wall time.
@@ -2956,7 +2926,7 @@ public final class SubtitlePresenter: Sendable {
         failure.withLock { $0 = SendableCallback(handler) }
     }
 
-    /// The last published subtitle (tests, PiP).
+    /// The last published subtitle (tests).
     public var current: Output { output.withLock { $0 } }
 
     var settingsSnapshot: Settings { settings.withLock { $0 } }
@@ -2968,10 +2938,8 @@ public final class SubtitlePresenter: Sendable {
         timeline.withLock { $0 = BitmapSubtitleTimeline() }
         update { settings in
             let viewport = settings.viewport
-            let pictureInPicture = settings.pictureInPicture
             settings = Settings()
             settings.viewport = viewport
-            settings.pictureInPicture = pictureInPicture
             settings.videoWidth = videoWidth
             settings.videoHeight = videoHeight
             settings.holding = true
@@ -3060,18 +3028,10 @@ public final class SubtitlePresenter: Sendable {
         }
     }
 
-    /// The subtitle for Picture in Picture, drawn at the video's size while PiP is active.
-    func pictureInPictureSubtitle() -> (bitmap: SubtitleBitmap, width: Int, height: Int)? {
-        guard settings.withLock({ $0.pictureInPicture }) else { return nil }
-        let published = output.withLock { $0 }
-        guard let bitmap = published.bitmap, published.frameWidth > 0 else { return nil }
-        return (bitmap, published.frameWidth, published.frameHeight)
-    }
-
     // MARK: Rendering (queue)
 
     private func frameSize(_ current: Settings) -> (width: Int, height: Int, scale: Double) {
-        if !current.pictureInPicture, let viewport = current.viewport, viewport.width > 0, viewport.height > 0 {
+        if let viewport = current.viewport, viewport.width > 0, viewport.height > 0 {
             return (viewport.width, viewport.height, viewport.scale)
         }
         return (current.videoWidth, current.videoHeight, 1)
@@ -3088,7 +3048,7 @@ public final class SubtitlePresenter: Sendable {
         }
         let started = ContinuousClock.now
         let time = (current.scrubTime ?? clock()) - current.delay
-        let inset = current.pictureInPicture ? nil : current.bottomInsetPoints.map { $0 * size.scale }
+        let inset = current.bottomInsetPoints.map { $0 * size.scale }
         let drawn = draw(track: track, format: format, at: time, settings: current, width: size.width, height: size.height, inset: inset)
         let elapsed = ContinuousClock.now - started
         output.withLock { output in
@@ -3270,12 +3230,10 @@ public final class SubtitlePresenter: Sendable {
             output.publishCount += 1
         }
         guard let host = host.withLock({ $0 }) else { return }
-        // In Picture in Picture the main window shows a placeholder; the subtitle goes into frames.
-        let shown = current.pictureInPicture ? nil : bitmap
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
-                let viewport = host.show(shown, frameWidth: width, frameHeight: height)
-                if let self, let viewport, viewport != current.viewport, !current.pictureInPicture {
+                let viewport = host.show(bitmap, frameWidth: width, frameHeight: height)
+                if let self, let viewport, viewport != current.viewport {
                     self.update { $0.viewport = viewport }
                 }
             }

@@ -7,7 +7,7 @@ import ReelEngine
 import Synchronization
 
 /// `reelctl hdr <file> [--decoder hw|sw] [--display sdr|xdr|external|headroom=X] [--display-headroom X]
-/// [--setting full|limited|off] [--screenshot png] [--thumbnail] [--pip-check] --json` (section 7.7).
+/// [--setting full|limited|off] [--screenshot png] [--thumbnail] --json` (section 7.7).
 ///
 /// Decodes one frame of a patch ramp (build/fixtures/hdr, rectangles from logs/ramps.json) and
 /// reports the content classification, the Dolby Vision record and policy, the colour
@@ -15,8 +15,7 @@ import Synchronization
 /// centre block) against the generated codes, the `DynamicRangePlan` for the simulated display and
 /// setting, and each patch tone-mapped to 8-bit sRGB through `HDRToneMapper`. `--screenshot`
 /// writes the Cmd+S image and reads the patches back from the PNG, `--thumbnail` reads the
-/// reference white patch from a generated seek-bar thumbnail, and `--pip-check` composites a white
-/// subtitle the way Picture in Picture does and reads the Y code under it.
+/// reference white patch from a generated seek-bar thumbnail.
 enum HdrCommand {
     struct Parameters: Encodable {
         var file: String
@@ -25,7 +24,6 @@ enum HdrCommand {
         var setting: HDRSetting
         var screenshot: String?
         var thumbnail: Bool
-        var pipCheck: Bool
     }
 
     /// The decoded frame: the middle of the 2 s ramps, away from the first and last frames.
@@ -131,17 +129,6 @@ enum HdrCommand {
         var decoder: String?
     }
 
-    struct PiPReport: Encodable {
-        var composited: Bool
-        /// Mean Y code under the subtitle's white.
-        var y: Double?
-        /// Reference white: 573 for PQ, 721 for HLG (10-bit limited), 235 for 8-bit SDR.
-        var expectedY: Double
-        var difference: Double?
-        /// Y code at the same place without the subtitle.
-        var underlyingY: Double?
-    }
-
     struct Report: Encodable {
         var file: String
         var requestedDecoder: String
@@ -164,7 +151,6 @@ enum HdrCommand {
         var maxCodeError: Double?
         var screenshot: ScreenshotReport?
         var thumbnail: ThumbnailReport?
-        var pipCheck: PiPReport?
     }
 
     static func run(_ arguments: CommandArguments) throws -> Int32 {
@@ -196,8 +182,7 @@ enum HdrCommand {
             display: display,
             setting: setting,
             screenshot: arguments.options["--screenshot"],
-            thumbnail: arguments.flags.contains("--thumbnail"),
-            pipCheck: arguments.flags.contains("--pip-check")
+            thumbnail: arguments.flags.contains("--thumbnail")
         )
     }
 
@@ -281,7 +266,6 @@ enum HdrCommand {
         }
 
         let thumbnail = parameters.thumbnail ? try thumbnailValue(url: url, decoder: decoder, ramp: ramp, rampName: rampName) : nil
-        let pip = parameters.pipCheck ? pipCheck(grab.frame, ramp: ramp, rampName: rampName) : nil
         let neutral = summarize(patches.filter { $0.kind == "neutral" }.compactMap(\.toneMapped), patches: patches, ramp: rampName)
         var headroomCurve: [Double]?
         if transfer != nil, let curve = try? buffer.withUnsafeBuffer({ try HDRToneMapper.headroomCurveImage($0) }), let curveRaster = SRGBRaster(curve) {
@@ -309,8 +293,7 @@ enum HdrCommand {
             headroomCurveLumas: headroomCurve,
             maxCodeError: patches.compactMap(\.maxError).max(),
             screenshot: screenshot,
-            thumbnail: thumbnail,
-            pipCheck: pip
+            thumbnail: thumbnail
         )
     }
 
@@ -405,38 +388,6 @@ enum HdrCommand {
             width: image.width, height: image.height, patch: white.name, value: value.rounded,
             luma: (value.luma * 10).rounded() / 10, decoder: report.decoder?.rawValue
         )
-    }
-
-    /// Composites an opaque white subtitle box over the darkest patch, as PiP does, and reads the
-    /// Y code under it.
-    static func pipCheck(_ frame: DecodedFrame, ramp: RampTable.Ramp, rampName: String) -> PiPReport {
-        let expected: Double = switch rampName {
-        case "pq": Double(ramp.patches.first { $0.nits == HDRToneMapper.referenceWhiteNits }?.codes.y ?? 573)
-        case "hlg": Double(ramp.patches.first { $0.signal == 0.75 }?.codes.y ?? 721)
-        default: 235
-        }
-        let target = ramp.patches[0]
-        let box = PixelRect(x: target.center.x - 48, y: target.center.y - 24, width: 96, height: 48)
-        let underlying = FrameGrabber.meanCodes(frame.pixelBuffer, centerX: target.center.x, centerY: target.center.y, size: 8)?.y
-        guard let image = whiteImage(width: box.width, height: box.height) else {
-            return PiPReport(composited: false, y: nil, expectedY: expected, difference: nil, underlyingY: underlying)
-        }
-        let compositor = PiPFrameCompositor()
-        let output = compositor.composite(frame, subtitle: SubtitleBitmap(image: image, rect: box), renderedWidth: frame.width, renderedHeight: frame.height)
-        let composited = compositor.statistics.composited == 1
-        let y = FrameGrabber.meanCodes(output.pixelBuffer, centerX: target.center.x, centerY: target.center.y, size: 8)?.y
-        return PiPReport(composited: composited, y: y, expectedY: expected, difference: y.map { abs($0 - expected) }, underlyingY: underlying)
-    }
-
-    static func whiteImage(width: Int, height: Int) -> CGImage? {
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                  data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: space,
-                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-              ) else { return nil }
-        context.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage()
     }
 
     private static func printText(_ report: Report) {

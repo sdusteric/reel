@@ -82,7 +82,7 @@ enum MainMenu {
             item("Fit to Screen", #selector(AppDelegate.scaleFit(_:)), key: "3"),
             .separator(),
             item("Enter Full Screen", #selector(AppDelegate.toggleFullscreen(_:)), key: "f", modifiers: [.command, .control]),
-            item("Enter Picture in Picture", #selector(AppDelegate.togglePictureInPicture(_:)), key: "p", modifiers: [.command, .control]),
+            item("Enter Mini Player", #selector(AppDelegate.toggleMiniPlayer(_:)), key: "p", modifiers: [.command, .control]),
             .separator(),
             dynamicSubmenu("Video Track", kind: .video, trackMenus: trackMenus, items: []),
             item("Next Video Track", #selector(AppDelegate.cycleVideoTrack(_:)), key: "v", modifiers: [.command, .control]),
@@ -236,7 +236,7 @@ enum MainMenu {
         menu.addItem(submenu("Speed", items: speedItems() + [.separator()] + speedPresetItems(rate: model.rate)))
         menu.addItem(.separator())
         menu.addItem(item("Take Screenshot", #selector(AppDelegate.takeScreenshot(_:))))
-        menu.addItem(item("Enter Picture in Picture", #selector(AppDelegate.togglePictureInPicture(_:))))
+        menu.addItem(item("Enter Mini Player", #selector(AppDelegate.toggleMiniPlayer(_:))))
         return menu
     }
 

@@ -233,17 +233,17 @@ import Testing
         #expect(map.action(for: KeyChord(.mediaRewind)) == .seek(seconds: -15))
     }
 
-    @Test func screenshotLoopAndPictureInPictureKeys() {
+    @Test func screenshotLoopAndMiniPlayerKeys() {
         #expect(action("Meta+s") == .screenshot)
         #expect(action("Meta+l") == .abLoop)
         #expect(action("Meta+L") == .toggleFileLoop)
         #expect(map.action(for: KeyChord(character: "l", modifiers: [.command, .shift])) == .toggleFileLoop)
-        #expect(action("Ctrl+Meta+p") == .togglePictureInPicture)
+        #expect(action("Ctrl+Meta+p") == .toggleMiniPlayer)
     }
 
     @Test func menuLookupFindsTheM2Chords() {
         #expect(map.chord(for: .screenshot) == KeyChord(character: "s", modifiers: .command))
-        #expect(map.chord(for: .togglePictureInPicture) == KeyChord(character: "p", modifiers: [.control, .command]))
+        #expect(map.chord(for: .toggleMiniPlayer) == KeyChord(character: "p", modifiers: [.control, .command]))
     }
 
     @Test func videoInfoIsCommandI() {

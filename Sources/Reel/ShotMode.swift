@@ -8,8 +8,7 @@ import ReelUI
 /// `Reel --shot <scenario> --appearance light|dark --size WxH --out <png> [--fixture f --at s]`
 /// (design 14, D16). Renders `PlayerSceneView` with `ImageRenderer` and exits. It never calls
 /// `NSApplication.run`, never creates a window and never touches `NSApp`, so the frontmost app
-/// cannot change. Picture in Picture and Now Playing are never started here: the pip scenario is
-/// the model's placeholder state only. A bare `RunLoop.main` serves the main queue on the real
+/// cannot change. The mini player and Now Playing are never started here. A bare `RunLoop.main` serves the main queue on the real
 /// main thread; `dispatchMain()` would not do, since it exits the main thread and SwiftUI's
 /// renderer then waits forever for it.
 enum ShotMode {

@@ -5,7 +5,7 @@ import ReelUI
 
 /// The one player window (design 9.1): borderless-feeling, black, sized to the video, with the
 /// traffic lights fading together with the SwiftUI chrome. It owns the outputs of the current
-/// engine: the display layer, the subtitle layer and Picture in Picture.
+/// engine: the display layer and the subtitle layer.
 final class PlayerWindowController: NSWindowController, NSWindowDelegate, PlayerCommandTarget {
     let model: PlayerModel
     private let stateStore: StateStore
@@ -16,9 +16,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var videoSize: CGSize?
     /// The engine of the open file; the model closes it, this keeps its outputs in step.
     private(set) var engine: PlaybackEngine?
-    let pictureInPicture: PictureInPicture
-    /// The macOS PiP crop workaround: the window shrinks to the PiP panel and hides while PiP runs.
-    private let pipSource: PiPSourceWindow
     /// M3 observers (sections 7.7, 7.9, 7.10): the screen's EDR state, occlusion, pointer
     /// activity for the paused thumbnail rule, and the drive of the open file.
     private var displayMonitor: DisplayRangeMonitor?
@@ -40,8 +37,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         self.screenshots = screenshots
         self.log = log
         showSettingsAction = showSettings
-        pictureInPicture = PictureInPicture(model: model, log: log)
-        pipSource = PiPSourceWindow(log: { log.info($0) })
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: WindowSizing.emptySize),
             styleMask: [.titled, .fullSizeContentView, .resizable, .closable, .miniaturizable],
@@ -75,23 +70,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         content.videoView.commandTarget = self
         content.videoView.onLayersResized = { [weak self] in self?.engine?.subtitleLayerDidLayout() }
         window.contentView = content
-        pipSource.sourceSize = { [weak content] in content?.videoView.displayLayer.bounds.size }
         contentView = content
         placeEmptyWindow()
 
         model.onChromeVisibilityChange = { [weak self] visible in self?.chromeVisibilityChanged(visible) }
         model.onOpened = { [weak self] info in self?.fitWindow(to: info) }
-        model.onPictureInPictureRequest = { [weak self] wanted in self?.pictureInPicture.toggle(wanted) }
         model.onAddSubtitleFile = { [weak self] in self?.addSubtitleFile() }
-        pictureInPicture.hidesWindowDuringPiP = { [weak self] in self?.pipSource.isActive == true }
-        pictureInPicture.onActiveChange = { [weak self] active in
-            if let self, let window = self.window {
-                if active { self.pipSource.begin(window: window) } else { self.pipSource.end() }
-            }
-            self?.occlusion?.setPictureInPictureActive(active)
-            guard let engine = self?.engine else { return }
-            Task { await engine.setPictureInPictureActive(active) }
-        }
         model.onRevealFile = { url in NSWorkspace.shared.activateFileViewerSelecting([url]) }
         model.onOpenAnotherFile = { [weak self] in self?.openDocument() }
         model.onAnnouncement = { [weak window] text in
@@ -164,10 +148,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         // OcclusionGate already waits `EnergyPolicy.occlusionDelay`, so the engine stops at once.
         configuration.occlusionDelay = .zero
         let engine = EngineFactory.makePlaybackEngine(configuration: configuration)
-        pictureInPicture.stop()
         self.engine = engine
         if let layers = contentView?.videoView.prepareLayers() {
-            pictureInPicture.attach(layers.display)
             engine.attach(subtitleLayer: layers.subtitles)
             await engine.attach(displayLayer: layers.display)
         }
@@ -194,7 +176,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func closeFile() {
-        pictureInPicture.stop()
         Task {
             await model.close()
             engine = nil
@@ -398,10 +379,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         occlusion?.setWindowVisible(visible)
     }
 
-    /// Closing the window while PiP is active stops PiP and closes the file (design 9.9).
     func windowWillClose(_ notification: Notification) {
-        pictureInPicture.stop()
-        pipSource.end()
         model.chrome.invalidate()
         displayMonitor?.stop()
         volumeWatcher?.stop()
@@ -412,8 +390,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func saveFrame() {
-        // While PiP runs the window is shrunk to the panel; that size is not the user's.
-        guard let window, model.hasMedia, !window.styleMask.contains(.fullScreen), !pipSource.isActive else { return }
+        guard let window, model.hasMedia, !window.styleMask.contains(.fullScreen) else { return }
         // Stored as the content rect, the size the sizing rules work in.
         let frame = window.contentRect(forFrameRect: window.frame)
         do {
@@ -427,8 +404,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 }
 
 /// Tells the engine the window is hidden once it has stayed hidden for
-/// `EnergyPolicy.occlusionDelay` (1 s), and visible again at once (section 7.9, D58). Never while
-/// Picture in Picture is active: PiP shows the display layer, so video must keep decoding.
+/// `EnergyPolicy.occlusionDelay` (1 s), and visible again at once (section 7.9, D58).
 @MainActor
 final class OcclusionGate {
     static let delay = EnergyPolicy.occlusionDelay
@@ -436,7 +412,6 @@ final class OcclusionGate {
     private let scheduler: any AppScheduling
     private let apply: (Bool) -> Void
     private var hidden = false
-    private var pictureInPicture = false
     private var pending: ScheduledAction?
     /// What the engine was last told.
     private(set) var isOccluded = false
@@ -453,18 +428,13 @@ final class OcclusionGate {
         update()
     }
 
-    func setPictureInPictureActive(_ active: Bool) {
-        pictureInPicture = active
-        update()
-    }
-
     func cancel() {
         pending?.cancel()
         pending = nil
     }
 
     private func update() {
-        guard hidden, !pictureInPicture else {
+        guard hidden else {
             cancel()
             if isOccluded {
                 isOccluded = false
@@ -476,7 +446,7 @@ final class OcclusionGate {
         pending = scheduler.schedule(after: OcclusionGate.delay) { [weak self] in
             guard let self else { return }
             self.pending = nil
-            guard self.hidden, !self.pictureInPicture, !self.isOccluded else { return }
+            guard self.hidden, !self.isOccluded else { return }
             self.isOccluded = true
             self.apply(true)
         }

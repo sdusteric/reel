@@ -147,7 +147,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model, !isTerminating else { return .terminateNow }
         isTerminating = true
-        windowController?.pictureInPicture.stop()
         nowPlaying?.clear()
         Task {
             await model.shutdown()
@@ -173,7 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     // MARK: Observing the model
 
-    /// The folder watch, Now Playing and the PiP controls follow the model.
+    /// The folder watch and Now Playing follow the model.
     private func startObserving(_ model: PlayerModel, controller: PlayerWindowController) {
         let navigator = EpisodeNavigator(log: log)
         navigator.onFolderChange = { [weak model] in
@@ -190,7 +189,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         nowPlaying.onTick = { [weak self] in self?.refreshNowPlaying() }
         observers.append(ModelObserver(read: { NowPlayingKey(model) }, onChange: { [weak self] _ in
             self?.refreshNowPlaying()
-            controller.pictureInPicture.refresh()
         }))
     }
 
@@ -308,7 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func scaleDouble(_ sender: Any?) { perform(.windowScale(.factor(2))) }
     @objc func scaleFit(_ sender: Any?) { perform(.windowScale(.fitScreen)) }
     @objc func toggleFullscreen(_ sender: Any?) { perform(.toggleFullscreen) }
-    @objc func togglePictureInPicture(_ sender: Any?) { perform(.togglePictureInPicture) }
+    @objc func toggleMiniPlayer(_ sender: Any?) { perform(.toggleMiniPlayer) }
     @objc func cycleVideoTrack(_ sender: Any?) { perform(.cycleTrack(.video)) }
 
     @objc func selectVideoTrack(_ sender: Any?) {
@@ -418,8 +416,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             menuItem.state = model.videoInfoVisible ? .on : .off
         case #selector(toggleFullscreen(_:)):
             menuItem.title = windowController?.isFullscreen == true ? "Exit Full Screen" : "Enter Full Screen"
-        case #selector(togglePictureInPicture(_:)):
-            menuItem.title = model.isPictureInPictureActive ? "Exit Picture in Picture" : "Enter Picture in Picture"
+        case #selector(toggleMiniPlayer(_:)):
+            menuItem.title = model.isMiniPlayerActive ? "Exit Mini Player" : "Enter Mini Player"
         case #selector(selectSpeedPreset(_:)):
             if let rate = menuItem.representedObject as? Double {
                 menuItem.state = abs(model.rate - rate) < 0.001 ? .on : .off
@@ -430,7 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 }
 
-/// What Now Playing and the PiP controls show; a change refreshes them. The position is left
+/// What Now Playing shows; a change refreshes it. The position is left
 /// out on purpose: Now Playing extrapolates it, and seeks show up as state changes.
 private struct NowPlayingKey: Equatable {
     var url: URL?

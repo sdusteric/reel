@@ -33,8 +33,6 @@ nonisolated public enum ShotScenario: String, CaseIterable, Sendable {
     case osdLoop = "osd-loop"
     /// The end of an episode: Replay, the lit next button and the countdown card (png/14).
     case nextEpisode = "next-episode"
-    /// The main window while Picture in Picture is active (png/16).
-    case pip
     /// Fullscreen layout: controller 56 pt from the bottom, "Ends at" time (png/15).
     case fullscreen
     /// A file alone in its folder with no subtitles: no previous or next, empty subtitle panel (png/18).
@@ -214,14 +212,13 @@ public enum ShotRenderer {
     public static let demoTitle = "Northern.Line.S02E05.1080p.BluRay.x265.10bit-RLS.mkv"
 
     /// A model in the state the scenario shows. It has no engine and never opens a file.
-    /// `thumbnail` is the seek-bar and card picture, `snapshot` the frame behind the PiP placeholder.
+    /// `thumbnail` is the seek-bar and card picture.
     public static func makeModel(
         scenario: ShotScenario,
         title: String,
         position: MediaTime,
         duration: MediaTime,
         thumbnail: CGImage? = nil,
-        snapshot: CGImage? = nil,
         dynamicRange: DynamicRange? = nil,
         display: DisplayCapabilities? = nil,
         problem: MediaProblem? = nil,
@@ -312,9 +309,6 @@ public enum ShotRenderer {
                 model.autoAdvance.tick()
                 model.autoAdvance.thumbnail = thumbnail ?? placeholderFrame(width: 384, height: 216)
             }
-        case .pip:
-            model.isPictureInPictureActive = true
-            model.pictureInPictureSnapshot = snapshot
         case .hdrBadge:
             break
         case .videoInfo:
@@ -384,7 +378,6 @@ public enum ShotRenderer {
             position: position,
             duration: duration,
             thumbnail: thumbnail,
-            snapshot: frame,
             dynamicRange: dynamicRange,
             display: display,
             problem: problem,

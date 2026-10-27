@@ -16,20 +16,20 @@ import Testing
 
     @Test func allButtonsFitFromFiveSixtyEight() {
         let full = ControllerLayout.buttons(controllerWidth: 576, hasEpisodes: true)
-        #expect(full == ControllerLayout.Buttons(previous: true, next: true, pictureInPicture: true, audio: true, speed: true))
+        #expect(full == ControllerLayout.Buttons(previous: true, next: true, miniPlayer: true, audio: true, speed: true))
         let exact = ControllerLayout.buttons(controllerWidth: 568, hasEpisodes: true)
         #expect(exact == full)
     }
 
-    @Test func belowFiveSixtyEightDropsEpisodesAndPictureInPicture() {
+    @Test func belowFiveSixtyEightDropsEpisodesAndMiniPlayer() {
         let buttons = ControllerLayout.buttons(controllerWidth: 567, hasEpisodes: true)
-        #expect(!buttons.previous && !buttons.next && !buttons.pictureInPicture)
+        #expect(!buttons.previous && !buttons.next && !buttons.miniPlayer)
         #expect(buttons.audio && buttons.speed)
     }
 
     @Test func belowFourEightyAlsoDropsAudioAndSpeed() {
         let buttons = ControllerLayout.buttons(controllerWidth: 440, hasEpisodes: true)
-        #expect(buttons == ControllerLayout.Buttons(previous: false, next: false, pictureInPicture: false, audio: false, speed: false))
+        #expect(buttons == ControllerLayout.Buttons(previous: false, next: false, miniPlayer: false, audio: false, speed: false))
         let atFourEighty = ControllerLayout.buttons(controllerWidth: 480, hasEpisodes: true)
         #expect(atFourEighty.audio && atFourEighty.speed)
         #expect(ControllerLayout.buttons(controllerWidth: 479, hasEpisodes: true).count == 0)
@@ -38,7 +38,7 @@ import Testing
     @Test func aFileAloneInItsFolderHidesPreviousAndNext() {
         let buttons = ControllerLayout.buttons(controllerWidth: 600, hasEpisodes: false)
         #expect(!buttons.previous && !buttons.next)
-        #expect(buttons.pictureInPicture && buttons.audio && buttons.speed)
+        #expect(buttons.miniPlayer && buttons.audio && buttons.speed)
     }
 
     @Test func framesStayInsideTheWindow() {
