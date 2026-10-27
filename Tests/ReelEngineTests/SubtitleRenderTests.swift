@@ -281,4 +281,33 @@ func inkBounds(_ bitmap: SubtitleBitmap?, rows: Range<Int>) -> PixelRect? {
         // A lift lower than the default position changes nothing.
         #expect(SubtitleRenderer.linePosition(settings: Self.settings(bottomInset: 20), track: track, unstyled: true) == 0)
     }
+
+    @Test func minimumHeightScalesFontsOnSmallLayers() {
+        let small = SubtitlePresenter.Viewport(width: 512, height: 288, scale: 2) // 144 pt tall
+        #expect(abs(SubtitlePresenter.fontScale(base: 1, minimumHeightPoints: 208, viewport: small) - 208.0 / 144) < 1e-9)
+        #expect(abs(SubtitlePresenter.fontScale(base: 1.5, minimumHeightPoints: 208, viewport: small) - 1.5 * 208 / 144) < 1e-9)
+        #expect(SubtitlePresenter.fontScale(base: 1, minimumHeightPoints: nil, viewport: small) == 1)
+        let tall = SubtitlePresenter.Viewport(width: 960, height: 540, scale: 2) // 270 pt: above the floor
+        #expect(SubtitlePresenter.fontScale(base: 1, minimumHeightPoints: 208, viewport: tall) == 1)
+        #expect(SubtitlePresenter.fontScale(base: 1, minimumHeightPoints: 208, viewport: nil) == 1)
+    }
+
+    @Test func minimumHeightKeepsSmallLayersReadable() throws {
+        let url = try subtitleFixture("subs_tracks.zh-Hans.srt")
+        let store = SubtitleTrackStore()
+        let loaded = try ExternalSubtitleLoader.load(url, into: store)
+        let renderer = try SubtitleRenderer()
+        renderer.sync(with: store, track: loaded.trackID)
+        let viewport = SubtitlePresenter.Viewport(width: 512, height: 288, scale: 2)
+        func height(_ minimum: Double?) throws -> Int {
+            let scale = SubtitlePresenter.fontScale(base: 1, minimumHeightPoints: minimum, viewport: viewport)
+            let settings = SubtitleRenderSettings(frameWidth: 512, frameHeight: 288, videoWidth: 1280, videoHeight: 720, scale: scale)
+            let bitmap = try #require(renderer.render(at: .seconds(2), settings: settings).bitmap)
+            return try #require(SubtitleInk.measure([(bitmap.image, bitmap.rect)], frameWidth: 512, frameHeight: 288).bounds).height
+        }
+        let plain = try height(nil)
+        let floored = try height(208)
+        let ratio = Double(floored) / Double(plain)
+        #expect(abs(ratio - 208.0 / 144) <= 0.1 * 208 / 144, "ink \(plain) px plain, \(floored) px with the floor")
+    }
 }

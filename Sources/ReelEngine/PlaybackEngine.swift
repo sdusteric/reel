@@ -1216,6 +1216,11 @@ public actor PlaybackEngine: PlayerEngine {
         subtitlePresenter.update { $0.bottomInsetPoints = inset }
     }
 
+    public func setSubtitleMinimumHeight(_ points: Double?) async {
+        let minimum = points.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        subtitlePresenter.update { $0.minimumHeightPoints = minimum }
+    }
+
     /// Playback rate 0.25 to 4 (`PlaybackSpeed`); audio keeps its pitch (`.timeDomain`).
     public func setRate(_ rate: Double) async {
         let clamped = PlaybackSpeed.clamp(rate)
@@ -2841,6 +2846,8 @@ public final class SubtitlePresenter: Sendable {
         var scale = 1.0
         var position = SubtitleStyle.defaultPosition
         var bottomInsetPoints: Double?
+        /// The mini player's floor for text sizes (`setSubtitleMinimumHeight`).
+        var minimumHeightPoints: Double?
         var videoWidth = 0
         var videoHeight = 0
         var viewport: Viewport?
@@ -2926,6 +2933,14 @@ public final class SubtitlePresenter: Sendable {
         failure.withLock { $0 = SendableCallback(handler) }
     }
 
+    /// The size factor with the mini player's floor: a layer shorter than `minimumHeightPoints`
+    /// draws text as large as it would be at that height.
+    static func fontScale(base: Double, minimumHeightPoints: Double?, viewport: Viewport?) -> Double {
+        guard let minimum = minimumHeightPoints, let viewport, viewport.height > 0, viewport.scale > 0 else { return base }
+        let points = Double(viewport.height) / viewport.scale
+        return base * max(1, minimum / points)
+    }
+
     /// The last published subtitle (tests).
     public var current: Output { output.withLock { $0 } }
 
@@ -2938,8 +2953,10 @@ public final class SubtitlePresenter: Sendable {
         timeline.withLock { $0 = BitmapSubtitleTimeline() }
         update { settings in
             let viewport = settings.viewport
+            let minimumHeight = settings.minimumHeightPoints
             settings = Settings()
             settings.viewport = viewport
+            settings.minimumHeightPoints = minimumHeight
             settings.videoWidth = videoWidth
             settings.videoHeight = videoHeight
             settings.holding = true
@@ -3151,7 +3168,7 @@ public final class SubtitlePresenter: Sendable {
                 frameHeight: height,
                 videoWidth: current.videoWidth,
                 videoHeight: current.videoHeight,
-                scale: current.scale,
+                scale: SubtitlePresenter.fontScale(base: current.scale, minimumHeightPoints: current.minimumHeightPoints, viewport: current.viewport),
                 position: current.position,
                 bottomInset: inset
             ))

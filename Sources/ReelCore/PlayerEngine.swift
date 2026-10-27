@@ -46,6 +46,9 @@ public protocol PlayerEngine: AnyObject, Sendable {
     /// Lifts bottom-aligned, unpositioned lines so their bottom edge sits this many points above
     /// the window bottom (`SubtitleStyle.liftInset`); nil puts them back (section 8.5).
     func setSubtitleAvoidance(bottomInsetPoints: Double?) async
+    /// Text subtitles keep the size they have at this layer height in points when the layer is
+    /// shorter (the mini player); nil drops the floor.
+    func setSubtitleMinimumHeight(_ points: Double?) async
     /// Playback rate 0.25 to 4 with pitch preserved; answered by `.rateChanged`.
     func setRate(_ rate: Double) async
     /// A-B loop and file loop; answered by `.loopChanged`.
@@ -82,6 +85,7 @@ extension PlayerEngine {
     public func setSubtitlePosition(_ percent: Double) async {}
     public func setSubtitlesVisible(_ visible: Bool) async {}
     public func setSubtitleAvoidance(bottomInsetPoints: Double?) async {}
+    public func setSubtitleMinimumHeight(_ points: Double?) async {}
     public func setRate(_ rate: Double) async {}
     public func setLoop(_ loop: LoopState) async {}
     public func thumbnail(at time: MediaTime) async -> ThumbnailImage? { nil }

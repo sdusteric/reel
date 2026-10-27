@@ -25,6 +25,7 @@ final class FakeEngine: PlayerEngine {
         case subtitlePosition(Double)
         case subtitlesVisible(Bool)
         case subtitleAvoidance(Double?)
+        case subtitleMinimumHeight(Double?)
         case rate(Double)
         case loop(LoopState)
         case thumbnail(MediaTime)
@@ -210,6 +211,10 @@ final class FakeEngine: PlayerEngine {
 
     func setSubtitleAvoidance(bottomInsetPoints: Double?) async {
         record(.subtitleAvoidance(bottomInsetPoints))
+    }
+
+    func setSubtitleMinimumHeight(_ points: Double?) async {
+        record(.subtitleMinimumHeight(points))
     }
 
     func setRate(_ rate: Double) async {
