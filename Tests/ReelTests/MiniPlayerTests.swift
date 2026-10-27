@@ -719,4 +719,29 @@ final class FakeWindowOps {
         flow.leaveAtOnce()
         #expect(AppDelegate.quitsAfterLastWindowClosed(miniFlow: flow))
     }
+
+    @Test func thePictureFillsTheWindowAndThePanel() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        // A titled window like the player's, never shown: its title bar is the safe area to ignore.
+        let (view, _) = DynamicRangeLayerTests.makeView()
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 930, height: 523),
+            styleMask: [.titled, .fullSizeContentView, .resizable], backing: .buffered, defer: true
+        )
+        window.titlebarAppearsTransparent = true
+        window.contentView = view
+        view.layoutSubtreeIfNeeded()
+        view.videoView.layoutSubtreeIfNeeded()
+        #expect(view.videoView.convert(view.videoView.bounds, to: view) == view.bounds)
+        #expect(view.videoView.displayLayer.frame == view.videoView.bounds)
+
+        let rig = try await Self.rig(scratch: scratch)
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        let content = try #require(rig.controller.panel?.contentView)
+        content.layoutSubtreeIfNeeded()
+        rig.surface.layoutSubtreeIfNeeded()
+        #expect(rig.surface.convert(rig.surface.bounds, to: content) == content.bounds)
+        #expect(rig.surface.displayLayer.frame == rig.surface.bounds)
+    }
 }

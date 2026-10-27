@@ -97,6 +97,8 @@ final class MiniPlayerContentView: NSView {
         let slot = slot
         let hosting = MiniHostingView(rootView: MiniPlayerView(model: model, actions: actions) { SurfaceSlot(view: slot) })
         hosting.sizingOptions = []
+        // The panel's hidden title bar is not a safe area: the picture fills the panel.
+        hosting.safeAreaRegions = []
         hosting.autoresizingMask = [.width, .height]
         addSubview(hosting)
         self.hosting = hosting

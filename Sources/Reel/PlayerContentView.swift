@@ -30,6 +30,9 @@ final class PlayerContentView: DropAcceptingView {
             SurfaceSlot(view: slot)
         })
         hosting.sizingOptions = []
+        // The scene draws under the transparent title bar; without this the picture is laid out
+        // below it and letterboxed on all sides.
+        hosting.safeAreaRegions = []
         hosting.frame = bounds
         hosting.autoresizingMask = [.width, .height]
         hosting.wantsLayer = true
