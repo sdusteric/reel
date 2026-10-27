@@ -706,4 +706,17 @@ final class FakeWindowOps {
         let size = MiniPlayerGeometry.size(aspect: 16 / 9, boxScale: 1, visible: Self.screenB.visibleFrame)
         #expect(rig.controller.panel?.frame == MiniPlayerGeometry.frame(size: size, corner: .bottomRight, visible: Self.screenB.visibleFrame))
     }
+
+    @Test func hidingTheWindowForTheMiniPlayerDoesNotQuitReel() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let flow = Self.flow(rig, window: FakeWindowOps())
+        #expect(AppDelegate.quitsAfterLastWindowClosed(miniFlow: nil))
+        #expect(AppDelegate.quitsAfterLastWindowClosed(miniFlow: flow))
+        flow.request(true)
+        #expect(!AppDelegate.quitsAfterLastWindowClosed(miniFlow: flow), "the window is ordered out and the panel is not counted")
+        flow.leaveAtOnce()
+        #expect(AppDelegate.quitsAfterLastWindowClosed(miniFlow: flow))
+    }
 }

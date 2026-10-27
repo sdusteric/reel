@@ -141,7 +141,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        Self.quitsAfterLastWindowClosed(miniFlow: windowController?.miniFlow)
+    }
+
+    /// Entering the mini player orders the window out, and AppKit does not count the panel as a
+    /// window, so Reel would quit on the click.
+    static func quitsAfterLastWindowClosed(miniFlow: MiniPlayerFlow?) -> Bool {
+        miniFlow?.isActive != true
     }
 
     /// A Dock click while the mini player is up brings the window back (mini player design 6).
