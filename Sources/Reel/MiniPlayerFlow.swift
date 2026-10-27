@@ -43,11 +43,17 @@ final class MiniPlayerFlow {
 
     /// The controller button, the menu and Ctrl+Cmd+P (`true` enters).
     func request(_ wanted: Bool) {
-        if wanted { enter() } else { leave(.backToWindow) }
+        if wanted {
+            enter()
+        } else {
+            pendingEnter = false
+            leave(.backToWindow)
+        }
     }
 
     private func enter() {
-        guard model.hasMedia, !controller.isActive else { return }
+        // A second request while fullscreen is still closing would start a second move.
+        guard model.hasMedia, !controller.isActive, !pendingEnter else { return }
         if window.isFullscreen() {
             pendingEnter = true
             window.exitFullscreen()
@@ -55,6 +61,11 @@ final class MiniPlayerFlow {
         }
         controller.enter(from: window.videoRect(), aspect: window.aspect())
         window.hide(reduceMotion() ? MotionTiming.miniPlayerReducedFade : MotionTiming.miniPlayerChromeOut)
+    }
+
+    /// The window stayed fullscreen: the request is dropped, so a later exit does not enter.
+    func fullscreenExitFailed() {
+        pendingEnter = false
     }
 
     func windowDidExitFullScreen() {

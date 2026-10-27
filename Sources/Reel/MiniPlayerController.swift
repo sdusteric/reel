@@ -162,6 +162,15 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
     /// The panel's occlusion changed; while it is up, energy follows the panel (section 7.9).
     var onOcclusionChange: (() -> Void)?
     weak var commandTarget: (any PlayerCommandTarget)?
+    /// Makes the panel key with the content as first responder while Reel is active, so the keys
+    /// of section 10 reach it; tests record instead.
+    var focus: @MainActor (NSPanel, NSView) -> Void = { panel, view in
+        guard NSApp.isActive else { return }
+        panel.makeKey()
+        panel.makeFirstResponder(view)
+    }
+    /// The display the panel sits on now, to re-place it when displays change.
+    private var currentScreenID: String?
 
     /// The window whose visibility decides whether video decodes: the panel while it is up.
     var occlusionWindow: NSWindow? { panel }
@@ -248,6 +257,8 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         content.commandTarget = commandTarget
         content.onMagnify = { [weak self] factor in self?.magnify(by: factor) }
         panel.contentView = content
+        panel.initialFirstResponder = content
+        currentScreenID = savedScreen.id
         applyLimits(to: panel, visible: savedScreen.visibleFrame)
         // The limits would clamp the window-sized start of the move.
         if travels {
@@ -270,6 +281,7 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         model.miniChrome.pointerExited()
         model.setMiniPlayer(active: true)
         show(panel)
+        focus(panel, content)
         let visible = savedScreen.visibleFrame
         if travels {
             animator.move(panel, to: frame, duration: motion.duration) { [weak self, weak panel] in
@@ -330,7 +342,7 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
 
     private func applyLimits(to panel: NSPanel, visible: CGRect) {
         panel.contentAspectRatio = NSSize(width: aspect, height: 1)
-        panel.contentMinSize = MiniPlayerGeometry.size(aspect: aspect, boxScale: 0, visible: visible)
+        panel.contentMinSize = MiniPlayerGeometry.size(aspect: aspect, boxScale: .leastNonzeroMagnitude, visible: visible)
         panel.contentMaxSize = MiniPlayerGeometry.size(aspect: aspect, boxScale: .greatestFiniteMagnitude, visible: visible)
     }
 
@@ -349,7 +361,11 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
             dragStart = nil
             let screen = screen(containing: panel.frame)
             let corner = MiniPlayerGeometry.corner(releasing: panel.frame, velocity: velocity, visible: screen.visibleFrame)
-            let target = MiniPlayerGeometry.frame(size: panel.frame.size, corner: corner, visible: screen.visibleFrame)
+            // Onto another display the panel takes that display's box limits.
+            let scale = MiniPlayerGeometry.boxScale(for: panel.frame.size, aspect: aspect)
+            let size = MiniPlayerGeometry.size(aspect: aspect, boxScale: scale, visible: screen.visibleFrame)
+            let target = MiniPlayerGeometry.frame(size: size, corner: corner, visible: screen.visibleFrame)
+            currentScreenID = screen.id
             save { $0.corner = corner; $0.screen = screen.id }
             applyLimits(to: panel, visible: screen.visibleFrame)
             snapper.snap(panel, to: target, velocity: velocity) {}
@@ -389,16 +405,23 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Displays were added, removed or rearranged: a panel left on no display moves to the main
-    /// one's same corner, without animation.
+    /// Displays were added, removed or rearranged, or a visible frame changed (Dock, resolution):
+    /// the panel goes back to its corner on its display, or on the main display when its own is
+    /// gone, without animation. AppKit may already have moved it, so its frame is not trusted.
     func screensChanged() {
         guard let panel else { return }
-        let list = screens()
-        guard !list.contains(where: { $0.visibleFrame.intersects(panel.frame) }) else { return }
-        let main = mainScreen
-        let size = MiniPlayerGeometry.size(aspect: aspect, boxScale: placement.boxScale, visible: main.visibleFrame)
-        panel.setFrame(MiniPlayerGeometry.frame(size: size, corner: placement.corner, visible: main.visibleFrame), display: true)
-        applyLimits(to: panel, visible: main.visibleFrame)
+        let screen = screens().first { $0.id == currentScreenID } ?? mainScreen
+        currentScreenID = screen.id
+        let scale = MiniPlayerGeometry.boxScale(for: panel.frame.size, aspect: aspect)
+        let size = MiniPlayerGeometry.size(aspect: aspect, boxScale: scale, visible: screen.visibleFrame)
+        panel.setFrame(MiniPlayerGeometry.frame(size: size, corner: placement.corner, visible: screen.visibleFrame), display: true)
+        applyLimits(to: panel, visible: screen.visibleFrame)
+    }
+
+    /// Reel became active (Cmd+Tab): the panel takes the keys.
+    func appDidBecomeActive() {
+        guard let panel, let content else { return }
+        focus(panel, content)
     }
 
     func windowDidChangeOcclusionState(_ notification: Notification) {

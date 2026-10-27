@@ -25,11 +25,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var observers: [AnyObject] = []
     private var spaceObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
+    private var activeObserver: NSObjectProtocol?
     /// The mini player (mini player design): the panel and what happens around it.
     private(set) var miniPlayer: MiniPlayerController?
     private(set) var miniFlow: MiniPlayerFlow?
-    /// Bumped by every hide and show, so a fade that was overtaken does not order the window out.
-    private var windowFadeGeneration = 0
+    private let fader = WindowFader()
 
     init(
         model: PlayerModel,
@@ -132,29 +132,21 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         ) { [weak mini] _ in
             MainActor.assumeIsolated { mini?.screensChanged() }
         }
+        activeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak mini] _ in
+            MainActor.assumeIsolated { mini?.appDidBecomeActive() }
+        }
     }
 
     private func fadeOutWindow(over duration: TimeInterval) {
         guard let window else { return }
-        windowFadeGeneration += 1
-        let generation = windowFadeGeneration
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = MotionCurve.easeIn.timingFunction
-            window.animator().alphaValue = 0
-        } completionHandler: { [weak self, weak window] in
-            MainActor.assumeIsolated {
-                guard let self, let window, self.windowFadeGeneration == generation else { return }
-                window.orderOut(nil)
-                window.alphaValue = 1
-            }
-        }
+        fader.fadeOut(window, over: duration)
     }
 
     private func showWindow(activate: Bool) {
         guard let window else { return }
-        windowFadeGeneration += 1
-        window.alphaValue = 1
+        fader.cancel(window)
         if activate {
             NSApp.activate()
             window.makeKeyAndOrderFront(nil)
@@ -397,6 +389,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         model.setFullscreen(false)
     }
 
+    func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        miniFlow?.fullscreenExitFailed()
+    }
+
     func windowDidExitFullScreen(_ notification: Notification) {
         model.setFullscreen(false)
         engine?.subtitleLayerDidLayout()
@@ -470,7 +466,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func windowWillClose(_ notification: Notification) {
         miniFlow?.leaveAtOnce()
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
         screenObserver = nil
+        activeObserver = nil
         model.chrome.invalidate()
         displayMonitor?.stop()
         volumeWatcher?.stop()
@@ -593,6 +591,44 @@ final class PointerActivity {
             } else {
                 self.scheduleExpiry(after: self.window - quiet)
             }
+        }
+    }
+}
+
+/// The window's fade out as the mini player takes the picture (0.1 s, or 0.15 s with Reduce
+/// Motion), then order-out. Showing the window again cancels a fade that is still running.
+@MainActor
+final class WindowFader {
+    private let orderOut: (NSWindow) -> Void
+    /// Bumped by every fade and cancel, so an overtaken fade does not order the window out.
+    private var generation = 0
+
+    init(orderOut: @escaping (NSWindow) -> Void = { $0.orderOut(nil) }) {
+        self.orderOut = orderOut
+    }
+
+    func fadeOut(_ window: NSWindow, over duration: TimeInterval) {
+        generation += 1
+        let current = generation
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = MotionCurve.easeIn.timingFunction
+            window.animator().alphaValue = 0
+        } completionHandler: { [weak self, weak window] in
+            MainActor.assumeIsolated {
+                guard let self, let window, self.generation == current else { return }
+                self.orderOut(window)
+                window.alphaValue = 1
+            }
+        }
+    }
+
+    func cancel(_ window: NSWindow) {
+        generation += 1
+        // Through the animator, so a fade that is still running is replaced, not left to finish at 0.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            window.animator().alphaValue = 1
         }
     }
 }

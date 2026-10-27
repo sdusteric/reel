@@ -491,4 +491,117 @@ final class FakeWindowOps {
         let titles = MainMenu.miniPlayerContextMenu(model: rig.model).items.filter { !$0.isSeparatorItem }.map(\.title)
         #expect(titles == ["Pause", "Back to Window", "Close Mini Player", "Subtitles", "Audio", "Speed"])
     }
+
+    // MARK: Final review fixes
+
+    @Test func edgeResizeCanReachTheSmallestBox() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        let panel = try #require(rig.controller.panel)
+        #expect(panel.contentMinSize == CGSize(width: 256, height: 144))
+        #expect(panel.contentMaxSize == MiniPlayerGeometry.size(aspect: 16 / 9, boxScale: 100, visible: Self.screenA.visibleFrame))
+    }
+
+    @Test func aChangedVisibleFrameRePlacesThePanelInItsCorner() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let list = ScreenList([Self.screenA])
+        let rig = try await Self.rig(scratch: scratch, list: list)
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        let docked = ScreenInfo(id: "A", visibleFrame: CGRect(x: 0, y: 70, width: 2560, height: 1344), isMain: true)
+        list.screens = [docked]
+        rig.controller.screensChanged()
+        #expect(rig.controller.panel?.frame == MiniPlayerGeometry.frame(size: CGSize(width: 480, height: 270), corner: .bottomRight, visible: docked.visibleFrame))
+    }
+
+    @Test func aRemovedDisplayMovesThePanelEvenAfterAppKitMovedIt() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let list = ScreenList([Self.screenA, Self.screenB])
+        let rig = try await Self.rig(scratch: scratch, placement: MiniPlayerPlacement(corner: .topRight, boxScale: 1, screen: "B"), list: list)
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        let panel = try #require(rig.controller.panel)
+        list.screens = [Self.screenA]
+        panel.setFrameOrigin(CGPoint(x: 900, y: 500)) // AppKit put it somewhere on A
+        rig.controller.screensChanged()
+        #expect(panel.frame == MiniPlayerGeometry.frame(size: CGSize(width: 480, height: 270), corner: .topRight, visible: Self.screenA.visibleFrame))
+    }
+
+    @Test func dragOntoASmallerDisplayTakesItsBoxSize() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let laptop = ScreenInfo(id: "B", visibleFrame: CGRect(x: 2560, y: 0, width: 1280, height: 775), isMain: false)
+        let rig = try await Self.rig(scratch: scratch, placement: MiniPlayerPlacement(corner: .bottomRight, boxScale: 2.5, screen: "A"), list: ScreenList([Self.screenA, laptop]))
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        rig.animator.finishAll()
+        let panel = try #require(rig.controller.panel)
+        #expect(panel.frame.size == CGSize(width: 1200, height: 675))
+        rig.controller.drag(.began)
+        rig.controller.drag(.moved(CGVector(dx: 1400, dy: 0)))
+        rig.controller.drag(.ended(velocity: .zero))
+        let size = MiniPlayerGeometry.size(aspect: 16 / 9, boxScale: 2.5, visible: laptop.visibleFrame)
+        #expect(panel.frame == MiniPlayerGeometry.frame(size: size, corner: .bottomRight, visible: laptop.visibleFrame))
+        #expect(panel.frame.width <= 640 && panel.frame.height <= 387.5)
+    }
+
+    @Test func aSecondRequestDuringTheFullscreenExitIsIgnored() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let window = FakeWindowOps()
+        window.fullscreen = true
+        let flow = Self.flow(rig, window: window)
+        flow.request(true)
+        flow.request(true)
+        #expect(window.log == ["exitFullscreen"])
+    }
+
+    @Test func aFailedOrCancelledFullscreenExitForgetsTheRequest() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let window = FakeWindowOps()
+        window.fullscreen = true
+        let flow = Self.flow(rig, window: window)
+        flow.request(true)
+        flow.fullscreenExitFailed()
+        window.fullscreen = false
+        flow.windowDidExitFullScreen()
+        #expect(rig.controller.panel == nil, "a later, unrelated exit does not open the mini player")
+        window.fullscreen = true
+        flow.request(true)
+        flow.request(false)
+        window.fullscreen = false
+        flow.windowDidExitFullScreen()
+        #expect(rig.controller.panel == nil)
+    }
+
+    @Test func thePanelTakesTheKeysWhileReelIsActive() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        var focused: [NSView] = []
+        rig.controller.focus = { _, view in focused.append(view) }
+        rig.controller.enter(from: .zero, aspect: 16 / 9)
+        let panel = try #require(rig.controller.panel)
+        let content = try #require(panel.contentView as? MiniPlayerContentView)
+        #expect(!panel.becomesKeyOnlyIfNeeded, "nothing in the panel asks for key, so it must not wait to be asked")
+        #expect(panel.initialFirstResponder === content)
+        #expect(focused.count == 1 && focused.first === content)
+        rig.controller.appDidBecomeActive()
+        #expect(focused.count == 2)
+    }
+
+    @Test func showingTheWindowCancelsARunningFadeOut() async throws {
+        var orderedOut = 0
+        let fader = WindowFader(orderOut: { _ in orderedOut += 1 })
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        fader.fadeOut(window, over: 0.1)
+        fader.cancel(window)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(window.alphaValue == 1)
+        #expect(orderedOut == 0)
+    }
 }

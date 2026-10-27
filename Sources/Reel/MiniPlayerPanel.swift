@@ -29,7 +29,8 @@ final class MiniPlayerPanel: NSPanel {
         isMovable = false
         isMovableByWindowBackground = false
         isReleasedWhenClosed = false
-        becomesKeyOnlyIfNeeded = true
+        // Nothing in the panel asks to become key, so it must not wait to be asked.
+        becomesKeyOnlyIfNeeded = false
         backgroundColor = .black
         tabbingMode = .disallowed
     }
