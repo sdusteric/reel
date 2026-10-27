@@ -64,6 +64,20 @@ nonisolated public enum MotionTiming {
     }
 
     public static var windowResizeTimingFunction: CAMediaTimingFunction { MotionCurve.easeOut.timingFunction }
+
+    /// The mini player's one move (mini player design section 8, row 1): the picture travels
+    /// between the window and its corner over 0.3 s on the shared ease-out. With Reduce Motion
+    /// the window and the panel cross-fade, 0.15 s each, with no travel.
+    public static let miniPlayerMove: TimeInterval = 0.3
+    /// The window's title bar and controller fade out before the picture leaves.
+    public static let miniPlayerChromeOut: TimeInterval = 0.1
+    public static let miniPlayerReducedFade: TimeInterval = 0.15
+
+    public static func miniPlayerMove(reduceMotion: Bool) -> (duration: TimeInterval, travels: Bool) {
+        reduceMotion ? (miniPlayerReducedFade, false) : (miniPlayerMove, true)
+    }
+
+    public static var miniPlayerMoveTimingFunction: CAMediaTimingFunction { MotionCurve.easeOut.timingFunction }
 }
 
 /// One leg of a movement: the curve (nil is linear), its duration and an optional delay.

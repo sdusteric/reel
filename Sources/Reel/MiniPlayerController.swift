@@ -39,6 +39,37 @@ enum DragPhase: Equatable {
     case ended(velocity: CGVector)
 }
 
+/// The enter and leave move; tests record it and complete it by hand.
+@MainActor
+protocol PanelAnimating: AnyObject {
+    func move(_ window: NSWindow, to frame: CGRect, duration: TimeInterval, completion: @escaping () -> Void)
+    func fade(_ window: NSWindow, to alpha: CGFloat, duration: TimeInterval, completion: @escaping () -> Void)
+}
+
+/// `NSAnimationContext` on the window frame (the layer resizes with it) and on its alpha.
+@MainActor
+final class AppKitPanelAnimator: PanelAnimating {
+    func move(_ window: NSWindow, to frame: CGRect, duration: TimeInterval, completion: @escaping () -> Void) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = MotionTiming.miniPlayerMoveTimingFunction
+            window.animator().setFrame(frame, display: true)
+        } completionHandler: {
+            completion()
+        }
+    }
+
+    func fade(_ window: NSWindow, to alpha: CGFloat, duration: TimeInterval, completion: @escaping () -> Void) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = alpha > window.alphaValue ? MotionCurve.easeOut.timingFunction : MotionCurve.easeIn.timingFunction
+            window.animator().alphaValue = alpha
+        } completionHandler: {
+            completion()
+        }
+    }
+}
+
 /// Moves the panel to its corner after a drag. Tests set the frame at once.
 @MainActor
 protocol PanelSnapping: AnyObject {
@@ -115,7 +146,11 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
     private let screens: @MainActor () -> [ScreenInfo]
     private let show: @MainActor (NSPanel) -> Void
     private let snapper: any PanelSnapping
+    private let animator: any PanelAnimating
+    private let reduceMotion: @MainActor () -> Bool
     private let log: ReelLog
+    /// Bumped by every enter and leave, so a move that was overtaken does nothing when it ends.
+    private var generation = 0
 
     private(set) var panel: MiniPlayerPanel?
     private var content: MiniPlayerContentView?
@@ -135,6 +170,8 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         screens: @escaping @MainActor () -> [ScreenInfo] = ScreenInfo.current,
         show: @escaping @MainActor (NSPanel) -> Void = { $0.orderFrontRegardless() },
         snapper: any PanelSnapping = SpringSnapper(),
+        animator: any PanelAnimating = AppKitPanelAnimator(),
+        reduceMotion: @escaping @MainActor () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
         log: ReelLog = .disabled
     ) {
         self.model = model
@@ -144,6 +181,8 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         self.screens = screens
         self.show = show
         self.snapper = snapper
+        self.animator = animator
+        self.reduceMotion = reduceMotion
         self.log = log
     }
 
@@ -185,10 +224,15 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
 
     // MARK: Enter and leave
 
+    /// The panel appears over the window's video area (`sourceRect`, screen points) holding the
+    /// picture, then travels to its corner.
     func enter(from sourceRect: CGRect, aspect: CGFloat) {
         guard panel == nil else { return }
+        generation += 1
         self.aspect = aspect > 0 && aspect.isFinite ? aspect : 16 / 9
         let frame = targetFrame(aspect: self.aspect)
+        let motion = MotionTiming.miniPlayerMove(reduceMotion: reduceMotion())
+        let travels = motion.travels && !sourceRect.isEmpty
         let panel = MiniPlayerPanel(contentRect: frame)
         let actions = MiniPlayerActions(
             close: { [weak self] in self?.onLeaveRequest?(.close) },
@@ -197,8 +241,14 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         let content = MiniPlayerContentView(model: model, actions: actions)
         content.onMagnify = { [weak self] factor in self?.magnify(by: factor) }
         panel.contentView = content
-        panel.setFrame(frame, display: false)
         applyLimits(to: panel, visible: savedScreen.visibleFrame)
+        // The limits would clamp the window-sized start of the move.
+        if travels {
+            panel.contentMinSize = NSSize(width: 1, height: 1)
+            panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        }
+        panel.setFrame(travels ? sourceRect : frame, display: false)
+        if !motion.travels { panel.alphaValue = 0 }
         panel.delegate = self
         content.layoutSubtreeIfNeeded()
 
@@ -213,14 +263,47 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         model.miniChrome.pointerExited()
         model.setMiniPlayer(active: true)
         show(panel)
+        let visible = savedScreen.visibleFrame
+        if travels {
+            animator.move(panel, to: frame, duration: motion.duration) { [weak self, weak panel] in
+                guard let self, let panel, self.panel === panel else { return }
+                self.applyLimits(to: panel, visible: visible)
+            }
+        } else if !motion.travels {
+            animator.fade(panel, to: 1, duration: motion.duration) {}
+        }
     }
 
-    func leave(to targetRect: CGRect, completion: @escaping () -> Void) {
+    /// The panel travels back to the window's video area (`targetRect`), then `beforeSwap` orders
+    /// the window in behind it, the surface goes home and the panel closes.
+    func leave(to targetRect: CGRect, beforeSwap: @escaping () -> Void = {}, completion: @escaping () -> Void) {
         guard let panel else {
             completion()
             return
         }
+        generation += 1
+        let current = generation
         snapper.stop()
+        let motion = MotionTiming.miniPlayerMove(reduceMotion: reduceMotion())
+        let finish = { [weak self] in
+            guard let self, self.generation == current else { return }
+            beforeSwap()
+            self.swapHome(panel)
+            completion()
+        }
+        if motion.travels, !targetRect.isEmpty {
+            panel.contentMinSize = NSSize(width: 1, height: 1)
+            panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            panel.contentAspectRatio = NSSize(width: 0, height: 0)
+            animator.move(panel, to: targetRect, duration: motion.duration, completion: finish)
+        } else if !motion.travels {
+            animator.fade(panel, to: 0, duration: motion.duration, completion: finish)
+        } else {
+            finish()
+        }
+    }
+
+    private func swapHome(_ panel: MiniPlayerPanel) {
         home.host(surface)
         surface.mode = .window
         surface.onDoubleClick = windowDoubleClick
@@ -228,10 +311,11 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         windowDoubleClick = nil
         panel.delegate = nil
         panel.close()
-        self.panel = nil
-        content = nil
+        if self.panel === panel {
+            self.panel = nil
+            content = nil
+        }
         model.setMiniPlayer(active: false)
-        completion()
     }
 
     private func applyLimits(to panel: NSPanel, visible: CGRect) {

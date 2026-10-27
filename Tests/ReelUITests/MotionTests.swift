@@ -64,6 +64,21 @@ import Testing
         #expect(MotionTiming.windowResizeDuration(reduceMotion: true) == 0)
     }
 
+    @Test func miniPlayerMoveUsesTheSharedEaseOut() {
+        let normal = MotionTiming.miniPlayerMove(reduceMotion: false)
+        #expect(normal.duration == 0.3 && normal.travels)
+        let reduced = MotionTiming.miniPlayerMove(reduceMotion: true)
+        #expect(reduced.duration == 0.15 && !reduced.travels)
+        #expect(MotionTiming.miniPlayerChromeOut == 0.1)
+        var points: [Float] = [0, 0]
+        var expected: [Float] = [0, 0]
+        for index in 1...2 {
+            MotionTiming.miniPlayerMoveTimingFunction.getControlPoint(at: index, values: &points)
+            MotionCurve.easeOut.timingFunction.getControlPoint(at: index, values: &expected)
+            #expect(points == expected)
+        }
+    }
+
     @Test func panelSpecScalesOnlyWithoutReduceMotion() {
         #expect(Motion.panelSpec(reduceMotion: false).scale == 0.96)
         #expect(Motion.panelSpec(reduceMotion: true) == .reduced)
