@@ -9,7 +9,19 @@ struct OSDView: View {
     static let edgeInset: CGFloat = 20
     static let cornerRadius: CGFloat = 14
 
+    /// The window's OSD, or the mini player's smaller one (mini player design section 5).
+    struct Style: Equatable {
+        var textSize: CGFloat
+        var symbolSize: CGFloat
+        var inset: CGFloat
+        var padding: CGSize
+
+        static let window = Style(textSize: 20, symbolSize: 17, inset: 20, padding: CGSize(width: 16, height: 10))
+        static let mini = Style(textSize: 15, symbolSize: 13, inset: 10, padding: CGSize(width: 12, height: 7))
+    }
+
     let model: PlayerModel
+    var style = Style.window
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -36,12 +48,12 @@ struct OSDView: View {
         HStack(spacing: 10) {
             if let symbol = OSDView.symbol(for: message) {
                 Image(systemName: symbol)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: style.symbolSize, weight: .semibold))
                     .foregroundStyle(symbolStyle(symbol))
-                    .frame(width: 24)
+                    .frame(width: style.symbolSize + 7)
             }
             text(for: message)
-                .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
+                .font(.system(size: style.textSize, weight: .semibold, design: .rounded).monospacedDigit())
                 .foregroundStyle(Color.primary.opacity(0.9))
                 .fixedSize()
             if model.showsSeekProgress, message.kind == .seek || message.kind == .frameStep {
@@ -55,8 +67,8 @@ struct OSDView: View {
                 OSDButton(title: "Show") { model.revealScreenshot() }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, style.padding.width)
+        .padding(.vertical, style.padding.height)
         .continuousSurface(radius: OSDView.cornerRadius, shadow: .small)
         .transition(entryTransition)
         .accessibilityElement(children: .combine)

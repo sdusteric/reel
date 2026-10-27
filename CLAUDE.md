@@ -13,7 +13,7 @@ swift build --scratch-path "$TMPDIR/reel-<task>"
 swift test --scratch-path "$TMPDIR/reel-<task>" --filter <Suite>
 swiftlint lint --strict
 REEL_SCRATCH="$TMPDIR/reel-check" scripts/check.sh   # every gate
-scripts/shots.sh                # 23 scenarios x light/dark background screenshots into build/shots
+scripts/shots.sh                # 28 scenarios x light/dark background screenshots into build/shots
 REEL_SCRATCH="$TMPDIR/reel-accept" scripts/accept.sh offline   # M1 criteria, then the M2 and M3 groups
 REEL_SCRATCH="$TMPDIR/reel-accept" scripts/accept.sh m3        # only AC-M3-1 to AC-M3-10
 scripts/release.sh [--notes <file.md>] [--dry-run <dir>]   # check.sh, release bundle, app-updates publish.sh

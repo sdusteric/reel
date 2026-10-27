@@ -18,7 +18,7 @@ import Testing
         ))
     }
 
-    @Test(arguments: ShotScenario.allCases)
+    @Test(arguments: ShotScenario.allCases.filter { $0.miniPanelSize == nil })
     func everyScenarioRendersANonBlankImageAtTwiceTheSize(_ scenario: ShotScenario) throws {
         for appearance in ShotAppearance.allCases {
             let image = try render(scenario, appearance)
@@ -67,7 +67,7 @@ import Testing
 
     @Test func everyScenarioChangesTheControllerRegionBetweenLightAndDark() throws {
         let m3: Set<ShotScenario> = [.hdrBadge, .videoInfo, .hdrSDR, .dvNote, .truncated, .damagedOSD, .driveGone]
-        for scenario in ShotScenario.allCases where scenario != .empty && scenario != .openFailed {
+        for scenario in ShotScenario.allCases where scenario != .empty && scenario != .openFailed && scenario.miniPanelSize == nil {
             let rect = ShotRenderer.appearanceRegion(size: size, scenario: scenario)
             let light = try #require(ShotRenderer.luminance(of: try render(scenario, .light), in: rect))
             let dark = try #require(ShotRenderer.luminance(of: try render(scenario, .dark), in: rect))
@@ -129,11 +129,12 @@ import Testing
     }
 
     @Test func theScenarioNamesMatchTheAcceptanceList() {
-        let names = ["hdr-badge", "video-info", "hdr-sdr", "dv-note", "open-failed", "truncated", "damaged-osd", "drive-gone"]
+        let names = ["hdr-badge", "video-info", "hdr-sdr", "dv-note", "open-failed", "truncated", "damaged-osd", "drive-gone",
+                     "mini-hover", "mini-scrub", "mini-paused", "mini-small", "mini-next"]
         for name in names {
             #expect(ShotScenario(rawValue: name) != nil, Comment(rawValue: name))
         }
-        #expect(ShotScenario.allCases.count == 23)
+        #expect(ShotScenario.allCases.count == 28)
     }
 
     @Test func hdrShotsTakeTheirInputsFromTheCaller() throws {

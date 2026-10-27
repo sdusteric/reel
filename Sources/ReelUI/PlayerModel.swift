@@ -295,6 +295,8 @@ public final class PlayerModel {
     public internal(set) var showsTagTooltip = false
 
     public let chrome: ChromeVisibility
+    /// The mini player's own chrome: the same rules, fed by the panel's pointer (mini player 5).
+    public let miniChrome: ChromeVisibility
     /// The end-of-episode countdown and its card.
     public let autoAdvance: AutoAdvance
 
@@ -355,6 +357,7 @@ public final class PlayerModel {
     public init(dependencies: Dependencies, chrome: ChromeVisibility? = nil) {
         self.dependencies = dependencies
         self.chrome = chrome ?? ChromeVisibility(now: dependencies.now, sleep: dependencies.sleep)
+        miniChrome = ChromeVisibility(now: dependencies.now, sleep: dependencies.sleep)
         autoAdvance = AutoAdvance(now: dependencies.now, sleep: dependencies.sleep)
         if let state = dependencies.stateStore?.state {
             volume = state.volume
@@ -953,6 +956,7 @@ public final class PlayerModel {
         guard playing != isPlaying else { return }
         isPlaying = playing
         chrome.setPlaying(playing)
+        miniChrome.setPlaying(playing)
         onPlayingChange?(playing)
     }
 
@@ -1526,7 +1530,8 @@ extension PlayerModel {
     /// visible and overlaps the subtitle band; back down after the chrome has faded out (0.35 s),
     /// or at once when the controller no longer overlaps.
     public func updateSubtitleAvoidance(windowSize: CGSize, controllerFrame: CGRect?) {
-        guard hasMedia, session != nil else { return }
+        // The hidden window's controller says nothing about the mini player's subtitles.
+        guard hasMedia, session != nil, !isMiniPlayerActive else { return }
         let visible = chrome.isVisible
         let wanted = SubtitleAvoidance.inset(
             style: subtitleStyle,
@@ -1551,6 +1556,24 @@ extension PlayerModel {
                     self.sendAvoidance(nil)
                 }
             }
+        }
+    }
+
+    /// The mini player's lift: up at once while its chrome shows, down after the chrome fade-out.
+    public func updateMiniSubtitleAvoidance(chromeShown: Bool) {
+        guard hasMedia, session != nil, isMiniPlayerActive else { return }
+        avoidanceTask?.cancel()
+        avoidanceTask = nil
+        guard !chromeShown else {
+            sendAvoidance(MiniPlayerLayout.subtitleLift)
+            return
+        }
+        let sleep = dependencies.sleep
+        avoidanceTask = Task { [weak self] in
+            await sleep(ChromeVisibility.fadeOutDuration)
+            guard !Task.isCancelled, let self else { return }
+            self.avoidanceTask = nil
+            self.sendAvoidance(nil)
         }
     }
 

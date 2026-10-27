@@ -54,6 +54,26 @@ nonisolated public enum ShotScenario: String, CaseIterable, Sendable {
     case damagedOSD = "damaged-osd"
     /// A disconnected drive: the dimmed last frame and the card (png/26).
     case driveGone = "drive-gone"
+    // Mini player (mini player design section 5, mockups png/29 to png/33), drawn at the panel size.
+    /// Pointer over the panel: dim, corner buttons, transport and bar (png/29).
+    case miniHover = "mini-hover"
+    /// Dragging along the bar with the time label (png/30).
+    case miniScrub = "mini-scrub"
+    /// Paused with the pointer elsewhere: the pause mark only (png/31).
+    case miniPaused = "mini-paused"
+    /// The smallest size: no 10 s buttons (png/32).
+    case miniSmall = "mini-small"
+    /// End of episode: the countdown ring and the next episode row (png/33).
+    case miniNext = "mini-next"
+
+    /// The panel size a mini player scenario is drawn at; nil for the window scenarios.
+    public var miniPanelSize: CGSize? {
+        switch self {
+        case .miniHover, .miniScrub, .miniPaused, .miniNext: CGSize(width: 480, height: 270)
+        case .miniSmall: CGSize(width: 256, height: 144)
+        default: nil
+        }
+    }
 
     /// Where the controller sits (centre x, bottom y as fractions); nil keeps the remembered default.
     var controllerPosition: (centerX: Double, bottomY: Double)? {
@@ -64,7 +84,7 @@ nonisolated public enum ShotScenario: String, CaseIterable, Sendable {
     }
 
     /// Scenarios that draw subtitles.
-    var drawsSubtitles: Bool { self == .subtitles || self == .subtitlesLifted }
+    var drawsSubtitles: Bool { [.subtitles, .subtitlesLifted, .miniHover, .miniPaused].contains(self) }
 
     var isFullscreen: Bool { self == .fullscreen }
 
@@ -336,7 +356,33 @@ public enum ShotRenderer {
             model.isPlaying = false
             model.storedRange = nil
             model.problem = problem ?? .volumeGone("Eric X9 Pro")
+        case .miniHover:
+            break
+        case .miniScrub:
+            model.playbackState = .seeking
+            model.isScrubbing = true
+            model.seekHoverFraction = 0.857
+            model.position = model.time(atFraction: 0.857)
+        case .miniPaused:
+            model.playbackState = .paused
+            model.isPlaying = false
+            model.miniChrome.pointerExited()
+        case .miniSmall:
+            model.playbackState = .paused
+            model.isPlaying = false
+        case .miniNext:
+            model.playbackState = .ended
+            model.isPlaying = false
+            model.position = duration
+            model.storedRange = nil
+            if let next = model.episodes?.next {
+                model.autoAdvance.begin(next: next)
+                clock.now = 2
+                model.autoAdvance.tick()
+            }
         }
+        if scenario.miniPanelSize != nil { model.isMiniPlayerActive = true }
+        model.miniChrome.setPlaying(model.isPlaying)
         model.chrome.setPlaying(model.isPlaying)
         if model.activePanel != nil { model.chrome.setPanelOpen(true) }
         return model
@@ -392,7 +438,7 @@ public enum ShotRenderer {
                 liftInset: subtitleLift(scenario: scenario, size: size)
             )
         }
-        let scene = PlayerSceneView(model: model, subtitle: subtitle) {
+        let surface = Group {
             if scenario.showsFrame, let frame {
                 Image(decorative: frame, scale: 1)
                     .resizable()
@@ -402,12 +448,20 @@ public enum ShotRenderer {
                 Color.black
             }
         }
-        .frame(width: size.width, height: size.height)
+        let drawnSize = scenario.miniPanelSize ?? size
+        let scene = Group {
+            if scenario.miniPanelSize != nil {
+                MiniPlayerView(model: model, subtitle: subtitle) { surface }
+            } else {
+                PlayerSceneView(model: model, subtitle: subtitle) { surface }
+            }
+        }
+        .frame(width: drawnSize.width, height: drawnSize.height)
         .environment(\.colorScheme, appearance.colorScheme)
 
         let renderer = ImageRenderer(content: scene)
         renderer.scale = scale
-        renderer.proposedSize = ProposedViewSize(size)
+        renderer.proposedSize = ProposedViewSize(drawnSize)
         var image: CGImage?
         // Materials resolve against the drawing appearance as well as the SwiftUI colour scheme.
         NSAppearance(named: appearance.appearanceName)?.performAsCurrentDrawingAppearance {

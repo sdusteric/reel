@@ -6,8 +6,10 @@
 #        default: the M1 four (empty playing paused-osd scrubbing), the M2 surfaces
 #        (subtitle-panel audio-panel speed-panel thumbnail subtitles subtitles-lifted osd-speed
 #        osd-loop next-episode fullscreen edge-states) and the M3 surfaces (hdr-badge
-#        video-info hdr-sdr dv-note open-failed truncated damaged-osd drive-gone), 23 scenarios
-#        each scenario in light and dark -> build/shots/<scenario>-<light|dark>.png (2560x1440)
+#        video-info hdr-sdr dv-note open-failed truncated damaged-osd drive-gone) and the mini
+#        player (mini-hover mini-scrub mini-paused mini-small mini-next), 28 scenarios
+#        each scenario in light and dark -> build/shots/<scenario>-<light|dark>.png (2560x1440;
+#        the mini player scenarios at twice their panel size, 960x540 or 512x288)
 # Env:   REEL_APP       bundle to run (default build/bundle/Reel.app, from scripts/bundle.sh)
 #        REEL_FIXTURES  fixture dir (default build/fixtures, from scripts/fixtures.sh)
 #        OUT            where the PNGs go (default build/shots)
@@ -42,6 +44,7 @@ SCENARIOS=("$@")
   subtitle-panel audio-panel speed-panel thumbnail subtitles subtitles-lifted
   osd-speed osd-loop next-episode fullscreen edge-states
   hdr-badge video-info hdr-sdr dv-note open-failed truncated damaged-osd drive-gone
+  mini-hover mini-scrub mini-paused mini-small mini-next
 )
 
 [ -x "$BIN" ] || { echo "no binary at $BIN (run scripts/bundle.sh --release)" >&2; exit 1; }

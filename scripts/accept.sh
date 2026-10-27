@@ -33,7 +33,7 @@
 #   AC-M2-3  reelctl thumbs on four fixtures (budgets, setup, count, width, blankness, reload) and
 #            the HEVC seek thresholds with thumbnails generating.
 #   AC-M2-4  reelctl episodes order, and the EpisodeList and AutoAdvance tests by name.
-#   AC-M2-5  scripts/shots.sh (all 23 scenarios in light and dark, shared with AC-M3-6): the 30 PNGs
+#   AC-M2-5  scripts/shots.sh (all 28 scenarios in light and dark, shared with AC-M3-6): the 30 PNGs
 #            of M2's 15 scenarios by name at 2560x1440, not blank, controller regions differ,
 #            outlined subtitle ink, frontmost app unchanged.
 #   AC-M2-6  VP9 hybrid seek-bench thresholds, and M1's AC02 and AC03 passing in the same run.
@@ -717,7 +717,7 @@ if r.get("previous") != "Northern.Line.S01E01.mkv":
 # AC-M2-5
 # ---------------------------------------------------------------------------------------------
 
-# scripts/shots.sh runs once per accept run with all 23 scenarios; AC-M2-5 reads its 15 scenarios
+# scripts/shots.sh runs once per accept run with all 28 scenarios; AC-M2-5 reads its 15 scenarios
 # by name and AC-M3-6 the 8 new ones. The log is copied because the next shots.sh run rewrites it.
 SHOTS_RC=""
 SHOTS_BEFORE=""
