@@ -30,7 +30,6 @@ FRAMES=(
   "13-osd-loop-cleared light,dark 1280 720 2"
   "14-next-episode light,dark 1280 720 2"
   "15-fullscreen light,dark 2560 1440 2"
-  "16-pip light,dark 1280 720 2"
   "17-menus light,dark 1280 720 2"
   "18-edge-states light,dark 1280 720 2"
   "19-hdr-badge light,dark 1280 720 2"
@@ -42,6 +41,13 @@ FRAMES=(
   "25-damaged-osd light,dark 1280 720 2"
   "26-drive-gone light,dark 1280 720 2"
   "27-settings light,dark 1280 720 2"
+  "28-mini-desktop light,dark 2560 1440 1"
+  "29-mini-hover light,dark 760 420 2"
+  "30-mini-scrub dark 760 420 2"
+  "31-mini-paused dark 760 420 2"
+  "32-mini-small dark 760 420 2"
+  "33-mini-next dark 760 420 2"
+  "34-mini-enter light,dark 1280 340 2"
 )
 
 front() { lsappinfo info -only name "$(lsappinfo front 2>/dev/null)" 2>/dev/null | head -1 | tr -d '\n'; echo " $(lsappinfo front 2>/dev/null)"; }

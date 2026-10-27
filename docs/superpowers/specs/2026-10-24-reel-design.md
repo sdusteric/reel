@@ -484,6 +484,8 @@ All sizes in points.
 
 ### 9.9 Picture in Picture (M2)
 
+**Pending replacement (2026-10-26).** Reel's own mini player is designed in `2026-10-26-reel-mini-player-design.md` (mockups `png/28` to `png/34`). Once the owner approves and it is built, it replaces this section and the PiP placeholder (`png/16`; its frame is gone from `index.html`, and the PNG stays until the mini player ships); until then the text below describes what ships.
+
 - Started from the controller button, the Video menu or Ctrl+Cmd+P. `AVPictureInPictureController` with the sample buffer display layer content source; the playback delegate maps play, pause, skip by interval (10 s) and the time range to the engine.
 - The main window keeps its size and shows the PiP state (mockup `png/16`): the frame at the moment PiP started, blurred (48 pt radius) and darkened to 42% brightness, a 60 pt tile with the PiP glyph, "Playing in Picture in Picture" (15 pt semibold, white 78%), "Playback controls here still work." (12 pt, white 50%), and an "Exit Picture in Picture" capsule button. The controller and title keep working; the PiP button shows `pip.exit` in the accent colour.
 - Subtitles are composited into the frames while PiP is active (8.6).

@@ -178,15 +178,68 @@ body { background: var(--page-bg); color: var(--page-fg); font-family: var(--fon
 .cap.sec { background: rgba(var(--fg), .1); color: rgba(var(--fg), .85); }
 .cap.pri { background: var(--accent); color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
 
-/* PiP placeholder (15.2) */
-.pipbg { position: absolute; inset: -60px; filter: blur(48px) saturate(120%) brightness(.42); }
-.pipbg svg { width: 100%; height: 100%; display: block; }
-.pipc { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; padding-bottom: 60px; }
-.pipc .tile { width: 60px; height: 60px; border-radius: 16px; background: rgba(255,255,255,.1); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.14); display: grid; place-items: center; color: rgba(255,255,255,.62); }
-.pipc .tile svg { width: 28px; height: 28px; }
-.pipc .h { margin-top: 18px; font: 600 15px var(--font); color: rgba(255,255,255,.78); }
-.pipc .s { margin-top: 6px; font: 400 12px var(--font); color: rgba(255,255,255,.5); }
-.pipc .cap { margin-top: 16px; background: rgba(255,255,255,.14); color: rgba(255,255,255,.88); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.12); }
+/* Mini player (design 9.9). Always over the picture, so the colours are fixed in both appearances.
+   The panel is a floating window: one elevation, the window shadow. No material, no blur. */
+.mini { position: absolute; border-radius: 14px; overflow: hidden; background: #000;
+  box-shadow: 0 0 0 .5px rgba(0,0,0,.55), 0 2px 6px rgba(0,0,0,.22), 0 18px 48px rgba(0,0,0,.34); }
+.mini::after { content: ""; position: absolute; inset: 0; border-radius: 14px; box-shadow: inset 0 0 0 .5px rgba(255,255,255,.14); pointer-events: none; }
+.mini .video svg { width: 100%; height: 100%; display: block; }
+.mini .dim { position: absolute; inset: 0; background: rgba(0,0,0,.4); }
+.mbtn { position: absolute; display: grid; place-items: center; border-radius: 50%; color: rgba(255,255,255,.94); }
+.mbtn svg { filter: drop-shadow(0 1px 2px rgba(0,0,0,.45)); }
+.mbtn.top { width: 28px; height: 28px; top: 8px; }
+.mbtn.top svg { width: 15px; height: 15px; }
+.mbtn.top.hover { background: rgba(255,255,255,.18); }
+.mtransport { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 24px; }
+.mtransport .mbtn { position: relative; width: 36px; height: 36px; }
+.mtransport .mbtn svg { width: 22px; height: 22px; }
+.mtransport .mbtn.play { width: 48px; height: 48px; }
+.mtransport .mbtn.play svg { width: 30px; height: 30px; }
+.mbar { position: absolute; left: 12px; right: 12px; bottom: 10px; height: 16px; display: flex; align-items: center; gap: 10px; }
+.mbar .time { font: 500 11px var(--font); font-variant-numeric: tabular-nums; color: rgba(255,255,255,.88); text-shadow: 0 .5px 2px rgba(0,0,0,.45); }
+.mbar .seek { flex: 1; position: relative; height: 16px; }
+.mbar .track { height: 4px; background: rgba(255,255,255,.3); }
+.mbar .track .played { background: #0a84ff; }
+.mbar .seek.active .track { height: 6px; }
+.mbar .thumb { width: 10px; height: 10px; margin: -5px 0 0 -5px; }
+.mpill { position: absolute; padding: 0 7px; height: 20px; border-radius: 6px; display: grid; place-items: center; background: rgba(0,0,0,.74);
+  font: 600 11px var(--font); font-variant-numeric: tabular-nums; color: #fff; box-shadow: 0 0 0 .5px rgba(255,255,255,.16), 0 2px 6px rgba(0,0,0,.3); white-space: nowrap; }
+.mpaused { position: absolute; left: 10px; bottom: 10px; width: 24px; height: 24px; border-radius: 50%; background: rgba(0,0,0,.5);
+  display: grid; place-items: center; color: rgba(255,255,255,.9); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.16); }
+.mpaused svg { width: 12px; height: 12px; }
+.mnext { position: absolute; left: 12px; right: 12px; bottom: 10px; display: flex; align-items: center; gap: 10px; }
+.mnext .nb { flex: 1; min-width: 0; text-shadow: 0 .5px 2px rgba(0,0,0,.45); }
+.mnext .h { font: 600 12px var(--font); color: rgba(255,255,255,.92); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mnext .s { font: 500 11px var(--font); font-variant-numeric: tabular-nums; color: rgba(255,255,255,.66); margin-top: 1px; }
+.mnext .cap { height: 24px; padding: 0 11px; border-radius: 12px; background: rgba(255,255,255,.18); color: rgba(255,255,255,.92); box-shadow: inset 0 0 0 .5px rgba(255,255,255,.14); }
+.mring { position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; }
+.mring svg { width: 48px; height: 48px; display: block; }
+
+/* A desktop with an editor beside the mini player, drawn for context (not part of Reel) */
+.ed { position: absolute; border-radius: 12px; overflow: hidden; display: grid; grid-template-columns: 248px 1fr 520px; background: var(--ed-bg);
+  box-shadow: 0 0 0 .5px var(--ed-edge), 0 22px 70px rgba(0,0,0,.3), 0 2px 8px rgba(0,0,0,.16); color: rgba(var(--fg), .86); }
+.t-light .ed { --ed-bg: #fbfbfc; --ed-side: #f1f1f3; --ed-edge: rgba(0,0,0,.2); --ed-line: rgba(0,0,0,.07); --kw: #ad3da4; --ty: #3e6d74; --st: #c41a16; --cm: #6c7680; --nu: #1c00cf; }
+.t-dark .ed { --ed-bg: #1e1e20; --ed-side: #252527; --ed-edge: rgba(255,255,255,.14); --ed-line: rgba(255,255,255,.07); --kw: #fc5fa3; --ty: #67b7a4; --st: #fc6a5d; --cm: #7f8c98; --nu: #d0bf69; }
+.ed .bar { grid-column: 1 / -1; height: 44px; display: flex; align-items: center; padding-left: 92px; font: 600 13px var(--font); box-shadow: inset 0 -.5px 0 var(--ed-line); }
+.ed .bar .lights { top: 16px; left: 16px; }
+.ed .side { background: var(--ed-side); padding: 14px 10px; font: 400 13px/26px var(--font); color: rgba(var(--fg), .7); }
+.ed .side b { display: block; padding: 0 10px; border-radius: 6px; font-weight: 400; white-space: nowrap; }
+.ed .side b.sel { background: rgba(var(--fg), .08); color: rgba(var(--fg), .9); }
+.ed .code { padding: 18px 28px; font: 400 14px/24px "SF Mono", ui-monospace, Menlo, monospace; white-space: pre; overflow: hidden; color: rgba(var(--fg), .82); }
+.ed .code i { font-style: normal; display: inline-block; width: 36px; color: rgba(var(--fg), .3); text-align: right; margin-right: 22px; }
+.ed .kw { color: var(--kw); } .ed .ty { color: var(--ty); } .ed .st { color: var(--st); } .ed .cm { color: var(--cm); } .ed .nu { color: var(--nu); }
+.ed .chat { box-shadow: inset .5px 0 0 var(--ed-line); padding: 22px 26px; font: 400 14px/1.55 var(--font); display: flex; flex-direction: column; gap: 16px; }
+.ed .chat .me { align-self: flex-end; max-width: 80%; padding: 10px 14px; border-radius: 14px; background: rgba(var(--fg), .07); }
+.ed .chat p { margin: 0; color: rgba(var(--fg), .84); }
+
+/* Storyboard of the enter transition, three moments side by side */
+.board { position: absolute; inset: 0; background: var(--page-bg); display: flex; gap: 20px; padding: 40px 32px; align-items: flex-start; }
+.t-light .board { --page-bg: #f2f2f4; --page-fg: #1c1c1e; --page-dim: #6b6b70; }
+.t-dark .board { --page-bg: #111214; --page-fg: #e8e8ea; --page-dim: #9a9aa0; }
+.board figure { margin: 0; flex: 1; }
+.board .scr { position: relative; height: 222px; border-radius: 8px; overflow: hidden; box-shadow: 0 0 0 .5px rgba(127,127,127,.35); }
+.board figcaption { margin-top: 12px; font: 600 13px var(--font); color: var(--page-fg); }
+.board figcaption span { display: block; margin-top: 3px; font-weight: 400; font-size: 12px; line-height: 1.45; color: var(--page-dim); }
 
 /* Pointer */
 .cursor { position: absolute; width: 17px; height: 24px; pointer-events: none; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.35)); }
@@ -339,6 +392,7 @@ body.single { background: #000; overflow: hidden; }
     <symbol id="i-docwarn" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.6 3.6H7.4a2 2 0 0 0-2 2v12.8a2 2 0 0 0 2 2h9.2a2 2 0 0 0 2-2V8.6z"/><path d="M13.6 3.6v3.4a1.6 1.6 0 0 0 1.6 1.6h3.4"/><path d="M12 10.6v4.2"/></g><circle cx="12" cy="17.4" r="1.05" fill="currentColor"/></symbol>
     <symbol id="i-drive" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12.4" width="18" height="7" rx="2.2"/><path d="M5.2 12.6l2.2-6.2a2 2 0 0 1 1.9-1.4h5.4a2 2 0 0 1 1.9 1.4l2.2 6.2"/></g><circle cx="17.2" cy="15.9" r="1.1" fill="currentColor"/></symbol>
     <symbol id="i-chevud" viewBox="0 0 24 24"><path d="M7.5 9.5L12 5l4.5 4.5M7.5 14.5L12 19l4.5-4.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-xmark" viewBox="0 0 24 24"><path d="M6.4 6.4l11.2 11.2M17.6 6.4L6.4 17.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
     <symbol id="i-cursor" viewBox="0 0 17 24"><path d="M1.5 1.5v18.2l4.7-4.4 3 6.9 3.1-1.3-3-6.8h6.4z" fill="#000" stroke="#fff" stroke-width="1.3" stroke-linejoin="round"/></symbol>
   </defs>
 </svg>
@@ -647,10 +701,6 @@ F.push({ id: "14-next-episode", name: "End of episode: next episode card", note:
   build: t => { const c = controllerFrame(W, H); return windowFrame(t, `<div class="video">${scene("credits")}</div>${titlebar()}${controller(W, H, { ended: true, pos: DURATION })}${nextCard(W, H, c)}`); } });
 F.push({ id: "15-fullscreen", name: "Fullscreen", size: [2560, 1440], dsf: 1, note: "The user's 5K display at 2560 x 1440 pt, drawn at 1x. Controller 56 pt from the bottom (600 pt wide), menu bar and cursor hide with the chrome, title and end time at the top.",
   build: t => { const FW = 2560, FH = 1440; const o = { bottomPts: 56 }; const c = controllerFrame(FW, FH, o); return windowFrame(t, `<div class="video">${scene("dusk")}</div>${titlebar({ noLights: true, ends: "22:47" })}${subtitles(FH, subBottom(FH, c), "walk")}${controller(FW, FH, o)}`, FW, FH); } });
-F.push({ id: "16-pip", name: "Picture in Picture: main window", note: "The video plays in the system PiP window. The main window keeps its size and shows the last frame blurred and dimmed, a short explanation and the way back. The controller still works; the PiP button is lit.",
-  build: t => windowFrame(t, `<div class="video" style="overflow:hidden;background:#000"><div class="pipbg">${scene("dusk")}</div></div>
-    <div class="pipc"><div class="tile">${icon("i-pip")}</div><div class="h">Playing in Picture in Picture</div><div class="s">Playback controls here still work.</div><span class="cap">Exit Picture in Picture</span></div>
-    ${titlebar()}${controller(W, H, { pip: true })}`) });
 F.push({ id: "18-edge-states", name: "Edge states: single file, no subtitles", note: "A file alone in its folder: previous and next are hidden and the transport re-centres (no dead buttons). A file with no subtitle tracks and no sidecar files: the panel says so in one line and keeps Add Subtitle File, so the subtitle button is never a dead end. The button shows the outline glyph when subtitles are off.",
   build: t => windowFrame(t, `<div class="video">${scene("night")}</div>${titlebar({ title: "Sunset Drive 4K60.mkv" })}${controller(W, H, { single: true, subsOff: true, openPanel: "subs" })}${emptySubtitlePanel()}`), anchor: ["subs", "subs"] });
 F.push({ id: "17-menus", name: "Menu bar: Video, Audio, Subtitles", note: "System menus (NSMenu), drawn side by side for review; only one opens at a time. Track items mirror the panels; Command and Control shortcuts are shown, plain-key bindings are not (M1 rule).",
@@ -732,6 +782,121 @@ F.push({ id: "26-drive-gone", name: "The drive was disconnected", note: "The ext
 F.push({ id: "27-settings", name: "Settings: video and audio additions", note: "The M1 Settings window gains two rows. High dynamic range: Full (default), Limited or Off; Limited and Off exist for displays where full HDR looks wrong or dims the desktop. Output device: System Default, or a device that Reel keeps using even when the system default changes (the same list is in the Audio menu).",
   build: t => windowFrame(t, settingsFrame(t)) });
 
+// ---------- Mini player (design 9.9, replaces Picture in Picture) ----------
+// Default size fits a 480 x 360 box (480 x 270 for 16:9), 20 pt from the corner of the visible frame.
+// Subtitles scale with the panel height, with the main line never under 13 pt (an effective height of 208).
+function miniPlayer(o) {
+  const w = o.w ?? 480, h = o.h ?? Math.round(w * 9 / 16);
+  const pos = o.pos ?? 1864;
+  const small = w < 320;
+  const chrome = o.hover || o.ended;
+  let inner = `<div class="video">${scene(o.scene ?? "dusk")}</div>`;
+  if (o.subs) inner += subtitles(Math.max(h, 208), chrome ? 34 : 40 * h / 720, o.subs);
+  if (chrome) inner += `<div class="dim"${o.ended ? ' style="background:rgba(0,0,0,.6)"' : ""}></div>
+    <div class="mbtn top${o.hoverBtn === "close" ? " hover" : ""}" style="left:8px">${icon("i-xmark")}</div>
+    <div class="mbtn top${o.hoverBtn === "return" ? " hover" : ""}" style="right:8px">${icon("i-pipexit")}</div>`;
+  if (o.hover && !o.ended) {
+    const playIcon = o.paused ? "i-play" : "i-pause";
+    inner += `<div class="mtransport">${small ? "" : `<div class="mbtn">${icon("i-back10")}</div>`}<div class="mbtn play">${icon(playIcon)}</div>${small ? "" : `<div class="mbtn">${icon("i-fwd10")}</div>`}</div>`;
+    const at = o.scrub ?? pos / DURATION;
+    inner += `<div class="mbar"><span class="time">${mmss(o.scrub != null ? o.scrub * DURATION : pos)}</span>
+      <div class="seek${o.scrub != null ? " active" : ""}"><div class="track"><div class="played" style="width:${(at * 100).toFixed(2)}%"></div></div>${o.scrub != null ? `<div class="thumb" style="left:${(o.scrub * 100).toFixed(2)}%"></div>` : ""}</div>
+      <span class="time">-${mmss(DURATION - (o.scrub != null ? o.scrub * DURATION : pos))}</span></div>`;
+    if (o.scrub != null) inner += `<div class="mpill" data-mpill>${mmss(o.scrub * DURATION)}</div>`;
+  }
+  if (o.ended) inner += `<div class="mring">${ring(.4).replace('viewBox="0 0 34 34"', 'viewBox="0 0 34 34" width="48" height="48"')}</div>
+    <div class="mnext"><div class="nb"><div class="h">${episodeName(NEXT)}</div><div class="s">Next episode in 3 s</div></div><span class="cap">Cancel</span></div>`;
+  if (o.paused && !o.hover) inner += `<div class="mpaused">${icon("i-pause")}</div>`;
+  const left = o.left ?? (o.cw - 20 - w), top = o.top ?? (o.ch - 20 - h);
+  return `<div class="mini" data-mini style="left:${left}px;top:${top}px;width:${w}px;height:${h}px">${inner}</div>`;
+}
+const CODE = [
+  ['<span class="kw">final class</span> <span class="ty">MiniPlayerPanel</span>: <span class="ty">NSPanel</span> {'],
+  ['    <span class="kw">init</span>(contentRect: <span class="ty">NSRect</span>) {'],
+  ['        <span class="kw">super</span>.<span class="kw">init</span>('],
+  ['            contentRect: contentRect,'],
+  ['            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView, .resizable],'],
+  ['            backing: .buffered, defer: <span class="kw">false</span>'],
+  ['        )'],
+  ['        level = .floating'],
+  ['        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]'],
+  ['        hidesOnDeactivate = <span class="kw">false</span>'],
+  ['        isMovableByWindowBackground = <span class="kw">true</span>'],
+  ['        titlebarAppearsTransparent = <span class="kw">true</span>'],
+  ['    }'],
+  [''],
+  ['    <span class="cm">// Clicks never take focus from the app in front.</span>'],
+  ['    <span class="kw">override var</span> canBecomeKey: <span class="ty">Bool</span> { <span class="ty">NSApp</span>.isActive }'],
+  ['}'],
+  [''],
+  ['<span class="kw">extension</span> <span class="ty">MiniPlayerPanel</span> {'],
+  ['    <span class="kw">static let</span> defaultBox = <span class="ty">CGSize</span>(width: <span class="nu">480</span>, height: <span class="nu">360</span>)'],
+  ['    <span class="kw">static let</span> minimumBox = <span class="ty">CGSize</span>(width: <span class="nu">256</span>, height: <span class="nu">192</span>)'],
+  ['    <span class="kw">static let</span> inset: <span class="ty">CGFloat</span> = <span class="nu">20</span>'],
+  [''],
+  ['    <span class="kw">func</span> corner(nearest point: <span class="ty">CGPoint</span>, in frame: <span class="ty">CGRect</span>) -> <span class="ty">Corner</span> {'],
+  ['        <span class="kw">let</span> right = point.x > frame.midX'],
+  ['        <span class="kw">let</span> top = point.y > frame.midY'],
+  ['        <span class="kw">return</span> top ? (right ? .topRight : .topLeft) : (right ? .bottomRight : .bottomLeft)'],
+  ['    }'],
+  ['}'],
+];
+function editor(t, left, top, w, h) {
+  const lines = [];
+  for (let i = 0; i < 52; i++) lines.push(`<i>${i + 1}</i>${CODE[i % CODE.length][0]}`);
+  return `<div class="ed" style="left:${left}px;top:${top}px;width:${w}px;height:${h}px;grid-template-rows:44px 1fr">
+    <div class="bar"><div class="lights"><i></i><i></i><i></i></div>MiniPlayerPanel.swift</div>
+    <div class="side">${["PlayerWindowController.swift", "MiniPlayerPanel.swift", "MiniPlayerView.swift", "PlayerContentView.swift", "KeyHandling.swift", "MainMenu.swift", "NowPlaying.swift"].map((f, i) => `<b class="${i === 1 ? "sel" : ""}">${f}</b>`).join("")}</div>
+    <div class="code">${lines.join("\n")}</div>
+    <div class="chat" style="justify-content:flex-end">
+      <div class="me">Move the display layer into the panel and keep the engine as it is.</div>
+      <p>Done. The panel takes the same AVSampleBufferDisplayLayer, so the engine, the clock and the subtitles are untouched. Returning to the window moves the layer back.</p>
+      <div class="me">Does clicking pause take focus from my editor?</div>
+      <p>No. The panel is non-activating, so a click on it pauses the video and your cursor stays where it was.</p>
+    </div></div>`;
+}
+function deskBg(t) {
+  return t === "dark"
+    ? `linear-gradient(160deg,#1b2340 0%,#2c2a52 40%,#4a2f4f 70%,#5a3a3a 100%)`
+    : `linear-gradient(160deg,#a9c7e8 0%,#c9c2e6 45%,#ead1d6 75%,#f1dcc6 100%)`;
+}
+// A crop of the bottom-right of the desktop: the editor fills the background, its right edge 60 pt in.
+function deskCrop(t, cw, ch, mini) {
+  return `<div class="desk" style="background:${deskBg(t)}"></div>${editor(t, cw - 60 - 2320, ch - 50 - 1300, 2320, 1300)}${miniPlayer({ cw, ch, ...mini })}`;
+}
+const MW = 760, MH = 420;
+F.push({ id: "28-mini-desktop", name: "Mini player on the desktop", size: [2560, 1440], dsf: 1, note: "The user's 5K display at 2560 x 1440 pt, drawn at 1x, while coding with another app in front. The mini player floats 20 pt from the bottom-right corner at its default size (480 x 270 for 16:9), above every app and on every Space. With the pointer elsewhere it shows only the picture and the subtitles. The main Reel window is hidden while the mini player is up.",
+  build: t => windowFrame(t, `<div class="desk" style="background:${deskBg(t)}"></div>
+    <div class="menubar"><b class="app">Editor</b><b>File</b><b>Edit</b><b>View</b><b>Window</b><b>Help</b><span class="clock">Mon 26 Oct 21:30</span></div>
+    ${editor(t, 120, 70, 2320, 1300)}${miniPlayer({ cw: 2560, ch: 1440, subs: "sdh" })}`, 2560, 1440) });
+F.push({ id: "29-mini-hover", name: "Mini player, pointer over it", size: [MW, MH], note: "The pointer entered the panel. The picture dims to 60% and the controls appear on it in white: close (top left), back to the window (top right), back 10 s, play/pause and forward 10 s in the middle, and the times and seek bar along the bottom. The subtitles move up above the bar. The editor keeps keyboard focus throughout: clicks on the panel never activate Reel.",
+  build: t => windowFrame(t, deskCrop(t, MW, MH, { hover: true, subs: "sdh" }), MW, MH), miniCursor: [.66, .5] });
+F.push({ id: "30-mini-scrub", name: "Mini player, scrubbing", themes: ["dark"], size: [MW, MH], note: "Dragging along the bar. The bar grows from 4 to 6 pt and shows its thumb; a small time label rides above the pointer. There is no thumbnail. The picture is the preview, because a drag sends scrubs and the mini player shows the keyframe at the pointer's time.",
+  build: t => windowFrame(t, deskCrop(t, MW, MH, { hover: true, scrub: .857, scene: "night" }), MW, MH), miniPill: .857 });
+F.push({ id: "31-mini-paused", name: "Mini player, paused, pointer elsewhere", themes: ["dark"], size: [MW, MH], note: "Paused with a click, then the pointer went back to the editor. A still frame could look stuck, so a small pause mark sits in the bottom-left corner until playback resumes. Nothing else is drawn on the picture.",
+  build: t => windowFrame(t, deskCrop(t, MW, MH, { paused: true, subs: "sdh" }), MW, MH) });
+F.push({ id: "32-mini-small", name: "Mini player at its smallest size", themes: ["dark"], size: [MW, MH], note: "Resized down to the minimum, 256 x 144 for 16:9. Below 320 pt of width the 10 s buttons drop out (the arrow keys and the media keys still skip), leaving play/pause, the bar and the two corner buttons. Subtitles keep a 13 pt floor for the main line.",
+  build: t => windowFrame(t, deskCrop(t, MW, MH, { w: 256, hover: true, paused: true }), MW, MH), miniCursor: [.5, .52] });
+F.push({ id: "33-mini-next", name: "Mini player, end of episode", themes: ["dark"], size: [MW, MH], note: "Auto-advance in the mini player. The full next-episode card would cover the picture, so the panel shows the countdown ring in the middle and the next episode's name along the bottom, with Cancel. These stay up without hover until the next file starts or Cancel is clicked. A click on the ring plays it now.",
+  build: t => windowFrame(t, deskCrop(t, MW, MH, { ended: true, scene: "credits", pos: DURATION }), MW, MH) });
+function boardScreen(t, p) {
+  // p: eased progress of the move, 0 = the main window's video rect, 1 = the mini player's corner
+  const a = { left: 320, top: 193, w: 1920, h: 1080 }, b = { left: 2060, top: 1150, w: 480, h: 270 };
+  const r = k => a[k] + (b[k] - a[k]) * p;
+  const s = 392 / 2560;
+  const win = p === 0
+    ? `<div class="window" style="position:absolute;left:${a.left}px;top:${a.top}px;width:${a.w}px;height:${a.h}px;border-radius:12px;box-shadow:0 22px 70px rgba(0,0,0,.35)"><div class="video">${scene("dusk")}</div>${titlebar()}${controller(a.w, a.h, {})}</div>`
+    : `<div class="mini" style="left:${r("left")}px;top:${r("top")}px;width:${r("w")}px;height:${r("h")}px"><div class="video">${scene("dusk")}</div></div>`;
+  return `<div class="scr"><div class="t-${t}" style="position:absolute;left:0;top:0;width:2560px;height:1440px;transform:scale(${s});transform-origin:0 0">
+    <div class="desk" style="background:${deskBg(t)}"></div>${editor(t, 120, 70, 2320, 1300)}${win}</div></div>`;
+}
+F.push({ id: "34-mini-enter", name: "Entering the mini player", size: [1280, 340], note: "One move, 0.3 s on the shared ease-out curve, no bounce. The title bar and controller fade out first (0.1 s), then the picture travels from where it was in the window to its corner, keeping its aspect. Leaving runs the same path backwards into the window's video area, and the window's chrome fades in at the end. With Reduce Motion the window fades out and the panel fades in at its corner (0.15 s each), with no travel.",
+  build: t => `<div class="window t-${t}" style="width:1280px;height:340px;background:transparent"><div class="board">
+    <figure>${boardScreen(t, 0)}<figcaption>0 ms<span>Mini Player is chosen; the title bar and controller start to fade.</span></figcaption></figure>
+    <figure>${boardScreen(t, .72)}<figcaption>100 ms<span>The picture is most of the way to its corner, scaling with its aspect kept.</span></figcaption></figure>
+    <figure>${boardScreen(t, 1)}<figcaption>300 ms<span>Settled 20 pt from the corner. The main window is hidden.</span></figcaption></figure>
+  </div></div>` });
+
 function mi(label, key = "", o = {}) {
   return `<div class="mi${o.hl ? " hl" : ""}${o.dis ? " dis" : ""}"><span class="ck">${o.ck ? icon("i-check") : ""}</span><span>${label}</span><span class="k">${key}</span><span class="sub">${o.sub ? icon("i-chev") : ""}</span></div>`;
 }
@@ -803,6 +968,21 @@ function place(root, frame) {
     pillEl.style.top = (c.top - 8 - ph) + "px";
     if (frame.cursor) win.insertAdjacentHTML("beforeend", cursor(x - 1.5, s.top + s.height / 2 - 2));
   }
+  const mini = win.querySelector("[data-mini]");
+  if (mini && frame.miniCursor) {
+    const m = rel(mini.getBoundingClientRect());
+    win.insertAdjacentHTML("beforeend", cursor(m.left + m.width * frame.miniCursor[0], m.top + m.height * frame.miniCursor[1]));
+  }
+  const mpill = win.querySelector("[data-mpill]");
+  if (mpill && frame.miniPill != null) {
+    const m = rel(mini.getBoundingClientRect());
+    const s = rel(mini.querySelector(".seek").getBoundingClientRect());
+    const x = s.left + s.width * frame.miniPill;
+    const pw = mpill.offsetWidth;
+    mpill.style.left = Math.min(Math.max(x - pw / 2 - m.left, 8), m.width - 8 - pw) + "px";
+    mpill.style.top = (s.top - m.top - 6 - mpill.offsetHeight) + "px";
+    win.insertAdjacentHTML("beforeend", cursor(x - 1.5, s.top + s.height / 2 - 2));
+  }
 }
 
 // ---------- entry: single frame for headless screenshots, or the gallery ----------
@@ -815,7 +995,7 @@ if (params.has("frame")) {
   root.innerHTML = frame.build(theme);
   place(root, frame);
 } else {
-  let html = `<div class="gallery"><h1>Reel M2 and M3 surfaces</h1><p>Static mockup of every new or changed M2 and M3 surface (frames 19 to 27 are M3), drawn with the M1 tokens (design sections 9 and 15). The picture is a generated scene, not real media. Window frames are 1280 x 720 pt; fullscreen is the 2560 x 1440 pt display. PNGs are in png/.</p>`;
+  let html = `<div class="gallery"><h1>Reel M2, M3 and mini player surfaces</h1><p>Static mockup of every new or changed M2 and M3 surface (frames 19 to 27 are M3; 28 to 34 are the mini player that replaced Picture in Picture), drawn with the M1 tokens (design sections 9 and 15). The picture is a generated scene, not real media. Window frames are 1280 x 720 pt; fullscreen is the 2560 x 1440 pt display. PNGs are in png/.</p>`;
   for (const f of F) {
     const themes = f.themes || ["light", "dark"];
     const [fw, fh] = f.size || [W, H];
