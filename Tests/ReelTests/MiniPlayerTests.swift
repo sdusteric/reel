@@ -744,4 +744,23 @@ final class FakeWindowOps {
         #expect(rig.surface.convert(rig.surface.bounds, to: content) == content.bounds)
         #expect(rig.surface.displayLayer.frame == rig.surface.bounds)
     }
+
+    @Test func theEnterAndLeaveMovesNeverSaveTheBoxSize() async throws {
+        // AppKit ends a live resize when an animated frame change ends; only the hand's resize counts.
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let source = CGRect(x: 0, y: 0, width: 1509, height: 849)
+        rig.controller.enter(from: source, aspect: 16 / 9)
+        let panel = try #require(rig.controller.panel)
+        let resizeEnded = Notification(name: NSWindow.didEndLiveResizeNotification, object: panel)
+        rig.controller.windowDidEndLiveResize(resizeEnded)
+        #expect(rig.store.state.miniPlayer.boxScale == 1, "the enter move starts at the window's size")
+        rig.animator.finishAll()
+        rig.controller.leave(to: source) {}
+        panel.setFrame(source, display: false)
+        rig.controller.windowDidEndLiveResize(resizeEnded)
+        #expect(rig.store.state.miniPlayer.boxScale == 1, "the leave move ends at the window's size")
+        rig.animator.finishAll()
+    }
 }

@@ -171,6 +171,9 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
     }
     /// The display the panel sits on now, to re-place it when displays change.
     private var currentScreenID: String?
+    /// Reel's own animated frame changes still running. AppKit ends a live resize when each one
+    /// ends, and those must not save the box.
+    private var movesRunning = 0
 
     /// The window whose visibility decides whether video decodes: the panel while it is up.
     var occlusionWindow: NSWindow? { panel }
@@ -287,7 +290,7 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         focus(panel, content)
         let visible = screen.visibleFrame
         if travels {
-            animator.move(panel, to: frame, duration: motion.duration) { [weak self, weak panel] in
+            move(panel, to: frame, duration: motion.duration) { [weak self, weak panel] in
                 guard let self, let panel, self.generation == current else { return }
                 self.applyLimits(to: panel, visible: visible)
             }
@@ -320,11 +323,19 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
             panel.contentMinSize = NSSize(width: 1, height: 1)
             panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
             panel.contentAspectRatio = NSSize(width: 0, height: 0)
-            animator.move(panel, to: targetRect, duration: motion.duration, completion: finish)
+            move(panel, to: targetRect, duration: motion.duration, completion: finish)
         } else if !motion.travels {
             animator.fade(panel, to: 0, duration: motion.duration, completion: finish)
         } else {
             finish()
+        }
+    }
+
+    private func move(_ panel: NSPanel, to frame: CGRect, duration: TimeInterval, completion: @escaping () -> Void) {
+        movesRunning += 1
+        animator.move(panel, to: frame, duration: duration) { [weak self] in
+            self?.movesRunning -= 1
+            completion()
         }
     }
 
@@ -410,7 +421,7 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         panel.contentAspectRatio = NSSize(width: 0, height: 0)
         panel.contentMinSize = NSSize(width: 1, height: 1)
         panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        animator.move(panel, to: target, duration: duration) { [weak self, weak panel] in
+        move(panel, to: target, duration: duration) { [weak self, weak panel] in
             guard let self, let panel, self.generation == current else { return }
             self.applyLimits(to: panel, visible: screen.visibleFrame)
         }
@@ -441,7 +452,7 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        guard let panel, notification.object as? NSWindow === panel else { return }
+        guard let panel, notification.object as? NSWindow === panel, movesRunning == 0 else { return }
         let stored = MiniPlayerGeometry.boxScale(for: panel.frame.size, aspect: aspect)
         save { $0.boxScale = stored }
         // Dragging the anchored edge moves the panel off its inset; it settles back.
