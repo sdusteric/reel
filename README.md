@@ -61,7 +61,7 @@ Bindings are IINA's defaults.
 
 ```sh
 scripts/deps.sh                         # once: static LGPL FFmpeg and libass into vendor/prefix
-scripts/bundle.sh --release --install   # builds Reel.app, signs it, copies it to ~/Applications
+scripts/bundle.sh --release --install   # builds Reel.app, signs it, copies it to /Applications
 ```
 
 Install only when Reel is not running. Reel updates itself with Sparkle from the sdusteric/app-updates feed (contract: `../app-updates/CONTRACT.md`).

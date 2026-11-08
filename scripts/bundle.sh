@@ -14,9 +14,9 @@
 #   SIGN_ID          signing identity SHA-1 or name (default: the Developer ID Application cert of
 #                    team 8N9KUZLT8N when the keychain has one, else the Apple Development cert)
 #   REEL_BUNDLE_OUT  output bundle path, must end in bundle/Reel.app (default <repo>/build/bundle/Reel.app)
-#   INSTALL_DIR      install target for --install (default: $HOME/Applications)
+#   INSTALL_DIR      install target for --install (default: /Applications)
 #
-# --install copies the bundle to ~/Applications with ditto and is never used by acceptance.
+# --install copies the bundle to /Applications with ditto and is never used by acceptance.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -138,7 +138,7 @@ sign --entitlements "$REPO/resources/Reel.entitlements" "$OUT"
 codesign --verify --deep --strict --verbose=2 "$OUT"
 
 if [ "$INSTALL" = 1 ]; then
-  DEST_DIR="${INSTALL_DIR:-$HOME/Applications}"
+  DEST_DIR="${INSTALL_DIR:-/Applications}"
   DEST="$DEST_DIR/Reel.app"
   mkdir -p "$DEST_DIR"
   case "$DEST" in */Reel.app) ;; *) echo "refusing odd install path $DEST" >&2; exit 1 ;; esac
