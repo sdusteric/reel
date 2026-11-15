@@ -119,3 +119,19 @@ Design doc (source of truth): [docs/superpowers/specs/2026-10-24-reel-design.md]
 - Never read your media or private folders. All media comes from `scripts/fixtures.sh`. Tests point `REEL_IINA_WATCH_LATER` at a fake dir.
 - No network except `deps.sh` and the SwiftPM resolve. No `URLSession`, `NWConnection` or `import Network` in `Sources/`.
 - No `try!` in `Sources/`, no `try?` in `ReelCore` store files.
+
+## License
+
+Reel's own code is under the MIT License (see `LICENSE`). `scripts/deps.sh` builds these libraries from source and links them statically, each under its own license:
+
+| Library | License |
+|---|---|
+| FFmpeg | LGPL 2.1 or later (built without GPL, nonfree or version3 parts) |
+| FriBidi | LGPL 2.1 or later |
+| libass | ISC |
+| HarfBuzz | MIT |
+| FreeType | FreeType License. Portions of this software are copyright The FreeType Project (www.freetype.org). All rights reserved. |
+| dav1d | BSD 2-Clause |
+| Sparkle | MIT |
+
+The full source of Reel is in this repo, so you can rebuild it against a modified FFmpeg or FriBidi, as the LGPL allows.
