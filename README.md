@@ -72,6 +72,8 @@ Install only when Reel is not running. Reel updates itself with Sparkle from the
 
 macOS 27 on Apple Silicon, Swift 6 toolchain, SwiftLint, a network connection for `scripts/deps.sh` (pinned, sha256-verified tarballs) and SwiftPM's Sparkle resolve. Run `scripts/deps.sh` before the first build. Swift must never see Homebrew's FFmpeg headers (struct layouts differ and the spike crashed with SIGBUS). FFmpeg stays LGPL (never `--enable-gpl`, `--enable-nonfree` or `--enable-version3`) and carries one patch, `scripts/patches/ffmpeg-vp9-tile-check.patch`.
 
+`scripts/bundle.sh` signs with your own certificate when you set `SIGN_ID` (a name or SHA-1 from `security find-identity -v -p codesigning`). `scripts/check.sh` expects the public [sdusteric/app-updates](https://github.com/sdusteric/app-updates) repo cloned next to this one.
+
 ## Build, test, check
 
 ```sh
