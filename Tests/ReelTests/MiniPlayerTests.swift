@@ -365,6 +365,38 @@ final class FakeWindowOps {
         #expect(rig.controller.panel == nil)
     }
 
+    @Test func aSecondLeaveDuringTheMoveKeepsTheFirstOnesNextStep() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let window = FakeWindowOps()
+        let flow = Self.flow(rig, window: window)
+        flow.request(true)
+        rig.animator.finishAll()
+        flow.requestFullscreen()
+        _ = flow.reopen()
+        rig.animator.finishAll()
+        #expect(window.log.contains("toggleFullscreen"))
+        #expect(rig.controller.panel == nil)
+        #expect(rig.surface.superview === rig.home)
+    }
+
+    @Test func closingTheFileDuringTheLeaveMoveEndsItAtOnce() async throws {
+        let scratch = try AppScratch()
+        defer { scratch.remove() }
+        let rig = try await Self.rig(scratch: scratch)
+        let window = FakeWindowOps()
+        let flow = Self.flow(rig, window: window)
+        flow.request(true)
+        rig.animator.finishAll()
+        flow.requestFullscreen()
+        flow.leaveAtOnce()
+        #expect(rig.controller.panel == nil)
+        #expect(window.log.contains("toggleFullscreen"))
+        rig.animator.finishAll()
+        #expect(rig.surface.superview === rig.home)
+    }
+
     @Test func closeButtonPausesAndKeepsReelInactive() async throws {
         let scratch = try AppScratch()
         defer { scratch.remove() }

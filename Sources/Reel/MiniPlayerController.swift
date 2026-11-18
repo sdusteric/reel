@@ -151,6 +151,8 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
     private let log: ReelLog
     /// Bumped by every enter and leave, so a move that was overtaken does nothing when it ends.
     private var generation = 0
+    /// Who waits for the leave that is running. Empty when none is.
+    private var leaveWaiters: [(beforeSwap: () -> Void, completion: () -> Void)] = []
 
     private(set) var panel: MiniPlayerPanel?
     private var content: MiniPlayerContentView?
@@ -307,15 +309,20 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
             completion()
             return
         }
+        // A leave asked during another joins it, so neither caller's completion is lost.
+        let joins = !leaveWaiters.isEmpty
+        leaveWaiters.append((beforeSwap, completion))
+        if joins {
+            if !animated { finishLeave(panel) }
+            return
+        }
         generation += 1
         let current = generation
         snapper.stop()
         let motion = MotionTiming.miniPlayerMove(reduceMotion: reduceMotion())
         let finish = { [weak self] in
             guard let self, self.generation == current else { return }
-            beforeSwap()
-            self.swapHome(panel)
-            completion()
+            self.finishLeave(panel)
         }
         if !animated {
             finish()
@@ -329,6 +336,15 @@ final class MiniPlayerController: NSObject, NSWindowDelegate {
         } else {
             finish()
         }
+    }
+
+    private func finishLeave(_ panel: MiniPlayerPanel) {
+        let waiters = leaveWaiters
+        guard !waiters.isEmpty else { return }
+        leaveWaiters = []
+        waiters.forEach { $0.beforeSwap() }
+        swapHome(panel)
+        waiters.forEach { $0.completion() }
     }
 
     private func move(_ panel: NSPanel, to frame: CGRect, duration: TimeInterval, completion: @escaping () -> Void) {

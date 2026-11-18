@@ -745,7 +745,8 @@ public final class PlayerModel {
             }
         case .seekCompleted(let report):
             guard report.kind == .exact, !report.cancelled else { return }
-            if pendingExact != nil {
+            // A report for an earlier seek says nothing about the one still pending.
+            if pendingExact == report.target {
                 pendingExact = nil
                 showsSeekProgress = false
                 progressTask?.cancel()

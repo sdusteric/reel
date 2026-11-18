@@ -812,8 +812,9 @@ public actor PlaybackEngine: PlayerEngine {
 
     public func close() async {
         guard !closed else { return }
-        await closeSession()
+        // Set before the first suspension, so an open or a second close cannot start on an engine that is closing.
         closed = true
+        await closeSession()
         timeEvents.cancel()
         tickerTask?.cancel()
         tickerTask = nil

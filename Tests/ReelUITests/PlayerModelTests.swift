@@ -94,6 +94,29 @@ import Testing
         #expect(model.position == .seconds(17.5))
     }
 
+    @Test func aReportForAnEarlierSeekLeavesTheNewerOnePending() async throws {
+        let scratch = try UIScratch()
+        defer { scratch.remove() }
+        var options = FakeEngine.Options()
+        options.completesExactSeeks = false
+        let (model, _, _) = makeModel(engine: FakeEngine(options: options), scratch: scratch)
+        await openAndSettle(model, try scratch.makeMediaFile("a.mkv"))
+        model.handle(.time(.seconds(12)))
+        model.seek(by: 5)
+        model.seek(by: 5)
+        #expect(model.position == .seconds(22))
+        model.handle(.seekCompleted(SeekReport(
+            kind: .exact, target: .seconds(17), generation: 1, requestedAtNanos: 0, landedPTS: .seconds(17)
+        )))
+        #expect(model.position == .seconds(22), "the first seek's report must not pull the bar back")
+        model.handle(.time(.seconds(17.1)))
+        #expect(model.position == .seconds(22))
+        model.handle(.seekCompleted(SeekReport(
+            kind: .exact, target: .seconds(22), generation: 2, requestedAtNanos: 0, landedPTS: .seconds(21.98)
+        )))
+        #expect(model.position == .seconds(21.98))
+    }
+
     @Test func keyboardSeeksAreExactClampedAndShowTheTimeInTheOSD() async throws {
         let scratch = try UIScratch()
         defer { scratch.remove() }
