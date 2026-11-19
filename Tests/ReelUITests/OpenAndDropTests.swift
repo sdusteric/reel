@@ -8,7 +8,7 @@ import Testing
     }
 
     @Test(arguments: [
-        "a.mp4", "a.m4v", "a.mov", "a.mkv", "a.webm", "a.flv", "a.avi", "a.ts", "a.m2ts", "a.mts",
+        "a.mp4", "a.m4v", "a.mov", "a.mkv", "a.webm", "a.flv", "a.avi", "a.ts", "a.m2ts", "a.mts", "a.mpg", "a.mpeg", "a.vob", "a.m2v",
         "a.ogv", "a.ogg", "a.wav", "a.mp3", "a.aac", "a.flac", "UPPER.MKV", "Mixed.Mp4", "show.s01e01.en.mkv",
     ])
     func acceptsSupportedExtensions(_ name: String) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # All gates (design section 14). Exits 0 only when every gate passes.
 #   deps (stamp) -> fixtures (stamp) -> swift build -c release -> swift test -> swiftlint --strict
-#   -> license check via reelctl probe --build-info -> av-sync (both sync fixtures, 20 ms, M1 3 and
+#   -> license check via reelctl probe --build-info -> av-sync (the four sync fixtures, 20 ms, M1 3 and
 #   M3 1) -> soak-smoke (12 corpus files through reelctl soak, M3 1) -> reelctl does not link Sparkle ->
 #   scripts/bundle.sh -> codesign --verify --deep --strict -> plutil -lint (bundle id, document
 #   types, folder usage string) -> Sparkle in the bundle (framework, feed, key, @rpath link) ->
@@ -81,20 +81,20 @@ remove_ctl_home() {
   return 0
 }
 
-# Both sync fixtures: max |beep - flash| at most 20 ms over the whole file and after 10 exact
+# The sync fixtures (H.264 and HEVC, and the MPEG-2 .mpg and .vob): max |beep - flash| at most 20 ms over the whole file and after 10 exact
 # seeks, at least 10 seeks, no failures. reelctl attaches no audio renderer (REEL_ALLOW_AUDIO is
 # unset above).
 av_sync_check() {
   local ctl="$SCRATCH/release/reelctl" name home report rc bad=0
   [ -x "$ctl" ] || { echo "missing $ctl"; return 1; }
-  for name in sync_h264_aac.mp4 sync_hevc_opus.mkv; do
+  for name in sync_h264_aac.mp4 sync_hevc_opus.mkv mpeg2/sync_mpeg2_mp2.mpg mpeg2/sync_mpeg2_ac3.vob; do
     if [ ! -f "$FIXTURES/$name" ]; then echo "$name missing in $FIXTURES"; bad=1; continue; fi
     home="$(ctl_home)"
-    report="$LOGDIR/av-sync-$name.json"
-    REEL_HOME="$home" "$ctl" av-sync "$FIXTURES/$name" --json --seeks 10 >"$report" 2>"$LOGDIR/av-sync-$name.err"
+    report="$LOGDIR/av-sync-${name//\//_}.json"
+    REEL_HOME="$home" "$ctl" av-sync "$FIXTURES/$name" --json --seeks 10 >"$report" 2>"$LOGDIR/av-sync-${name//\//_}.err"
     rc=$?
     remove_ctl_home "$home"
-    if [ "$rc" -ne 0 ]; then echo "$name: reelctl av-sync exit $rc"; tail -5 "$LOGDIR/av-sync-$name.err"; bad=1; continue; fi
+    if [ "$rc" -ne 0 ]; then echo "$name: reelctl av-sync exit $rc"; tail -5 "$LOGDIR/av-sync-${name//\//_}.err"; bad=1; continue; fi
     python3 -I -c '
 import json, sys
 report = json.load(open(sys.argv[1]))

@@ -92,6 +92,11 @@ REORDER_FIXTURES=(
 )
 # <<< m3-reorder
 
+# >>> m3-mpeg2
+# MPEG-2 in program streams (DVD .vob, .mpg) and a transport stream (TV recordings).
+MPEG2_FIXTURES=(mpeg2/sync_mpeg2_mp2.mpg mpeg2/sync_mpeg2_ac3.vob mpeg2/ramp_mpeg2.ts)
+# <<< m3-mpeg2
+
 # Version groups: the M1 and M2 recipes (everything outside the m3 blocks) and the M3 recipes
 # (the m3 blocks and the Python generators). The stamp covers both.
 # The SDR colour bars ('# >>> m3-color' blocks) are a third group, so adding them regenerated
@@ -101,6 +106,7 @@ only_m3() { awk '/^# >>> m3$/{keep=1} keep{print} /^# <<< m3$/{keep=0}' "$1"; }
 only_color() { awk '/^# >>> m3-color$/{keep=1} keep{print} /^# <<< m3-color$/{keep=0}' "$1"; }
 only_dovi() { awk '/^# >>> m3-dovi$/{keep=1} keep{print} /^# <<< m3-dovi$/{keep=0}' "$1"; }
 only_reorder() { awk '/^# >>> m3-reorder$/{keep=1} keep{print} /^# <<< m3-reorder$/{keep=0}' "$1"; }
+only_mpeg2() { awk '/^# >>> m3-mpeg2$/{keep=1} keep{print} /^# <<< m3-mpeg2$/{keep=0}' "$1"; }
 BASE_HASH="$(strip_m3 "${BASH_SOURCE[0]}" | shasum -a 256 | cut -c1-16)"
 M3_HASH="$({ only_m3 "${BASH_SOURCE[0]}"; cat "$ROOT/scripts/make-ramp.py" "$ROOT/scripts/make-dovi.py" "$ROOT/scripts/make-corpus.py"; } | shasum -a 256 | cut -c1-16)"
 COLOR_HASH="$(only_color "${BASH_SOURCE[0]}" | shasum -a 256 | cut -c1-16)"
@@ -108,12 +114,14 @@ COLOR_HASH="$(only_color "${BASH_SOURCE[0]}" | shasum -a 256 | cut -c1-16)"
 DOVI_HASH="$({ only_dovi "${BASH_SOURCE[0]}"; cat "$ROOT/scripts/make-dovi-rpu.c"; } | shasum -a 256 | cut -c1-16)"
 # The decode-order pts files ('# >>> m3-reorder' blocks) are a fifth group.
 REORDER_HASH="$(only_reorder "${BASH_SOURCE[0]}" | shasum -a 256 | cut -c1-16)"
-SCRIPT_HASH="$(printf '%s %s %s %s %s\n' "$BASE_HASH" "$M3_HASH" "$COLOR_HASH" "$DOVI_HASH" "$REORDER_HASH" | shasum -a 256 | cut -c1-16)"
+# The MPEG-2 files ('# >>> m3-mpeg2' blocks) are a sixth group.
+MPEG2_HASH="$(only_mpeg2 "${BASH_SOURCE[0]}" | shasum -a 256 | cut -c1-16)"
+SCRIPT_HASH="$(printf '%s %s %s %s %s %s\n' "$BASE_HASH" "$M3_HASH" "$COLOR_HASH" "$DOVI_HASH" "$REORDER_HASH" "$MPEG2_HASH" | shasum -a 256 | cut -c1-16)"
 STAMP="$OUT/.fixtures-$SCRIPT_HASH"
 # Base hashes of earlier versions whose M1 and M2 recipes are the ones here, so their files are
 # kept: 9720b018b84371bc is the M2 script, 4c872f63da278f6a the M3 script before the colour group,
-# 8b2af9c2e01cae4b the script before the reorder group.
-LEGACY_BASE_VERSIONS=(9720b018b84371bc 4c872f63da278f6a 8b2af9c2e01cae4b)
+# 8b2af9c2e01cae4b the script before the reorder group, fb78bc447929b86a before the MPEG-2 group.
+LEGACY_BASE_VERSIONS=(9720b018b84371bc 4c872f63da278f6a 8b2af9c2e01cae4b fb78bc447929b86a)
 
 # Several agents and gates may run this at once: one generates, the others wait for its stamp.
 LOCK="$OUT/.lock"
@@ -131,7 +139,7 @@ trap 'rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true' EXIT
 
 all_present() {
   local name
-  for name in "${FIXTURES[@]}" "${M3_FIXTURES[@]}" "${COLOR_FIXTURES[@]}" "${DOVI_RPU_FIXTURES[@]}" "${REORDER_FIXTURES[@]}"; do
+  for name in "${FIXTURES[@]}" "${M3_FIXTURES[@]}" "${COLOR_FIXTURES[@]}" "${DOVI_RPU_FIXTURES[@]}" "${REORDER_FIXTURES[@]}" "${MPEG2_FIXTURES[@]}"; do
     if [ "$name" = odd/zero.mkv ]; then
       [ -f "$OUT/$name" ] || return 1
     else
@@ -152,6 +160,7 @@ M3_VERSION_FILE="$OUT/.version-m3"
 COLOR_VERSION_FILE="$OUT/.version-m3-color"
 DOVI_VERSION_FILE="$OUT/.version-m3-dovi"
 REORDER_VERSION_FILE="$OUT/.version-m3-reorder"
+MPEG2_VERSION_FILE="$OUT/.version-m3-mpeg2"
 base_version="$(cat "$VERSION_FILE" 2>/dev/null || true)"
 for legacy in "${LEGACY_BASE_VERSIONS[@]}"; do
   if [ "$base_version" = "$legacy" ]; then base_version="$BASE_HASH"; fi
@@ -176,12 +185,16 @@ fi
 if [ "${FORCE:-0}" = 1 ] || [ "$(cat "$REORDER_VERSION_FILE" 2>/dev/null || true)" != "$REORDER_HASH" ]; then
   for name in "${REORDER_FIXTURES[@]}"; do rm -f "${OUT:?}/${name:?}"; done
 fi
+if [ "${FORCE:-0}" = 1 ] || [ "$(cat "$MPEG2_VERSION_FILE" 2>/dev/null || true)" != "$MPEG2_HASH" ]; then
+  for name in "${MPEG2_FIXTURES[@]}"; do rm -f "${OUT:?}/${name:?}"; done
+fi
 rm -f "$OUT"/.fixtures-*
 echo "$BASE_HASH" >"$VERSION_FILE"
 echo "$M3_HASH" >"$M3_VERSION_FILE"
 echo "$COLOR_HASH" >"$COLOR_VERSION_FILE"
 echo "$DOVI_HASH" >"$DOVI_VERSION_FILE"
 echo "$REORDER_HASH" >"$REORDER_VERSION_FILE"
+echo "$MPEG2_HASH" >"$MPEG2_VERSION_FILE"
 
 ff() { "$FFMPEG" -hide_banner -loglevel error -nostdin -y "$@"; }
 
@@ -224,6 +237,8 @@ muxer_for() {
     mp4) echo mp4 ;;
     mov) echo mov ;;
     ts) echo mpegts ;;
+    mpg) echo mpeg ;;
+    vob) echo vob ;;
     avi) echo avi ;;
     flv) echo flv ;;
     mp3) echo mp3 ;;
@@ -914,6 +929,25 @@ if [ "$FAILED" = 0 ]; then
   fi
 fi
 # <<< m3-reorder
+
+# >>> m3-mpeg2
+# ---- MPEG-2 (DVD and TV) ----
+# Two sync files as for the M1 ones (a white frame and a 50 ms beep at every whole second, 20 s,
+# PAL 25 fps): a program stream with MP2 audio, and a DVD .vob with interlaced coding and AC3 in a
+# private stream. The ramp has a rising luma per frame and B-frames, for frame order and seeks.
+MPEG2_SYNC_VIDEO="color=c=black:s=720x576:r=25:d=20,drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='eq(mod(n,25),0)'"
+MPEG2_RAMP="color=c=gray:s=720x480:r=30000/1001:d=4,format=yuv420p,geq=lum='20+N*1.5':cb=128:cr=128"
+MPEG2_VIDEO=(-c:v mpeg2video -b:v 6M -maxrate 9M -bufsize 1835k -bf 2 -g 12)
+if [ "$FAILED" = 0 ]; then
+  start mpeg2/sync_mpeg2_mp2.mpg -f lavfi -i "$MPEG2_SYNC_VIDEO" -f lavfi -i "$SYNC_AUDIO" \
+    "${MPEG2_VIDEO[@]}" -c:a mp2 -b:a 224k
+  start mpeg2/sync_mpeg2_ac3.vob -f lavfi -i "$MPEG2_SYNC_VIDEO" -f lavfi -i "$SYNC_AUDIO" \
+    "${MPEG2_VIDEO[@]}" -flags +ilme+ildct -c:a ac3 -b:a 192k
+  start mpeg2/ramp_mpeg2.ts -f lavfi -i "$MPEG2_RAMP" -f lavfi -i "sine=f=440:d=4" \
+    -c:v mpeg2video -q:v 2 -bf 2 -g 15 -sc_threshold 1000000000 -c:a mp2 -b:a 192k
+  await_all
+fi
+# <<< m3-mpeg2
 
 if [ "$FAILED" != 0 ]; then
   echo "fixture generation failed" >&2

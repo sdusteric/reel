@@ -59,7 +59,7 @@ These are failures, not missing features. Each has a guard in the design.
 
 ## 5. Supported formats
 
-Containers (FFmpeg demuxers): mp4, m4v, mov (mov), mkv, webm (matroska), flv, avi, ts, m2ts, mts (mpegts), ogg/ogv, plus wav, mp3, aac, flac for audio-only files.
+Containers (FFmpeg demuxers): mp4, m4v, mov (mov), mkv, webm (matroska), flv, avi, ts, m2ts, mts (mpegts), mpg, mpeg, vob (mpegps), m2v (mpegvideo), ogg/ogv, plus wav, mp3, aac, flac for audio-only files.
 
 Video:
 
@@ -69,9 +69,9 @@ Video:
 | HEVC Main and Main10 | VideoToolbox hardware | hvcC; HDR10 and HLG colour carried in the format description |
 | AV1 | VideoToolbox hardware when `VTIsHardwareDecodeSupported` (true on this M5), else dav1d | av1C from extradata |
 | VP9 profile 0 and 2 | VideoToolbox hardware after `VTRegisterSupplementalVideoDecoderIfAvailable` | vpcC built from codecpar |
-| MPEG-4 Part 2, MS-MPEG4 v3, FLV1 (Sorenson H.263), MPEG-2, VC-1 | libavcodec software | old avi and flv files |
+| MPEG-4 Part 2, MS-MPEG4 v3, FLV1 (Sorenson H.263), MPEG-2, VC-1 | libavcodec software | old avi and flv files, DVD (vob, mpg) and TV recordings (ts); interlaced video is not deinterlaced |
 
-Audio: everything goes through libavcodec and swresample to interleaved 32-bit float LPCM: AAC, AC3, E-AC3, DTS, TrueHD/MLP, FLAC, Opus, Vorbis, MP3, ALAC, PCM. Passthrough of compressed audio is not used **(my call)**: AudioToolbox has no DTS or TrueHD decoder, and one LPCM path is simpler to make sample-accurate.
+Audio: everything goes through libavcodec and swresample to interleaved 32-bit float LPCM: AAC, AC3, E-AC3, DTS, TrueHD/MLP, FLAC, Opus, Vorbis, MP2, MP3, ALAC, PCM. Passthrough of compressed audio is not used **(my call)**: AudioToolbox has no DTS or TrueHD decoder, and one LPCM path is simpler to make sample-accurate.
 
 Subtitles (M2): SRT, ASS/SSA, WebVTT, mov_text, PGS, DVD/VobSub, external files next to the video.
 

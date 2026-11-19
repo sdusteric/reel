@@ -462,7 +462,7 @@ private final class FrameSink: Sendable {
         }
     }
 
-    private static func seekAndPlay(_ file: String) async throws {
+    static func seekAndPlay(_ file: String) async throws {
         let url = try fixtureURL(file)
         let engine = TestEngines.make()
         let seen = Mutex<[(generation: UInt64, time: MediaTime, luma: Double)]>([])

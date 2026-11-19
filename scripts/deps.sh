@@ -190,12 +190,12 @@ done
     --enable-avcodec --enable-avformat --enable-avutil --enable-swresample --enable-swscale \
     --enable-videotoolbox --enable-audiotoolbox \
     --enable-protocol=file \
-    --enable-demuxer=matroska,mov,mpegts,flv,avi,ogg,wav,mp3,aac,flac,srt,ass,webvtt,concat \
-    --enable-parser=h264,hevc,vp9,av1,aac,ac3,opus,mpegaudio,flac,dca \
+    --enable-demuxer=matroska,mov,mpegts,mpegps,mpegvideo,flv,avi,ogg,wav,mp3,aac,flac,srt,ass,webvtt,concat \
+    --enable-parser=h264,hevc,vp9,av1,mpegvideo,aac,ac3,opus,mpegaudio,flac,dca \
     --enable-decoder=h264,hevc,vp9,av1,libdav1d,mpeg4,msmpeg4v3,mpeg2video,vc1,flv \
     --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox,vp9_videotoolbox,av1_videotoolbox,mpeg2_videotoolbox,mpeg4_videotoolbox \
     --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc,vp9_superframe,av1_frame_merge,extract_extradata \
-    --enable-decoder=aac,ac3,eac3,dca,truehd,mlp,flac,opus,vorbis,mp3,mp3float,alac \
+    --enable-decoder=aac,ac3,eac3,dca,truehd,mlp,flac,opus,vorbis,mp2,mp2float,mp3,mp3float,alac \
     --enable-decoder='pcm_*' \
     --enable-decoder=ass,ssa,subrip,srt,webvtt,mov_text,pgssub,dvdsub \
     --enable-libdav1d \

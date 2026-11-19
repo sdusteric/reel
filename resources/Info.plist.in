@@ -121,6 +121,22 @@
       <array><string>ts</string><string>m2ts</string><string>mts</string></array>
     </dict>
     <dict>
+      <key>CFBundleTypeName</key><string>MPEG Video</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key>
+      <array><string>public.mpeg</string><string>public.mpeg-2-video</string></array>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>mpg</string><string>mpeg</string><string>m2v</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>DVD Video Object</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>vob</string></array>
+    </dict>
+    <dict>
       <key>CFBundleTypeName</key><string>Ogg Video</string>
       <key>CFBundleTypeRole</key><string>Viewer</string>
       <key>LSHandlerRank</key><string>Default</string>

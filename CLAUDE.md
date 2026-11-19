@@ -19,8 +19,8 @@ REEL_SCRATCH="$TMPDIR/reel-accept" scripts/accept.sh m3        # only AC-M3-1 to
 scripts/release.sh [--notes <file.md>] [--dry-run <dir>]   # check.sh, release bundle, app-updates publish.sh
 ```
 
-`check.sh` gates, in order: deps, fixtures, build, test, lint, license, `av-sync` (both sync
-fixtures, at most 20 ms sequentially and after 10 seeks), `soak-smoke` (12 corpus files through
+`check.sh` gates, in order: deps, fixtures, build, test, lint, license, `av-sync` (the H.264, HEVC
+and two MPEG-2 sync fixtures, at most 20 ms sequentially and after 10 seeks), `soak-smoke` (12 corpus files through
 `reelctl soak`: no crash, hang or manifest mismatch), no-sparkle, bundle, codesign, plist, sparkle,
 requirement, dashes.
 

@@ -6,7 +6,7 @@ import ReelCore
 /// file argument on launch.
 nonisolated public enum SupportedMedia {
     public static let videoExtensions: [String] = [
-        "mp4", "m4v", "mov", "mkv", "webm", "flv", "avi", "ts", "m2ts", "mts", "ogv",
+        "mp4", "m4v", "mov", "mkv", "webm", "flv", "avi", "ts", "m2ts", "mts", "mpg", "mpeg", "vob", "m2v", "ogv",
     ]
     public static let audioExtensions: [String] = ["ogg", "wav", "mp3", "aac", "flac"]
     public static let allExtensions: Set<String> = Set(videoExtensions + audioExtensions)
