@@ -63,6 +63,26 @@ public final class Packet: @unchecked Sendable {
         position = source.position
     }
 
+    /// A copy of `source` sharing its payload, with another presentation time.
+    init?(referencing source: Packet, pts: Int64) {
+        guard let owned = av_packet_alloc() else { return nil }
+        guard av_packet_ref(owned, source.raw) >= 0 else {
+            var pointer: UnsafeMutablePointer<AVPacket>? = owned
+            av_packet_free(&pointer)
+            return nil
+        }
+        owned.pointee.pts = pts
+        raw = owned
+        streamIndex = source.streamIndex
+        rawPTS = pts
+        rawDTS = source.rawDTS
+        rawDuration = source.rawDuration
+        timeBase = source.timeBase
+        isKeyframe = source.isKeyframe
+        isCorrupt = source.isCorrupt
+        position = source.position
+    }
+
     deinit {
         var pointer: UnsafeMutablePointer<AVPacket>? = raw
         av_packet_free(&pointer)

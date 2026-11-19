@@ -350,3 +350,95 @@ private final class FrameSink: Sendable {
         #expect(orderer.pendingCount == 0)
     }
 }
+
+/// MP4 files without a ctts box (fixtures.sh, reorder/): every pts equals its dts, so the
+/// presentation times must come from the picture order count. The ramp's luma rises every frame,
+/// so a frame shown out of order is a luma step back.
+@Suite(.serialized) struct DecodeOrderTimestampTests {
+    static let files = ["reorder/hevc_open_gop_no_ctts.mp4", "reorder/h264_no_ctts.mp4"]
+
+    private static func videoPackets(_ source: MediaSource) throws -> [Packet] {
+        var packets: [Packet] = []
+        while let packet = try source.readPacket() {
+            if packet.streamIndex == source.videoStreamIndex { packets.append(packet) }
+        }
+        return packets
+    }
+
+    @Test(arguments: files)
+    func repairedTimesKeepTheContainerTimesInPictureOrder(_ file: String) throws {
+        let source = try MediaSource(url: fixtureURL(file))
+        let packets = try Self.videoPackets(source)
+        #expect(source.repairsTimestamps)
+        #expect(packets.count == 96)
+        let pts = packets.compactMap(\.rawPTS)
+        let dts = packets.compactMap(\.rawDTS)
+        #expect(pts.sorted() == dts, "the same set of times, given out in display order")
+        #expect(pts != dts, "B-frames moved")
+    }
+
+    @Test func aSeekToTheCutGivesTheSameTimesAsReadingThrough() throws {
+        let url = try fixtureURL(Self.files[0])
+        let through = try Self.videoPackets(MediaSource(url: url))
+        let byPosition = Dictionary(through.compactMap { packet in packet.position.map { ($0, packet.rawPTS) } }) { first, _ in first }
+        let keyframes = through.filter(\.isKeyframe).compactMap(\.pts)
+        let cut = try #require(keyframes.last)
+        #expect(cut > .seconds(1), "the scene cut is a keyframe: \(keyframes)")
+
+        let source = try MediaSource(url: url)
+        try source.seek(toKeyframe: cut)
+        let after = try Self.videoPackets(source)
+        #expect(after.first?.isKeyframe == true)
+        #expect(after.count > 40)
+        for packet in after {
+            let position = try #require(packet.position)
+            #expect(packet.rawPTS == byPosition[position] ?? nil, "packet at \(position)")
+        }
+    }
+
+    @Test(arguments: [Fixture.h264, .hevc10, .syncH264])
+    func filesWithCompositionTimesAreLeftAlone(_ fixture: Fixture) throws {
+        let repaired = try MediaSource(url: fixture.url())
+        let packets = try Self.videoPackets(repaired)
+        #expect(!repaired.repairsTimestamps)
+        #expect(packets.contains { $0.rawPTS != $0.rawDTS })
+    }
+
+    /// The engine's path: VideoToolbox in decode order, then `PresentationOrderer` by pts.
+    @Test(arguments: files)
+    func hardwareFramesComeOutInDisplayOrder(_ file: String) throws {
+        let url = try fixtureURL(file)
+        let demuxer = try Demuxer(url: url)
+        let format = try #require(demuxer.videoFormat)
+        let source = try MediaSource(url: url)
+        let packets = try Self.videoPackets(source).map { format.prepare($0) }
+        let sink = FrameSink()
+        let orderer = PresentationOrderer()
+        let sinkHandler = sink.handler
+        let decoder = try VTVideoDecoder(format: format) { event in
+            switch event {
+            case .frame(let frame): orderer.receive(frame).forEach { sinkHandler(.frame($0)) }
+            case .failed(let pts, _, _, _), .dropped(let pts, _):
+                sinkHandler(event)
+                orderer.fail(pts).forEach { sinkHandler(.frame($0)) }
+            }
+        }
+        defer { decoder.invalidate() }
+        decoder.setRealTime(false)
+        for packet in packets { orderer.expect(packet.cmPTS) }
+        for packet in packets { try decoder.decode(packet, generation: 1, output: true) }
+        decoder.drainSynchronously()
+        orderer.flush().forEach { sinkHandler(.frame($0)) }
+
+        let frames = sink.frames.withLock { $0 }
+        #expect(frames.count == 96)
+        #expect(sink.failures.withLock { $0 } == 0)
+        let lumas = frames.compactMap { frame -> Double? in
+            guard let plane = FrameGrabber.lumaPlane(frame.pixelBuffer) else { return nil }
+            return plane.values.reduce(0, +) / Double(plane.values.count) * 255
+        }
+        #expect(lumas.count == frames.count)
+        let stepsBack = zip(lumas, lumas.dropFirst()).enumerated().filter { $0.element.1 < $0.element.0 }.map(\.offset)
+        #expect(stepsBack.isEmpty, "frames out of order after index \(stepsBack); luma \(lumas.map { Int($0) })")
+    }
+}

@@ -63,6 +63,10 @@ public final class MediaSource {
     /// retry the open with default probing.
     public private(set) var logKey: Int?
     public private(set) var reopenErrors = 0
+    /// Rebuilds video pts that the container gave in decode order; nil when the codec cannot need it.
+    private let timestampRepair: TimestampRepair?
+    /// Packets read and ready to hand out, while video packets wait in `timestampRepair`.
+    private var readyPackets: [Packet] = []
 
     /// - Parameter preferredVideoStream: the video stream to select (Ctrl+Cmd+V), when it exists.
     /// - Parameter interrupt: makes blocking FFmpeg calls give up (section 7.10).
@@ -89,6 +93,8 @@ public final class MediaSource {
         let audio = streams.filter { $0.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO }
         audioStreamIndex = (audio.first { ($0.pointee.disposition & AV_DISPOSITION_DEFAULT) != 0 } ?? audio.first)
             .map { Int($0.pointee.index) }
+        timestampRepair = videoStreamIndex.flatMap { index in streams.first { Int($0.pointee.index) == index } }
+            .flatMap { TimestampRepair(stream: $0) }
     }
 
     deinit {
@@ -248,8 +254,32 @@ public final class MediaSource {
         return MediaTime(ffmpeg: value, timeBase: AVRational(num: 1, den: reel_av_time_base()))
     }
 
+    /// The video pts are rebuilt from picture order because the container gave decode-order times.
+    public var repairsTimestamps: Bool { timestampRepair?.isRepairing ?? false }
+
     /// Reads the next packet of any stream. Returns nil at end of file.
     public func readPacket() throws -> Packet? {
+        guard let timestampRepair else { return try readContainerPacket() }
+        while readyPackets.isEmpty {
+            guard let packet = try readContainerPacket() else {
+                readyPackets = timestampRepair.drain()
+                break
+            }
+            if packet.streamIndex == videoStreamIndex {
+                readyPackets = timestampRepair.push(packet)
+            } else {
+                readyPackets = [packet]
+            }
+        }
+        return readyPackets.isEmpty ? nil : readyPackets.removeFirst()
+    }
+
+    private func resetTimestampRepair() {
+        readyPackets.removeAll()
+        timestampRepair?.reset()
+    }
+
+    private func readContainerPacket() throws -> Packet? {
         guard let context else { throw EngineError.notOpen }
         var packet = av_packet_alloc()
         defer { av_packet_free(&packet) }
@@ -315,6 +345,7 @@ public final class MediaSource {
         let index = videoStreamIndex ?? audioStreamIndex ?? 0
         guard let stream = stream(index) else { throw EngineError.noPlayableStream }
         let timestamp = keyframe.ffmpegValue(timeBase: stream.pointee.time_base)
+        resetTimestampRepair()
         if avformat_seek_file(context, Int32(index), Int64.min, timestamp, timestamp, AVSEEK_FLAG_BACKWARD) >= 0 { return }
         // Some demuxers reject the bounded form; fall back to the plain backward seek.
         if av_seek_frame(context, Int32(index), timestamp, AVSEEK_FLAG_BACKWARD) >= 0 { return }
@@ -357,6 +388,7 @@ public final class MediaSource {
     /// Returns to the first packet of the file.
     public func rewind() throws {
         guard let context else { throw EngineError.notOpen }
+        resetTimestampRepair()
         let start = context.pointee.start_time == reel_av_nopts() ? 0 : context.pointee.start_time
         if avformat_seek_file(context, -1, Int64.min, start, start, AVSEEK_FLAG_BACKWARD) >= 0 { return }
         try FFmpegError.check(avformat_seek_file(context, -1, Int64.min, 0, 0, AVSEEK_FLAG_BYTE), "rewind \(url.lastPathComponent)")

@@ -81,6 +81,12 @@ COLOR_FIXTURES=(sdr/bars709_h264.mp4 sdr/bars709_untagged_h264.mp4 sdr/bars601_s
 DOVI_RPU_FIXTURES=(hdr/dv81_rpu.mp4 hdr/dv84_rpu.mp4 hdr/dv5_rpu.mp4)
 # <<< m3-dovi
 
+# >>> m3-reorder
+# B-frames with decode-order pts: MP4 files whose ctts box is gone (as in many x265 remuxes), so
+# every pts equals its dts and only the picture order count gives the display order.
+REORDER_FIXTURES=(reorder/hevc_open_gop_no_ctts.mp4 reorder/h264_no_ctts.mp4)
+# <<< m3-reorder
+
 # Version groups: the M1 and M2 recipes (everything outside the m3 blocks) and the M3 recipes
 # (the m3 blocks and the Python generators). The stamp covers both.
 # The SDR colour bars ('# >>> m3-color' blocks) are a third group, so adding them regenerated
@@ -89,16 +95,20 @@ strip_m3() { awk '/^# >>> m3/{skip=1} !skip{print} /^# <<< m3/{skip=0}' "$1"; }
 only_m3() { awk '/^# >>> m3$/{keep=1} keep{print} /^# <<< m3$/{keep=0}' "$1"; }
 only_color() { awk '/^# >>> m3-color$/{keep=1} keep{print} /^# <<< m3-color$/{keep=0}' "$1"; }
 only_dovi() { awk '/^# >>> m3-dovi$/{keep=1} keep{print} /^# <<< m3-dovi$/{keep=0}' "$1"; }
+only_reorder() { awk '/^# >>> m3-reorder$/{keep=1} keep{print} /^# <<< m3-reorder$/{keep=0}' "$1"; }
 BASE_HASH="$(strip_m3 "${BASH_SOURCE[0]}" | shasum -a 256 | cut -c1-16)"
 M3_HASH="$({ only_m3 "${BASH_SOURCE[0]}"; cat "$ROOT/scripts/make-ramp.py" "$ROOT/scripts/make-dovi.py" "$ROOT/scripts/make-corpus.py"; } | shasum -a 256 | cut -c1-16)"
 COLOR_HASH="$(only_color "${BASH_SOURCE[0]}" | shasum -a 256 | cut -c1-16)"
 # The Dolby Vision RPU files ('# >>> m3-dovi' blocks and make-dovi-rpu.c) are a fourth group.
 DOVI_HASH="$({ only_dovi "${BASH_SOURCE[0]}"; cat "$ROOT/scripts/make-dovi-rpu.c"; } | shasum -a 256 | cut -c1-16)"
-SCRIPT_HASH="$(printf '%s %s %s %s\n' "$BASE_HASH" "$M3_HASH" "$COLOR_HASH" "$DOVI_HASH" | shasum -a 256 | cut -c1-16)"
+# The decode-order pts files ('# >>> m3-reorder' blocks) are a fifth group.
+REORDER_HASH="$(only_reorder "${BASH_SOURCE[0]}" | shasum -a 256 | cut -c1-16)"
+SCRIPT_HASH="$(printf '%s %s %s %s %s\n' "$BASE_HASH" "$M3_HASH" "$COLOR_HASH" "$DOVI_HASH" "$REORDER_HASH" | shasum -a 256 | cut -c1-16)"
 STAMP="$OUT/.fixtures-$SCRIPT_HASH"
 # Base hashes of earlier versions whose M1 and M2 recipes are the ones here, so their files are
-# kept: 9720b018b84371bc is the M2 script, 4c872f63da278f6a the M3 script before the colour group.
-LEGACY_BASE_VERSIONS=(9720b018b84371bc 4c872f63da278f6a)
+# kept: 9720b018b84371bc is the M2 script, 4c872f63da278f6a the M3 script before the colour group,
+# 8b2af9c2e01cae4b the script before the reorder group.
+LEGACY_BASE_VERSIONS=(9720b018b84371bc 4c872f63da278f6a 8b2af9c2e01cae4b)
 
 # Several agents and gates may run this at once: one generates, the others wait for its stamp.
 LOCK="$OUT/.lock"
@@ -116,7 +126,7 @@ trap 'rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true' EXIT
 
 all_present() {
   local name
-  for name in "${FIXTURES[@]}" "${M3_FIXTURES[@]}" "${COLOR_FIXTURES[@]}" "${DOVI_RPU_FIXTURES[@]}"; do
+  for name in "${FIXTURES[@]}" "${M3_FIXTURES[@]}" "${COLOR_FIXTURES[@]}" "${DOVI_RPU_FIXTURES[@]}" "${REORDER_FIXTURES[@]}"; do
     if [ "$name" = odd/zero.mkv ]; then
       [ -f "$OUT/$name" ] || return 1
     else
@@ -136,6 +146,7 @@ VERSION_FILE="$OUT/.version"
 M3_VERSION_FILE="$OUT/.version-m3"
 COLOR_VERSION_FILE="$OUT/.version-m3-color"
 DOVI_VERSION_FILE="$OUT/.version-m3-dovi"
+REORDER_VERSION_FILE="$OUT/.version-m3-reorder"
 base_version="$(cat "$VERSION_FILE" 2>/dev/null || true)"
 for legacy in "${LEGACY_BASE_VERSIONS[@]}"; do
   if [ "$base_version" = "$legacy" ]; then base_version="$BASE_HASH"; fi
@@ -157,11 +168,15 @@ fi
 if [ "${FORCE:-0}" = 1 ] || [ "$(cat "$DOVI_VERSION_FILE" 2>/dev/null || true)" != "$DOVI_HASH" ]; then
   for name in "${DOVI_RPU_FIXTURES[@]}"; do rm -f "${OUT:?}/${name:?}"; done
 fi
+if [ "${FORCE:-0}" = 1 ] || [ "$(cat "$REORDER_VERSION_FILE" 2>/dev/null || true)" != "$REORDER_HASH" ]; then
+  for name in "${REORDER_FIXTURES[@]}"; do rm -f "${OUT:?}/${name:?}"; done
+fi
 rm -f "$OUT"/.fixtures-*
 echo "$BASE_HASH" >"$VERSION_FILE"
 echo "$M3_HASH" >"$M3_VERSION_FILE"
 echo "$COLOR_HASH" >"$COLOR_VERSION_FILE"
 echo "$DOVI_HASH" >"$DOVI_VERSION_FILE"
+echo "$REORDER_HASH" >"$REORDER_VERSION_FILE"
 
 ff() { "$FFMPEG" -hide_banner -loglevel error -nostdin -y "$@"; }
 
@@ -823,6 +838,59 @@ if [ "$FAILED" = 0 ]; then
   done
 fi
 # <<< m3-dovi
+
+# >>> m3-reorder
+# ---- Decode-order pts (MP4 without ctts) ----
+# A luma ramp with a hard cut at frame 40, so frames in the wrong order show as a luma step back.
+# The HEVC file has open GOPs and a scene cut, so the cut is a CRA with RASL leading pictures.
+REORDER_VIDEO="color=c=gray:s=320x240:r=24:d=4,format=yuv420p,geq=lum='if(lt(N\,40)\,24+N*2\,150+(N-40)*1.5)':cb=128:cr=128"
+# Renames the one ctts box under moov/trak/mdia/minf/stbl to free (same size, ignored by readers).
+DROP_CTTS='
+import struct, sys
+data = bytearray(open(sys.argv[1], "rb").read())
+def walk(start, end):
+    found = 0
+    while start + 8 <= end:
+        size, kind = struct.unpack(">I4s", data[start:start + 8])
+        if size == 1:
+            size = struct.unpack(">Q", data[start + 8:start + 16])[0]
+        elif size == 0:
+            size = end - start
+        if size < 8:
+            break
+        if kind == b"ctts":
+            data[start + 4:start + 8] = b"free"
+            found += 1
+        elif kind in (b"moov", b"trak", b"mdia", b"minf", b"stbl"):
+            found += walk(start + 8, start + size)
+        start += size
+    return found
+if walk(0, len(data)) != 1:
+    sys.exit("expected exactly one ctts box")
+sys.stdout.buffer.write(data)
+'
+make_no_ctts() { # make_no_ctts <name> <video codec args...>
+  local name="$1"
+  shift
+  if [ -s "$OUT/$name" ]; then echo "  $name (kept)"; return 0; fi
+  local log="$LOGS/${name//\//_}.log" with_ctts="$SRC/$(basename "$name" .mp4)_ctts.mp4"
+  if ff -f lavfi -i "$REORDER_VIDEO" "$@" -an -use_editlist 0 -f mp4 "$with_ctts" >"$log" 2>&1 \
+      && python3 -I -c "$DROP_CTTS" "$with_ctts" 2>>"$log" | put "$name" \
+      && [ -z "$("$FFPROBE" -v error -select_streams v:0 -show_entries packet=pts,dts -of csv=p=0 "$OUT/$name" | awk -F, '$1 != $2')" ]; then
+    echo "  $name"
+  else
+    rm -f "${OUT:?}/${name:?}"
+    echo "FAILED $name, log: $log" >&2
+    return 1
+  fi
+}
+if [ "$FAILED" = 0 ]; then
+  make_no_ctts reorder/hevc_open_gop_no_ctts.mp4 -c:v libx265 -preset ultrafast -tag:v hvc1 \
+    -x265-params "log-level=error:keyint=48:min-keyint=1:scenecut=40:bframes=4:b-adapt=0:open-gop=1:qp=10" || FAILED=1
+  make_no_ctts reorder/h264_no_ctts.mp4 -c:v libx264 -preset veryfast -qp 10 \
+    -x264-params "keyint=48:min-keyint=1:scenecut=40:bframes=3:b-pyramid=normal:open-gop=1" || FAILED=1
+fi
+# <<< m3-reorder
 
 if [ "$FAILED" != 0 ]; then
   echo "fixture generation failed" >&2
