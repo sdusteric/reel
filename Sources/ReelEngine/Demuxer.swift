@@ -63,8 +63,9 @@ public final class MediaSource {
     /// retry the open with default probing.
     public private(set) var logKey: Int?
     public private(set) var reopenErrors = 0
-    /// Rebuilds video pts that the container gave in decode order; nil when the codec cannot need it.
-    private let timestampRepair: TimestampRepair?
+    /// Rebuilds video pts that the container gave in decode order or left out; nil when the
+    /// codec and container cannot need it.
+    private let timestampRepair: (any VideoPacketRetiming)?
     /// Packets read and ready to hand out, while video packets wait in `timestampRepair`.
     private var readyPackets: [Packet] = []
 
@@ -93,8 +94,11 @@ public final class MediaSource {
         let audio = streams.filter { $0.pointee.codecpar.pointee.codec_type == AVMEDIA_TYPE_AUDIO }
         audioStreamIndex = (audio.first { ($0.pointee.disposition & AV_DISPOSITION_DEFAULT) != 0 } ?? audio.first)
             .map { Int($0.pointee.index) }
+        let format = MediaSource.formatName(context) ?? ""
         timestampRepair = videoStreamIndex.flatMap { index in streams.first { Int($0.pointee.index) == index } }
-            .flatMap { TimestampRepair(stream: $0) }
+            .flatMap { stream -> (any VideoPacketRetiming)? in
+                MPEG4AVIFrameTimes(stream: stream, formatName: format) ?? TimestampRepair(stream: stream)
+            }
     }
 
     deinit {

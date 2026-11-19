@@ -10,7 +10,7 @@ import Foundation
 /// are read: the held packet with the lowest picture order count takes the smallest container
 /// time not yet given out. Times that go back in decode order are real presentation times: the
 /// first one turns the repair off for good. Not thread safe: owned by one `MediaSource`.
-final class TimestampRepair {
+final class TimestampRepair: VideoPacketRetiming {
     /// No picture is displayed after more than 16 pictures that follow it in decode order (the
     /// largest HEVC and H.264 DPB), so the smallest count in a larger window is the next shown.
     static let window = 16

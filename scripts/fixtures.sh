@@ -84,8 +84,12 @@ DOVI_RPU_FIXTURES=(hdr/dv81_rpu.mp4 hdr/dv84_rpu.mp4 hdr/dv5_rpu.mp4)
 # >>> m3-reorder
 # B-frames with decode-order pts: MP4 files whose ctts box is gone (as in many x265 remuxes), so
 # every pts equals its dts and only the picture order count gives the display order; an MKV
-# remuxed from one (pts rise in decode order); an AVI, which stores no pts at all.
-REORDER_FIXTURES=(reorder/hevc_open_gop_no_ctts.mp4 reorder/h264_no_ctts.mp4 reorder/hevc_no_ctts_remux.mkv reorder/h264_bframes.avi)
+# remuxed from one (pts rise in decode order); AVI files, which store no pts at all (H.264, and
+# MPEG-4 Part 2 as XviD writes it).
+REORDER_FIXTURES=(
+  reorder/hevc_open_gop_no_ctts.mp4 reorder/h264_no_ctts.mp4 reorder/hevc_no_ctts_remux.mkv reorder/h264_bframes.avi
+  reorder/mpeg4_bframes.avi
+)
 # <<< m3-reorder
 
 # Version groups: the M1 and M2 recipes (everything outside the m3 blocks) and the M3 recipes
@@ -902,6 +906,11 @@ if [ "$FAILED" = 0 ]; then
   else
     encode reorder/h264_bframes.avi -f lavfi -i "$REORDER_VIDEO" -c:v libx264 -preset veryfast -qp 10 \
       -x264-params "keyint=48:min-keyint=1:scenecut=40:bframes=3:b-pyramid=normal" || FAILED=1
+  fi
+  if [ -s "$OUT/reorder/mpeg4_bframes.avi" ]; then
+    echo "  reorder/mpeg4_bframes.avi (kept)"
+  else
+    encode reorder/mpeg4_bframes.avi -f lavfi -i "$REORDER_VIDEO" -c:v mpeg4 -vtag XVID -q:v 2 -bf 2 -g 12 -sc_threshold 1000000000 || FAILED=1
   fi
 fi
 # <<< m3-reorder

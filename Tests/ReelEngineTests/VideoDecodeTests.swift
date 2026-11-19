@@ -352,13 +352,14 @@ private final class FrameSink: Sendable {
 }
 
 /// Files whose container gives B-frames decode-order times (fixtures.sh, reorder/): MP4 without a
-/// ctts box, an MKV remuxed from one, and an AVI (dts only). The presentation times must come from
-/// the picture order count. The ramp's luma rises every frame,
+/// ctts box, an MKV remuxed from one, and AVI files (dts only). The presentation times must come
+/// from the picture order count, or for MPEG-4 Part 2 from the VOP types. The ramp's luma rises every frame,
 /// so a frame shown out of order is a luma step back.
 @Suite(.serialized) struct DecodeOrderTimestampTests {
-    static let files = [
+    static let hardwareFiles = [
         "reorder/hevc_open_gop_no_ctts.mp4", "reorder/h264_no_ctts.mp4", "reorder/hevc_no_ctts_remux.mkv", "reorder/h264_bframes.avi",
     ]
+    static let files = hardwareFiles + ["reorder/mpeg4_bframes.avi"]
 
     private static func videoPackets(_ source: MediaSource) throws -> [Packet] {
         var packets: [Packet] = []
@@ -389,8 +390,7 @@ private final class FrameSink: Sendable {
         let through = try Self.videoPackets(MediaSource(url: url))
         let byPosition = Dictionary(through.compactMap { packet in packet.position.map { ($0, packet.rawPTS) } }) { first, _ in first }
         let keyframes = through.filter(\.isKeyframe).compactMap(\.pts)
-        let cut = try #require(keyframes.last)
-        #expect(cut > .seconds(1), "the scene cut is a keyframe: \(keyframes)")
+        let cut = try #require(keyframes.first { $0 > .seconds(1) }, "a keyframe after 1 s: \(keyframes)")
 
         let source = try MediaSource(url: url)
         try source.seek(toKeyframe: cut)
@@ -412,7 +412,7 @@ private final class FrameSink: Sendable {
     }
 
     /// The engine's path: VideoToolbox in decode order, then `PresentationOrderer` by pts.
-    @Test(arguments: files)
+    @Test(arguments: hardwareFiles)
     func hardwareFramesComeOutInDisplayOrder(_ file: String) throws {
         let url = try fixtureURL(file)
         let demuxer = try Demuxer(url: url)
@@ -447,5 +447,47 @@ private final class FrameSink: Sendable {
         #expect(lumas.count == frames.count)
         let stepsBack = zip(lumas, lumas.dropFirst()).enumerated().filter { $0.element.1 < $0.element.0 }.map(\.offset)
         #expect(stepsBack.isEmpty, "frames out of order after index \(stepsBack); luma \(lumas.map { Int($0) })")
+    }
+
+    /// Through the engine: an exact seek lands on the frame shown at the target and playback goes
+    /// on in order. An XviD AVI with B-frames froze after every seek: no packet had a pts.
+    @Test(arguments: files)
+    func playbackAfterASeekLandsAndStaysInOrder(_ file: String) async throws {
+        // The H.264 file's keyframe at 2 s is an open-GOP I-frame, not an IDR: VideoToolbox keeps
+        // the references decoded before the seek, and frames after it come out wrong.
+        try await withKnownIssue("VideoToolbox keeps references from before a seek to a non-IDR I-frame") {
+            try await Self.seekAndPlay(file)
+        } when: {
+            file == "reorder/h264_no_ctts.mp4"
+        }
+    }
+
+    private static func seekAndPlay(_ file: String) async throws {
+        let url = try fixtureURL(file)
+        let engine = TestEngines.make()
+        let seen = Mutex<[(generation: UInt64, time: MediaTime, luma: Double)]>([])
+        await engine.setFrameObserver { frame in
+            guard let time = MediaTime(frame.presentationTime), let plane = FrameGrabber.lumaPlane(frame.pixelBuffer) else { return }
+            let luma = plane.values.reduce(0, +) / Double(plane.values.count) * 255
+            seen.withLock { $0.append((frame.generation, time, luma)) }
+        }
+        _ = try await engine.open(url)
+        let target = MediaTime.seconds(2.1)
+        let report = try #require(await engine.seekAndWait(.exact(target)), "the seek landed")
+        let landed = try #require(report.landedPTS)
+        #expect(landed <= target && target - landed < .milliseconds(84), "landed at \(landed)")
+        let generation = await engine.currentGeneration
+        await engine.play()
+        let deadline = ContinuousClock.now + .seconds(10)
+        while seen.withLock({ $0.filter { $0.generation == generation }.count }) < 24, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        await engine.close()
+        let frames = seen.withLock { $0.filter { $0.generation == generation } }
+        #expect(frames.count >= 24, "\(frames.count) frames after the seek")
+        let times = frames.map(\.time)
+        #expect(times == times.sorted() && Set(times).count == times.count, "times \(times)")
+        let lumas = frames.map(\.luma)
+        #expect(zip(lumas, lumas.dropFirst()).allSatisfy { $1 > $0 }, "luma \(lumas.map { Int($0) })")
     }
 }
