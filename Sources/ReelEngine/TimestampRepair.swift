@@ -2,13 +2,14 @@ import CReelDeps
 import Foundation
 
 /// Rebuilds presentation times for H.264 and HEVC streams whose container gives decode-order
-/// times as pts (an MP4 without a `ctts` box, as in many x265 remuxes): with B-frames every pts
-/// equals its dts, and frames sorted by pts come out in decode order.
+/// times: an MP4 without a `ctts` box (as in many x265 remuxes), an MKV remuxed from one, or an
+/// AVI (dts only). With B-frames those times rise in decode order, so frames sorted by them come
+/// out in decode order.
 ///
 /// Packets are handed out in decode order, as read. Each gets its time once `window` later ones
 /// are read: the held packet with the lowest picture order count takes the smallest container
-/// time not yet given out. A file is repaired only while every video packet has pts equal to dts;
-/// the first one that differs turns it off for good. Not thread safe: owned by one `MediaSource`.
+/// time not yet given out. Times that go back in decode order are real presentation times: the
+/// first one turns the repair off for good. Not thread safe: owned by one `MediaSource`.
 final class TimestampRepair {
     /// No picture is displayed after more than 16 pictures that follow it in decode order (the
     /// largest HEVC and H.264 DPB), so the smallest count in a larger window is the next shown.
@@ -35,6 +36,8 @@ final class TimestampRepair {
     /// Container times not given out yet, ascending (they are read in decode order).
     private var slots: [Int64] = []
     private var unassigned = 0
+    /// Container time of the last packet read since the last seek.
+    private var lastTime: Int64?
 
     /// Nil for codecs without B-frame reordering or a stream that declares no reorder delay.
     init?(stream: UnsafeMutablePointer<AVStream>) {
@@ -57,12 +60,18 @@ final class TimestampRepair {
     /// Takes the next video packet in decode order; returns the packets ready to hand out.
     func push(_ packet: Packet) -> [Packet] {
         if mode == .passing { return [packet] }
-        guard let pts = packet.rawPTS, pts == packet.rawDTS, let order = pictureOrder(packet) else {
+        let time = packet.rawPTS ?? packet.rawDTS
+        if let time, let lastTime, time <= lastTime {
+            // The container's times already put frames in display order.
+            mode = .passing
+            let earlier = drainAsRead()
+            return earlier + [packet]
+        }
+        lastTime = time
+        guard let time, let order = pictureOrder(packet) else {
             if mode == .undecided {
                 mode = .passing
-                let earlier = held.map(\.packet)
-                clear()
-                return earlier + [packet]
+                return drainAsRead() + [packet]
             }
             // A slice header that does not parse: hand out what is held and this packet as it is.
             return drain() + [packet]
@@ -73,7 +82,7 @@ final class TimestampRepair {
             ready = drain()
         }
         held.append(Held(packet: packet, order: order))
-        slots.append(pts)
+        slots.append(time)
         unassigned += 1
         while unassigned > Self.window {
             mode = .repairing
@@ -101,6 +110,16 @@ final class TimestampRepair {
         held.removeAll()
         slots.removeAll()
         unassigned = 0
+        lastTime = nil
+    }
+
+    /// Hands out the held packets with the times they had when read, or were given.
+    private func drainAsRead() -> [Packet] {
+        let ready = held.map { held in
+            held.pts.flatMap { $0 == held.packet.rawPTS ? nil : Packet(referencing: held.packet, pts: $0) } ?? held.packet
+        }
+        clear()
+        return ready
     }
 
     private func assignNext() {

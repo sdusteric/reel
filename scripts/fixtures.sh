@@ -83,8 +83,9 @@ DOVI_RPU_FIXTURES=(hdr/dv81_rpu.mp4 hdr/dv84_rpu.mp4 hdr/dv5_rpu.mp4)
 
 # >>> m3-reorder
 # B-frames with decode-order pts: MP4 files whose ctts box is gone (as in many x265 remuxes), so
-# every pts equals its dts and only the picture order count gives the display order.
-REORDER_FIXTURES=(reorder/hevc_open_gop_no_ctts.mp4 reorder/h264_no_ctts.mp4)
+# every pts equals its dts and only the picture order count gives the display order; an MKV
+# remuxed from one (pts rise in decode order); an AVI, which stores no pts at all.
+REORDER_FIXTURES=(reorder/hevc_open_gop_no_ctts.mp4 reorder/h264_no_ctts.mp4 reorder/hevc_no_ctts_remux.mkv reorder/h264_bframes.avi)
 # <<< m3-reorder
 
 # Version groups: the M1 and M2 recipes (everything outside the m3 blocks) and the M3 recipes
@@ -889,6 +890,19 @@ if [ "$FAILED" = 0 ]; then
     -x265-params "log-level=error:keyint=48:min-keyint=1:scenecut=40:bframes=4:b-adapt=0:open-gop=1:qp=10" || FAILED=1
   make_no_ctts reorder/h264_no_ctts.mp4 -c:v libx264 -preset veryfast -qp 10 \
     -x264-params "keyint=48:min-keyint=1:scenecut=40:bframes=3:b-pyramid=normal:open-gop=1" || FAILED=1
+fi
+if [ "$FAILED" = 0 ]; then
+  if [ -s "$OUT/reorder/hevc_no_ctts_remux.mkv" ]; then
+    echo "  reorder/hevc_no_ctts_remux.mkv (kept)"
+  else
+    encode reorder/hevc_no_ctts_remux.mkv -i "$OUT/reorder/hevc_open_gop_no_ctts.mp4" -c copy || FAILED=1
+  fi
+  if [ -s "$OUT/reorder/h264_bframes.avi" ]; then
+    echo "  reorder/h264_bframes.avi (kept)"
+  else
+    encode reorder/h264_bframes.avi -f lavfi -i "$REORDER_VIDEO" -c:v libx264 -preset veryfast -qp 10 \
+      -x264-params "keyint=48:min-keyint=1:scenecut=40:bframes=3:b-pyramid=normal" || FAILED=1
+  fi
 fi
 # <<< m3-reorder
 

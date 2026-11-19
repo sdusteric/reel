@@ -351,11 +351,14 @@ private final class FrameSink: Sendable {
     }
 }
 
-/// MP4 files without a ctts box (fixtures.sh, reorder/): every pts equals its dts, so the
-/// presentation times must come from the picture order count. The ramp's luma rises every frame,
+/// Files whose container gives B-frames decode-order times (fixtures.sh, reorder/): MP4 without a
+/// ctts box, an MKV remuxed from one, and an AVI (dts only). The presentation times must come from
+/// the picture order count. The ramp's luma rises every frame,
 /// so a frame shown out of order is a luma step back.
 @Suite(.serialized) struct DecodeOrderTimestampTests {
-    static let files = ["reorder/hevc_open_gop_no_ctts.mp4", "reorder/h264_no_ctts.mp4"]
+    static let files = [
+        "reorder/hevc_open_gop_no_ctts.mp4", "reorder/h264_no_ctts.mp4", "reorder/hevc_no_ctts_remux.mkv", "reorder/h264_bframes.avi",
+    ]
 
     private static func videoPackets(_ source: MediaSource) throws -> [Packet] {
         var packets: [Packet] = []
@@ -371,14 +374,18 @@ private final class FrameSink: Sendable {
         let packets = try Self.videoPackets(source)
         #expect(source.repairsTimestamps)
         #expect(packets.count == 96)
-        let pts = packets.compactMap(\.rawPTS)
-        let dts = packets.compactMap(\.rawDTS)
-        #expect(pts.sorted() == dts, "the same set of times, given out in display order")
-        #expect(pts != dts, "B-frames moved")
+        let pts = packets.compactMap(\.pts)
+        #expect(pts.count == packets.count, "every packet has a pts")
+        #expect(pts != pts.sorted(), "B-frames moved")
+        // One time per frame, 1/24 s apart (an MKV rounds to milliseconds).
+        let sorted = pts.sorted()
+        let steps = zip(sorted, sorted.dropFirst()).map { ($1 - $0).seconds }
+        #expect(steps.allSatisfy { abs($0 - 1.0 / 24) < 0.0015 }, "steps \(steps)")
     }
 
-    @Test func aSeekToTheCutGivesTheSameTimesAsReadingThrough() throws {
-        let url = try fixtureURL(Self.files[0])
+    @Test(arguments: files)
+    func aSeekToTheCutGivesTheSameTimesAsReadingThrough(_ file: String) throws {
+        let url = try fixtureURL(file)
         let through = try Self.videoPackets(MediaSource(url: url))
         let byPosition = Dictionary(through.compactMap { packet in packet.position.map { ($0, packet.rawPTS) } }) { first, _ in first }
         let keyframes = through.filter(\.isKeyframe).compactMap(\.pts)
