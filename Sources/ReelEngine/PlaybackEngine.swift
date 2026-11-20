@@ -1529,8 +1529,9 @@ public actor PlaybackEngine: PlayerEngine {
             hybridSoftwareSeeks: hybrid != nil
         )
         presenterTask?.cancel()
+        let fieldOrder = format.fieldOrder
         presenterTask = Task.detached(priority: .userInitiated) { [shared, weak self] in
-            await PlaybackEngine.present(frames: frames, credits: credits, shared: shared, engine: self)
+            await PlaybackEngine.present(frames: frames, credits: credits, fieldOrder: fieldOrder, shared: shared, engine: self)
         }
         return VideoSession(
             format: format,
@@ -2587,12 +2588,17 @@ public actor PlaybackEngine: PlayerEngine {
     private static func present(
         frames: AsyncStream<DecodedFrame>,
         credits: FrameCredits,
+        fieldOrder: FieldOrder,
         shared: PipelineShared,
         engine: PlaybackEngine?
     ) async {
-        for await frame in frames {
-            guard shared.isCurrent(frame.generation), let output = shared.videoOutput.withLock({ $0 }) else {
+        for await decoded in frames {
+            guard shared.isCurrent(decoded.generation), let output = shared.videoOutput.withLock({ $0 }) else {
                 continue
+            }
+            var frame = decoded
+            if Deinterlacer.fieldOrder(of: decoded, stream: fieldOrder) != .progressive, let deinterlacer = Deinterlacer.shared {
+                frame = deinterlacer.process(decoded, stream: fieldOrder)
             }
             let outcome = await output.enqueue(frame, releasingSlot: false)
             let now = monotonicNanos()

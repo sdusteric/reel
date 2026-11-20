@@ -93,8 +93,12 @@ REORDER_FIXTURES=(
 # <<< m3-reorder
 
 # >>> m3-mpeg2
-# MPEG-2 in program streams (DVD .vob, .mpg) and a transport stream (TV recordings).
-MPEG2_FIXTURES=(mpeg2/sync_mpeg2_mp2.mpg mpeg2/sync_mpeg2_ac3.vob mpeg2/ramp_mpeg2.ts)
+# MPEG-2 in program streams (DVD .vob, .mpg) and a transport stream (TV recordings), and
+# interlaced video with motion (MPEG-2 and MBAFF H.264, top field first) for the deinterlacer.
+MPEG2_FIXTURES=(
+  mpeg2/sync_mpeg2_mp2.mpg mpeg2/sync_mpeg2_ac3.vob mpeg2/ramp_mpeg2.ts
+  interlaced/mpeg2_tff.ts interlaced/h264_mbaff_tff.ts
+)
 # <<< m3-mpeg2
 
 # Version groups: the M1 and M2 recipes (everything outside the m3 blocks) and the M3 recipes
@@ -945,6 +949,12 @@ if [ "$FAILED" = 0 ]; then
     "${MPEG2_VIDEO[@]}" -flags +ilme+ildct -c:a ac3 -b:a 192k
   start mpeg2/ramp_mpeg2.ts -f lavfi -i "$MPEG2_RAMP" -f lavfi -i "sine=f=440:d=4" \
     -c:v mpeg2video -q:v 2 -bf 2 -g 15 -sc_threshold 1000000000 -c:a mp2 -b:a 192k
+  # 60 fields a second from a moving 60p source, woven top field first into 30i frames.
+  INTERLACED_SOURCE="testsrc2=s=720x480:r=60000/1001:d=3,tinterlace=mode=interleave_top,setfield=tff"
+  start interlaced/mpeg2_tff.ts -f lavfi -i "$INTERLACED_SOURCE" \
+    -c:v mpeg2video -q:v 2 -bf 2 -g 15 -flags +ilme+ildct -an
+  start interlaced/h264_mbaff_tff.ts -f lavfi -i "$INTERLACED_SOURCE" \
+    -c:v libx264 -preset veryfast -qp 12 -x264-params "interlaced=1:tff=1" -pix_fmt yuv420p -an
   await_all
 fi
 # <<< m3-mpeg2

@@ -69,11 +69,13 @@ Video:
 | HEVC Main and Main10 | VideoToolbox hardware | hvcC; HDR10 and HLG colour carried in the format description |
 | AV1 | VideoToolbox hardware when `VTIsHardwareDecodeSupported` (true on this M5), else dav1d | av1C from extradata |
 | VP9 profile 0 and 2 | VideoToolbox hardware after `VTRegisterSupplementalVideoDecoderIfAvailable` | vpcC built from codecpar |
-| MPEG-4 Part 2, MS-MPEG4 v3, FLV1 (Sorenson H.263), MPEG-2, VC-1 | libavcodec software | old avi and flv files, DVD (vob, mpg) and TV recordings (ts); interlaced video is not deinterlaced |
+| MPEG-4 Part 2, MS-MPEG4 v3, FLV1 (Sorenson H.263), MPEG-2, VC-1 | libavcodec software | old avi and flv files, DVD (vob, mpg) and TV recordings (ts) |
 
 Audio: everything goes through libavcodec and swresample to interleaved 32-bit float LPCM: AAC, AC3, E-AC3, DTS, TrueHD/MLP, FLAC, Opus, Vorbis, MP2, MP3, ALAC, PCM. Passthrough of compressed audio is not used **(my call)**: AudioToolbox has no DTS or TrueHD decoder, and one LPCM path is simpler to make sample-accurate.
 
 Subtitles (M2): SRT, ASS/SSA, WebVTT, mov_text, PGS, DVD/VobSub, external files next to the video.
+
+Interlaced video (field order from the stream, or per frame from libavcodec) is deinterlaced on the GPU before it is shown, at frame rate: the first field is kept, and lines of the other field are rebuilt from their neighbors where they comb (`Deinterlacer`). Progressive frames are not touched.
 
 Known gaps: Dolby Vision profile 5 (single-layer IPT) shows wrong colours; from M3 Reel says so with a note instead of silently (7.8). Profile 8 plays as its HDR10 or HLG base layer. DTS-HD MA and TrueHD Atmos play as their core or bed channels. 4:2:2 and 4:4:4 content goes to the software path and is untested.
 

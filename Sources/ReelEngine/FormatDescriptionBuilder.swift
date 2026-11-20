@@ -63,6 +63,9 @@ public struct VideoFormat: Sendable {
     public var convertedConfigurationRecord: Data?
     /// The compressed format description for VideoToolbox; nil for codecs it cannot take.
     public var formatDescription: CMVideoFormatDescription?
+    /// The stream's field order (codecpar); VideoToolbox frames of an interlaced stream are
+    /// deinterlaced by it.
+    public var fieldOrder: FieldOrder = .progressive
 
     /// ReelCore's description of the stream.
     public var parameters: VideoParameters {
@@ -149,6 +152,7 @@ public enum FormatDescriptionBuilder {
             convertedConfigurationRecord: nil,
             formatDescription: nil
         )
+        format.fieldOrder = FieldOrder(par.field_order)
 
         var extensions = color.formatExtensions(width: width, height: height)
         if let pixelAspect = format.pixelAspect, pixelAspect.num != pixelAspect.den {

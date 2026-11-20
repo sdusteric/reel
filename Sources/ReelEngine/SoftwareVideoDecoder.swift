@@ -377,6 +377,16 @@ private final class Worker {
         let rows = sws_scale(scaler, source, sourceStride, 0, Int32(height), &destination, &destinationStride)
         guard rows > 0 else { return nil }
         color.attach(to: buffer, width: width, height: height)
+        // AV_FRAME_FLAG_INTERLACED (1 << 3) and AV_FRAME_FLAG_TOP_FIELD_FIRST (1 << 4); the macros
+        // are not imported. The deinterlacer reads these per frame.
+        let interlaced = frame.pointee.flags & (1 << 3) != 0
+        CVBufferSetAttachment(buffer, kCVImageBufferFieldCountKey, (interlaced ? 2 : 1) as CFNumber, .shouldPropagate)
+        if interlaced {
+            let detail = frame.pointee.flags & (1 << 4) != 0 ? kCVImageBufferFieldDetailTemporalTopFirst : kCVImageBufferFieldDetailTemporalBottomFirst
+            CVBufferSetAttachment(buffer, kCVImageBufferFieldDetailKey, detail, .shouldPropagate)
+        } else {
+            CVBufferRemoveAttachment(buffer, kCVImageBufferFieldDetailKey)
+        }
         return buffer
     }
 }
