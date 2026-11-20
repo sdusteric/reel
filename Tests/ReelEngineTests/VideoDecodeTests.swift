@@ -450,16 +450,11 @@ private final class FrameSink: Sendable {
     }
 
     /// Through the engine: an exact seek lands on the frame shown at the target and playback goes
-    /// on in order. An XviD AVI with B-frames froze after every seek: no packet had a pts.
+    /// on in order. An XviD AVI with B-frames froze after every seek (no packet had a pts), and the
+    /// H.264 file, whose keyframe is an open-GOP I-frame, showed wrong frames in VideoToolbox.
     @Test(arguments: files)
     func playbackAfterASeekLandsAndStaysInOrder(_ file: String) async throws {
-        // The H.264 file's keyframe at 2 s is an open-GOP I-frame, not an IDR: VideoToolbox keeps
-        // the references decoded before the seek, and frames after it come out wrong.
-        try await withKnownIssue("VideoToolbox keeps references from before a seek to a non-IDR I-frame") {
-            try await Self.seekAndPlay(file)
-        } when: {
-            file == "reorder/h264_no_ctts.mp4"
-        }
+        try await Self.seekAndPlay(file)
     }
 
     static func seekAndPlay(_ file: String) async throws {

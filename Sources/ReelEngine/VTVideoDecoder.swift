@@ -28,6 +28,11 @@ public final class VTVideoDecoder: VideoDecoding {
     private let handler: DecodeHandler
     private let session: Mutex<VTDecompressionSession?>
     private let counters = Counters()
+    private let requireHardware: Bool
+    /// The last `setRealTime` value, set again on a fresh session.
+    private let realTime = Mutex<Bool?>(nil)
+    /// A reset happened and no packet was decoded since.
+    private let awaitsRunStart = Atomic<Bool>(false)
 
     /// - Parameter requireHardware: fail instead of falling back to Apple's software decoder.
     public init(format: VideoFormat, requireHardware: Bool = false, handler: @escaping DecodeHandler) throws {
@@ -38,6 +43,7 @@ public final class VTVideoDecoder: VideoDecoding {
         self.format = format
         self.formatDescription = description
         self.handler = handler
+        self.requireHardware = requireHardware
         session = Mutex(try VTVideoDecoder.makeSession(description, format: format, requireHardware: requireHardware))
     }
 
@@ -98,6 +104,7 @@ public final class VTVideoDecoder: VideoDecoding {
 
     /// Turns `kVTDecompressionPropertyKey_RealTime` on for steady playback, off for seek bursts.
     public func setRealTime(_ realTime: Bool) {
+        self.realTime.withLock { $0 = realTime }
         session.withLock { session in
             guard let session else { return }
             VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_RealTime, value: realTime ? kCFBooleanTrue : kCFBooleanFalse)
@@ -126,9 +133,33 @@ public final class VTVideoDecoder: VideoDecoding {
             guard let session else { return }
             VTDecompressionSessionFinishDelayedFrames(session)
         }
+        awaitsRunStart.store(true, ordering: .releasing)
+    }
+
+    /// An H.264 run that starts at a non-IDR I-frame (open GOP) keeps the reference pictures of
+    /// the previous run: they change the reference lists, and frames after the keyframe decode
+    /// against the wrong pictures. Such a run gets a new session; IDR and HEVC runs keep theirs.
+    private func startRunIfNeeded(with packet: Packet) {
+        guard awaitsRunStart.exchange(false, ordering: .acquiringAndReleasing) else { return }
+        guard format.codec == .h264, packet.isKeyframe, !format.pictureFlags(packet).isIDR else { return }
+        let realTime = realTime.withLock { $0 }
+        let (description, format, requireHardware) = (formatDescription, self.format, self.requireHardware)
+        session.withLock { session in
+            // An invalidated decoder stays closed. The new session is made inside the lock so it
+            // shares the mutex's isolation region.
+            guard let old = session,
+                  let fresh = try? VTVideoDecoder.makeSession(description, format: format, requireHardware: requireHardware) else { return }
+            if let realTime {
+                VTSessionSetProperty(fresh, key: kVTDecompressionPropertyKey_RealTime, value: realTime ? kCFBooleanTrue : kCFBooleanFalse)
+            }
+            VTDecompressionSessionWaitForAsynchronousFrames(old)
+            VTDecompressionSessionInvalidate(old)
+            session = fresh
+        }
     }
 
     public func decode(_ packet: Packet, generation frameGeneration: UInt64, output: Bool) throws {
+        startRunIfNeeded(with: packet)
         let formatDescription = self.formatDescription
         var flags: VTDecodeFrameFlags = [._EnableAsynchronousDecompression]
         if !output { flags.insert(._DoNotOutputFrame) }
