@@ -38,12 +38,18 @@ final class TimestampRepair: VideoPacketRetiming {
     private var unassigned = 0
     /// Container time of the last packet read since the last seek.
     private var lastTime: Int64?
+    private let countsFrames: Bool
+    /// The decode time the next packet of a raw stream gets.
+    private var nextCountedTime: Int64 = 0
 
-    /// Nil for codecs without B-frame reordering or a stream that declares no reorder delay.
-    init?(stream: UnsafeMutablePointer<AVStream>) {
+    /// Nil for codecs without B-frame reordering or a stream that declares no reorder delay. A raw
+    /// elementary stream (`formatName` h264 or hevc) has no times at all: its packets get decode
+    /// times one frame duration apart, counted from the first byte (seeks there start over).
+    init?(stream: UnsafeMutablePointer<AVStream>, formatName: String = "") {
         guard let parameters = stream.pointee.codecpar else { return nil }
         codecID = parameters.pointee.codec_id
-        guard codecID == AV_CODEC_ID_HEVC || codecID == AV_CODEC_ID_H264, parameters.pointee.video_delay > 0 else { return nil }
+        countsFrames = formatName == "h264" || formatName == "hevc"
+        guard codecID == AV_CODEC_ID_HEVC || codecID == AV_CODEC_ID_H264, parameters.pointee.video_delay > 0 || countsFrames else { return nil }
         guard let context = avcodec_alloc_context3(nil) else { return nil }
         codecContext = context
         guard avcodec_parameters_to_context(context, parameters) >= 0 else { return nil }
@@ -60,7 +66,11 @@ final class TimestampRepair: VideoPacketRetiming {
     /// Takes the next video packet in decode order; returns the packets ready to hand out.
     func push(_ packet: Packet) -> [Packet] {
         if mode == .passing { return [packet] }
-        let time = packet.rawPTS ?? packet.rawDTS
+        var time = packet.rawPTS ?? packet.rawDTS
+        if time == nil, countsFrames, packet.rawDuration > 0 {
+            time = nextCountedTime
+            nextCountedTime += packet.rawDuration
+        }
         if let time, let lastTime, time <= lastTime {
             // The container's times already put frames in display order.
             mode = .passing
@@ -111,6 +121,7 @@ final class TimestampRepair: VideoPacketRetiming {
         slots.removeAll()
         unassigned = 0
         lastTime = nil
+        nextCountedTime = 0
     }
 
     /// Hands out the held packets with the times they had when read, or were given.

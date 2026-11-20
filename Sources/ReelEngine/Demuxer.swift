@@ -97,7 +97,7 @@ public final class MediaSource {
         let format = MediaSource.formatName(context) ?? ""
         timestampRepair = videoStreamIndex.flatMap { index in streams.first { Int($0.pointee.index) == index } }
             .flatMap { stream -> (any VideoPacketRetiming)? in
-                MPEG4AVIFrameTimes(stream: stream, formatName: format) ?? TimestampRepair(stream: stream)
+                MPEG4AVIFrameTimes(stream: stream, formatName: format) ?? TimestampRepair(stream: stream, formatName: format)
             }
     }
 
@@ -258,6 +258,9 @@ public final class MediaSource {
         return MediaTime(ffmpeg: value, timeBase: AVRational(num: 1, den: reel_av_time_base()))
     }
 
+    /// A raw H.264 or HEVC elementary stream (.h264, .hevc): no container, no times.
+    public var isRawVideoStream: Bool { formatName == "h264" || formatName == "hevc" }
+
     /// The video pts are rebuilt from picture order because the container gave decode-order times.
     public var repairsTimestamps: Bool { timestampRepair?.isRepairing ?? false }
 
@@ -349,6 +352,12 @@ public final class MediaSource {
         let index = videoStreamIndex ?? audioStreamIndex ?? 0
         guard let stream = stream(index) else { throw EngineError.noPlayableStream }
         let timestamp = keyframe.ffmpegValue(timeBase: stream.pointee.time_base)
+        if isRawVideoStream {
+            // No times and no index: frame times are counted from the first byte, so every seek
+            // reads again from there.
+            try rewind()
+            return
+        }
         resetTimestampRepair()
         if avformat_seek_file(context, Int32(index), Int64.min, timestamp, timestamp, AVSEEK_FLAG_BACKWARD) >= 0 { return }
         // Some demuxers reject the bounded form; fall back to the plain backward seek.

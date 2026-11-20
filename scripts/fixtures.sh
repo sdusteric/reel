@@ -85,10 +85,10 @@ DOVI_RPU_FIXTURES=(hdr/dv81_rpu.mp4 hdr/dv84_rpu.mp4 hdr/dv5_rpu.mp4)
 # B-frames with decode-order pts: MP4 files whose ctts box is gone (as in many x265 remuxes), so
 # every pts equals its dts and only the picture order count gives the display order; an MKV
 # remuxed from one (pts rise in decode order); AVI files, which store no pts at all (H.264, and
-# MPEG-4 Part 2 as XviD writes it).
+# MPEG-4 Part 2 as XviD writes it); raw H.264 and HEVC streams, which have no times at all.
 REORDER_FIXTURES=(
   reorder/hevc_open_gop_no_ctts.mp4 reorder/h264_no_ctts.mp4 reorder/hevc_no_ctts_remux.mkv reorder/h264_bframes.avi
-  reorder/mpeg4_bframes.avi
+  reorder/mpeg4_bframes.avi reorder/raw_bframes.h264 reorder/raw_open_gop.hevc
 )
 # <<< m3-reorder
 
@@ -124,8 +124,9 @@ SCRIPT_HASH="$(printf '%s %s %s %s %s %s\n' "$BASE_HASH" "$M3_HASH" "$COLOR_HASH
 STAMP="$OUT/.fixtures-$SCRIPT_HASH"
 # Base hashes of earlier versions whose M1 and M2 recipes are the ones here, so their files are
 # kept: 9720b018b84371bc is the M2 script, 4c872f63da278f6a the M3 script before the colour group,
-# 8b2af9c2e01cae4b the script before the reorder group, fb78bc447929b86a before the MPEG-2 group.
-LEGACY_BASE_VERSIONS=(9720b018b84371bc 4c872f63da278f6a 8b2af9c2e01cae4b fb78bc447929b86a)
+# 8b2af9c2e01cae4b the script before the reorder group, fb78bc447929b86a before the MPEG-2 group,
+# 86bb7bf48b1f01e7 before the raw streams.
+LEGACY_BASE_VERSIONS=(9720b018b84371bc 4c872f63da278f6a 8b2af9c2e01cae4b fb78bc447929b86a 86bb7bf48b1f01e7)
 
 # Several agents and gates may run this at once: one generates, the others wait for its stamp.
 LOCK="$OUT/.lock"
@@ -242,6 +243,8 @@ muxer_for() {
     mov) echo mov ;;
     ts) echo mpegts ;;
     mpg) echo mpeg ;;
+    h264) echo h264 ;;
+    hevc) echo hevc ;;
     vob) echo vob ;;
     avi) echo avi ;;
     flv) echo flv ;;
@@ -930,6 +933,18 @@ if [ "$FAILED" = 0 ]; then
     echo "  reorder/mpeg4_bframes.avi (kept)"
   else
     encode reorder/mpeg4_bframes.avi -f lavfi -i "$REORDER_VIDEO" -c:v mpeg4 -vtag XVID -q:v 2 -bf 2 -g 12 -sc_threshold 1000000000 || FAILED=1
+  fi
+  if [ -s "$OUT/reorder/raw_bframes.h264" ]; then
+    echo "  reorder/raw_bframes.h264 (kept)"
+  else
+    encode reorder/raw_bframes.h264 -f lavfi -i "$REORDER_VIDEO" -c:v libx264 -preset veryfast -qp 10 \
+      -x264-params "keyint=48:min-keyint=1:scenecut=40:bframes=3:b-pyramid=normal" || FAILED=1
+  fi
+  if [ -s "$OUT/reorder/raw_open_gop.hevc" ]; then
+    echo "  reorder/raw_open_gop.hevc (kept)"
+  else
+    encode reorder/raw_open_gop.hevc -f lavfi -i "$REORDER_VIDEO" -c:v libx265 -preset ultrafast \
+      -x265-params "log-level=error:keyint=48:min-keyint=1:scenecut=40:bframes=4:b-adapt=0:open-gop=1:qp=10" || FAILED=1
   fi
 fi
 # <<< m3-reorder

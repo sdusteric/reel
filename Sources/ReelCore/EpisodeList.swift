@@ -4,7 +4,7 @@ import Foundation
 public struct EpisodeList: Sendable, Hashable {
     /// Extensions Reel opens as video (section 5).
     public static let videoExtensions: Set<String> = [
-        "mp4", "m4v", "mov", "mkv", "webm", "flv", "avi", "ts", "m2ts", "mts", "mpg", "mpeg", "vob", "m2v", "ogv",
+        "mp4", "m4v", "mov", "mkv", "webm", "flv", "avi", "ts", "m2ts", "mts", "mpg", "mpeg", "vob", "m2v", "h264", "264", "hevc", "265", "ogv",
     ]
 
     public let files: [URL]

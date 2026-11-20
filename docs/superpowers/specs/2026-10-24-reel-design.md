@@ -59,7 +59,7 @@ These are failures, not missing features. Each has a guard in the design.
 
 ## 5. Supported formats
 
-Containers (FFmpeg demuxers): mp4, m4v, mov (mov), mkv, webm (matroska), flv, avi, ts, m2ts, mts (mpegts), mpg, mpeg, vob (mpegps), m2v (mpegvideo), ogg/ogv, plus wav, mp3, aac, flac for audio-only files.
+Containers (FFmpeg demuxers): mp4, m4v, mov (mov), mkv, webm (matroska), flv, avi, ts, m2ts, mts (mpegts), mpg, mpeg, vob (mpegps), m2v (mpegvideo), raw h264/264 and hevc/265 streams (no times: frames are counted at the stream's frame rate, and a seek reads again from the start), ogg/ogv, plus wav, mp3, aac, flac for audio-only files.
 
 Video:
 

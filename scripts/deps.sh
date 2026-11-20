@@ -190,7 +190,7 @@ done
     --enable-avcodec --enable-avformat --enable-avutil --enable-swresample --enable-swscale \
     --enable-videotoolbox --enable-audiotoolbox \
     --enable-protocol=file \
-    --enable-demuxer=matroska,mov,mpegts,mpegps,mpegvideo,flv,avi,ogg,wav,mp3,aac,flac,srt,ass,webvtt,concat \
+    --enable-demuxer=matroska,mov,mpegts,mpegps,mpegvideo,h264,hevc,flv,avi,ogg,wav,mp3,aac,flac,srt,ass,webvtt,concat \
     --enable-parser=h264,hevc,vp9,av1,mpegvideo,aac,ac3,opus,mpegaudio,flac,dca \
     --enable-decoder=h264,hevc,vp9,av1,libdav1d,mpeg4,msmpeg4v3,mpeg2video,vc1,flv \
     --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox,vp9_videotoolbox,av1_videotoolbox,mpeg2_videotoolbox,mpeg4_videotoolbox \

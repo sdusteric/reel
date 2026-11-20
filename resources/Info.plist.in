@@ -137,6 +137,13 @@
       <array><string>vob</string></array>
     </dict>
     <dict>
+      <key>CFBundleTypeName</key><string>H.264 or HEVC Stream</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>h264</string><string>264</string><string>hevc</string><string>265</string></array>
+    </dict>
+    <dict>
       <key>CFBundleTypeName</key><string>Ogg Video</string>
       <key>CFBundleTypeRole</key><string>Viewer</string>
       <key>LSHandlerRank</key><string>Default</string>

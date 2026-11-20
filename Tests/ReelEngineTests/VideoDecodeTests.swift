@@ -358,6 +358,7 @@ private final class FrameSink: Sendable {
 @Suite(.serialized) struct DecodeOrderTimestampTests {
     static let hardwareFiles = [
         "reorder/hevc_open_gop_no_ctts.mp4", "reorder/h264_no_ctts.mp4", "reorder/hevc_no_ctts_remux.mkv", "reorder/h264_bframes.avi",
+        "reorder/raw_bframes.h264", "reorder/raw_open_gop.hevc",
     ]
     static let files = hardwareFiles + ["reorder/mpeg4_bframes.avi"]
 
