@@ -97,7 +97,7 @@ public final class MediaSource {
         let format = MediaSource.formatName(context) ?? ""
         timestampRepair = videoStreamIndex.flatMap { index in streams.first { Int($0.pointee.index) == index } }
             .flatMap { stream -> (any VideoPacketRetiming)? in
-                MPEG4AVIFrameTimes(stream: stream, formatName: format) ?? TimestampRepair(stream: stream, formatName: format)
+                IPBFrameTimes(stream: stream, formatName: format) ?? TimestampRepair(stream: stream, formatName: format)
             }
     }
 
@@ -435,6 +435,9 @@ public final class MediaSource {
     /// Keyframes from the container index (mkv Cues, mp4 stss, avi idx1, flv metadata).
     /// - Parameter ptsOffset: added to dts-based index timestamps to estimate presentation time.
     public func indexedKeyframes(ptsOffset: MediaTime) -> [KeyframeIndex.Entry] {
+        // FFmpeg's program stream index lists every PES packet that has a timestamp as a keyframe:
+        // it marks where demuxing can start, not where decoding can. The keyframes read are used.
+        guard formatName != "mpeg" else { return [] }
         guard let videoStreamIndex, let stream = stream(videoStreamIndex) else { return [] }
         let timeBase = stream.pointee.time_base
         let count = Int(avformat_index_get_entries_count(stream))

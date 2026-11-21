@@ -96,7 +96,7 @@ REORDER_FIXTURES=(
 # MPEG-2 in program streams (DVD .vob, .mpg) and a transport stream (TV recordings), and
 # interlaced video with motion (MPEG-2 and MBAFF H.264, top field first) for the deinterlacer.
 MPEG2_FIXTURES=(
-  mpeg2/sync_mpeg2_mp2.mpg mpeg2/sync_mpeg2_ac3.vob mpeg2/ramp_mpeg2.ts
+  mpeg2/sync_mpeg2_mp2.mpg mpeg2/sync_mpeg2_ac3.vob mpeg2/ramp_mpeg2.ts mpeg2/ramp_mpeg2.mpg mpeg2/ramp_mpeg2.m2v
   interlaced/mpeg2_tff.ts interlaced/h264_mbaff_tff.ts
 )
 # <<< m3-mpeg2
@@ -125,8 +125,8 @@ STAMP="$OUT/.fixtures-$SCRIPT_HASH"
 # Base hashes of earlier versions whose M1 and M2 recipes are the ones here, so their files are
 # kept: 9720b018b84371bc is the M2 script, 4c872f63da278f6a the M3 script before the colour group,
 # 8b2af9c2e01cae4b the script before the reorder group, fb78bc447929b86a before the MPEG-2 group,
-# 86bb7bf48b1f01e7 before the raw streams.
-LEGACY_BASE_VERSIONS=(9720b018b84371bc 4c872f63da278f6a 8b2af9c2e01cae4b fb78bc447929b86a 86bb7bf48b1f01e7)
+# 86bb7bf48b1f01e7 before the raw streams, ec28e9af67db5a94 before the PS and m2v ramps.
+LEGACY_BASE_VERSIONS=(9720b018b84371bc 4c872f63da278f6a 8b2af9c2e01cae4b fb78bc447929b86a 86bb7bf48b1f01e7 ec28e9af67db5a94)
 
 # Several agents and gates may run this at once: one generates, the others wait for its stamp.
 LOCK="$OUT/.lock"
@@ -243,6 +243,7 @@ muxer_for() {
     mov) echo mov ;;
     ts) echo mpegts ;;
     mpg) echo mpeg ;;
+    m2v) echo mpeg2video ;;
     h264) echo h264 ;;
     hevc) echo hevc ;;
     vob) echo vob ;;
@@ -964,6 +965,10 @@ if [ "$FAILED" = 0 ]; then
     "${MPEG2_VIDEO[@]}" -flags +ilme+ildct -c:a ac3 -b:a 192k
   start mpeg2/ramp_mpeg2.ts -f lavfi -i "$MPEG2_RAMP" -f lavfi -i "sine=f=440:d=4" \
     -c:v mpeg2video -q:v 2 -bf 2 -g 15 -sc_threshold 1000000000 -c:a mp2 -b:a 192k
+  # The same ramp in a program stream (FFmpeg's index there lists every timestamped packet as a
+  # keyframe) and as a raw stream (no times at all), half-second GOPs.
+  start mpeg2/ramp_mpeg2.mpg -f lavfi -i "$MPEG2_RAMP" -c:v mpeg2video -q:v 2 -bf 2 -g 15 -sc_threshold 1000000000
+  start mpeg2/ramp_mpeg2.m2v -f lavfi -i "$MPEG2_RAMP" -c:v mpeg2video -q:v 2 -bf 2 -g 15 -sc_threshold 1000000000
   # 60 fields a second from a moving 60p source, woven top field first into 30i frames.
   INTERLACED_SOURCE="testsrc2=s=720x480:r=60000/1001:d=3,tinterlace=mode=interleave_top,setfield=tff"
   start interlaced/mpeg2_tff.ts -f lavfi -i "$INTERLACED_SOURCE" \

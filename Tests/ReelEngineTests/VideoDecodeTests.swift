@@ -458,7 +458,7 @@ private final class FrameSink: Sendable {
         try await Self.seekAndPlay(file)
     }
 
-    static func seekAndPlay(_ file: String) async throws {
+    static func seekAndPlay(_ file: String, target: MediaTime = .seconds(2.1)) async throws {
         let url = try fixtureURL(file)
         let engine = TestEngines.make()
         let seen = Mutex<[(generation: UInt64, time: MediaTime, luma: Double)]>([])
@@ -468,7 +468,6 @@ private final class FrameSink: Sendable {
             seen.withLock { $0.append((frame.generation, time, luma)) }
         }
         _ = try await engine.open(url)
-        let target = MediaTime.seconds(2.1)
         let report = try #require(await engine.seekAndWait(.exact(target)), "the seek landed")
         let landed = try #require(report.landedPTS)
         #expect(landed <= target && target - landed < .milliseconds(84), "landed at \(landed)")

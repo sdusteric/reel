@@ -19,7 +19,22 @@ import Testing
         await engine.close()
     }
 
-    @Test func aSeekLandsAndPlaybackStaysInOrder() async throws {
-        try await DecodeOrderTimestampTests.seekAndPlay("mpeg2/ramp_mpeg2.ts")
+    @Test(arguments: ["mpeg2/ramp_mpeg2.ts", "mpeg2/ramp_mpeg2.mpg", "mpeg2/ramp_mpeg2.m2v"])
+    func aSeekLandsAndPlaybackStaysInOrder(_ file: String) async throws {
+        try await DecodeOrderTimestampTests.seekAndPlay(file)
+    }
+
+    /// Just before a keyframe: the frame shown there is the last of the GOP before. A program
+    /// stream seek used to wait forever there, starting at a "keyframe" from FFmpeg's index that
+    /// was a B-picture.
+    @Test(arguments: ["mpeg2/ramp_mpeg2.ts", "mpeg2/ramp_mpeg2.mpg", "mpeg2/ramp_mpeg2.m2v"])
+    func aSeekJustBeforeAKeyframeLands(_ file: String) async throws {
+        let source = try MediaSource(url: fixtureURL(file))
+        var keyframes: [MediaTime] = []
+        while keyframes.count < 3, let packet = try source.readPacket() {
+            if packet.streamIndex == source.videoStreamIndex, packet.isKeyframe, let pts = packet.pts { keyframes.append(pts) }
+        }
+        let third = try #require(keyframes.count == 3 ? keyframes[2] : nil, "keyframes \(keyframes)")
+        try await DecodeOrderTimestampTests.seekAndPlay(file, target: third - .milliseconds(20))
     }
 }
