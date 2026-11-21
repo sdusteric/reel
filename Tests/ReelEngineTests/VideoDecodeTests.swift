@@ -130,6 +130,24 @@ private final class FrameSink: Sendable {
         #expect(psnr >= 35, "luma PSNR \(psnr) dB")
     }
 
+    /// A frame grab past the first GOP of an MPEG-TS whose next keyframe is 8 s on. The seek finds
+    /// only that later keyframe and falls back to the start of the file, which a timestamp rewind
+    /// missed (it landed near the time, and the grab started at the next keyframe and failed).
+    @Test(arguments: ["longgop/h264_long_gop.ts", "longgop/h264_mbaff_long_gop.ts"])
+    func aFrameGrabPastTheFirstGOPOfALongGOPTransportStreamDecodesFromTheStart(_ file: String) throws {
+        let url = try fixtureURL(file)
+        for decoder in [VideoDecoderKind.hardware, .software] {
+            for target in [MediaTime.seconds(5), .seconds(9)] {
+                let grab = try FrameGrabber.grab(url: url, at: target, decoder: decoder)
+                #expect(grab.frame.time <= target && target - grab.frame.time < .milliseconds(34), "\(decoder) at \(target): \(grab.frame.time)")
+                let reference = try FrameGrabber.grabSequential(url: url, at: target)
+                #expect(grab.frame.time == reference.frame.time)
+                let psnr = try #require(FrameGrabber.lumaPSNR(grab.frame.pixelBuffer, reference.frame.pixelBuffer))
+                #expect(psnr >= 35, "\(decoder) at \(target): luma PSNR \(psnr) dB")
+            }
+        }
+    }
+
     /// The exact-seek path: pre-target frames decoded with DoNotOutput, non-reference ones not
     /// submitted at all, and only frames from the target on reach the handler.
     @Test(arguments: [Fixture.h264, .hevc10])

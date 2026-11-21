@@ -97,7 +97,7 @@ REORDER_FIXTURES=(
 # interlaced video with motion (MPEG-2 and MBAFF H.264, top field first) for the deinterlacer.
 MPEG2_FIXTURES=(
   mpeg2/sync_mpeg2_mp2.mpg mpeg2/sync_mpeg2_ac3.vob mpeg2/ramp_mpeg2.ts mpeg2/ramp_mpeg2.mpg mpeg2/ramp_mpeg2.m2v
-  interlaced/mpeg2_tff.ts interlaced/h264_mbaff_tff.ts
+  interlaced/mpeg2_tff.ts interlaced/h264_mbaff_tff.ts longgop/h264_long_gop.ts longgop/h264_mbaff_long_gop.ts
 )
 # <<< m3-mpeg2
 
@@ -975,6 +975,12 @@ if [ "$FAILED" = 0 ]; then
     -c:v mpeg2video -q:v 2 -bf 2 -g 15 -flags +ilme+ildct -an
   start interlaced/h264_mbaff_tff.ts -f lavfi -i "$INTERLACED_SOURCE" \
     -c:v libx264 -preset veryfast -qp 12 -x264-params "interlaced=1:tff=1" -pix_fmt yuv420p -an
+  # One keyframe at the start and the next 8 s on (x264's default 250 frames), as in a TV
+  # recording: a frame grab past the first GOP has to decode from the file's start.
+  start longgop/h264_long_gop.ts -f lavfi -i "testsrc2=s=320x240:r=30000/1001:d=12" \
+    -c:v libx264 -preset veryfast -qp 18 -pix_fmt yuv420p -an
+  start longgop/h264_mbaff_long_gop.ts -f lavfi -i "testsrc2=s=320x240:r=60000/1001:d=12,tinterlace=mode=interleave_top,setfield=tff" \
+    -c:v libx264 -preset veryfast -qp 18 -x264-params "interlaced=1:tff=1" -pix_fmt yuv420p -an
   await_all
 fi
 # <<< m3-mpeg2

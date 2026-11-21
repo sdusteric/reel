@@ -398,10 +398,18 @@ public final class MediaSource {
         return []
     }
 
+    /// MPEG-TS, MPEG-PS and raw elementary streams.
+    static let byteRewindFormats: Set<String> = ["mpegts", "mpeg", "mpegvideo", "h264", "hevc"]
+
     /// Returns to the first packet of the file.
     public func rewind() throws {
         guard let context else { throw EngineError.notOpen }
         resetTimestampRepair()
+        // Streams without an index seek by timestamp with a search that lands near the time, then
+        // the next keyframe can be many seconds on (one keyframe every 8 s in a TV recording).
+        // Their first byte is their start.
+        if MediaSource.byteRewindFormats.contains(formatName),
+           avformat_seek_file(context, -1, Int64.min, 0, 0, AVSEEK_FLAG_BYTE) >= 0 { return }
         let start = context.pointee.start_time == reel_av_nopts() ? 0 : context.pointee.start_time
         if avformat_seek_file(context, -1, Int64.min, start, start, AVSEEK_FLAG_BACKWARD) >= 0 { return }
         try FFmpegError.check(avformat_seek_file(context, -1, Int64.min, 0, 0, AVSEEK_FLAG_BYTE), "rewind \(url.lastPathComponent)")
